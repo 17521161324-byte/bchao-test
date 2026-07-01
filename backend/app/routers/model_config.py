@@ -1,0 +1,144 @@
+"""
+模型配置路由
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
+
+from app.database import get_db
+from app.models import ModelConfig
+from app.schemas import (
+    ModelConfigCreate, ModelConfigUpdate, ModelConfigOut, ModelTestResult
+)
+
+router = APIRouter()
+
+
+@router.get("", response_model=list[ModelConfigOut])
+async def list_models(
+    model_type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """列出所有模型配置"""
+    query = select(ModelConfig).order_by(ModelConfig.model_type, ModelConfig.name)
+    if model_type:
+        query = query.where(ModelConfig.model_type == model_type)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.post("", response_model=ModelConfigOut)
+async def create_model(
+    data: ModelConfigCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """新增模型配置"""
+    model = ModelConfig(**data.model_dump())
+    db.add(model)
+    await db.commit()
+    await db.refresh(model)
+    return model
+
+
+@router.put("/{model_id}", response_model=ModelConfigOut)
+async def update_model(
+    model_id: int,
+    data: ModelConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """更新模型配置"""
+    result = await db.execute(select(ModelConfig).where(ModelConfig.id == model_id))
+    model = result.scalar_one_or_none()
+    if not model:
+        raise HTTPException(status_code=404, message="模型不存在")
+
+    update_data = data.model_dump(exclude_unset=True)
+    for k, v in update_data.items():
+        setattr(model, k, v)
+
+    await db.commit()
+    await db.refresh(model)
+    return model
+
+
+@router.delete("/{model_id}")
+async def delete_model(
+    model_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除模型配置"""
+    result = await db.execute(select(ModelConfig).where(ModelConfig.id == model_id))
+    model = result.scalar_one_or_none()
+    if not model:
+        raise HTTPException(status_code=404, message="模型不存在")
+    await db.delete(model)
+    await db.commit()
+    return {"message": "删除成功"}
+
+
+@router.post("/{model_id}/test", response_model=ModelTestResult)
+async def test_model_connection(
+    model_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """测试模型连通性"""
+    import time
+    from app.services.asr import create_asr
+    from app.services.llm import create_llm
+
+    result = await db.execute(select(ModelConfig).where(ModelConfig.id == model_id))
+    model = result.scalar_one_or_none()
+    if not model:
+        raise HTTPException(status_code=404, message="模型不存在")
+
+    start = time.time()
+    try:
+        if model.model_type == "asr":
+            asr = create_asr(model.provider, endpoint=model.endpoint,
+                            api_key=model.api_key or "", api_secret=model.api_secret or "")
+            ok = await asr.health_check()
+        elif model.model_type == "llm":
+            llm = create_llm(model.provider, endpoint=model.endpoint,
+                             api_key=model.api_key or "")
+            ok = await llm.health_check()
+        else:
+            ok = False
+
+        latency = round((time.time() - start) * 1000, 1)
+        return ModelTestResult(
+            success=ok,
+            message="连接正常" if ok else "连接失败",
+            latency_ms=latency,
+        )
+    except Exception as e:
+        return ModelTestResult(
+            success=False,
+            message=f"连接异常: {str(e)}",
+            latency_ms=round((time.time() - start) * 1000, 1),
+        )
+
+
+@router.post("/init-defaults")
+async def init_default_models(db: AsyncSession = Depends(get_db)):
+    """初始化默认模型配置（本地 FunASR）"""
+    from app.config import settings
+
+    # 检查是否已存在
+    result = await db.execute(
+        select(ModelConfig).where(ModelConfig.provider == "local")
+    )
+    if result.scalar_one_or_none():
+        return {"message": "默认模型已存在"}
+
+    default_asr = ModelConfig(
+        name="本地 FunASR",
+        model_type="asr",
+        provider="local",
+        endpoint=settings.LOCAL_ASR_URL,
+        is_default=True,
+        status="active",
+    )
+    db.add(default_asr)
+    await db.commit()
+    return {"message": "初始化成功", "model": default_asr.name}
