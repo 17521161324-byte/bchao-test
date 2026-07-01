@@ -20,7 +20,7 @@ router = APIRouter()
 
 @router.post("/start")
 async def start_test(
-    data: TestStart_request,
+    data: TestStartRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """

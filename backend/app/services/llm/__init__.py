@@ -2,6 +2,7 @@
 LLM 抽象层与实现
 """
 from abc import ABC, abstractmethod
+from pydantic import BaseModel
 from loguru import logger
 
 
@@ -9,9 +10,6 @@ class LLMResponse(BaseModel):
     raw_text: str
     structured: dict | None = None
     summary: str | None = None
-
-
-from pydantic import BaseModel
 
 
 class BaseLLM(ABC):

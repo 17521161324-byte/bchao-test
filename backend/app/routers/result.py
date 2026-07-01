@@ -56,7 +56,7 @@ async def get_result_by_record(
     return result.scalar_one_or_none()
 
 
-def parse_xlsx_to_db(filepath: str, date_folders: dict, db: AsyncSession) -> int:
+async def parse_xlsx_to_db(filepath: str, date_folders: dict, db: AsyncSession) -> int:
     """解析 xlsx 文件并写入数据库"""
     wb = openpyxl.load_workbook(filepath, data_only=True)
     ws = wb.active
