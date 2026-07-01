@@ -1,9 +1,18 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import vue from '@vitejs/plugin-vue'
+import vueJsx from '@vitejs/plugin-vue-jsx'
+import AutoImport from 'unplugin-vue-components/vite'
+import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers'
 import path from 'path'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    vue(),
+    vueJsx(),
+    AutoImport({
+      resolvers: [AntDesignVueResolver()],
+    }),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

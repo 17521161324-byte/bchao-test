@@ -2,7 +2,7 @@
  * API 客户端封装
  */
 import axios, { AxiosInstance } from 'axios'
-import { message } from 'antd'
+import { message } from 'ant-design-vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
@@ -12,7 +12,6 @@ const client: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// 响应拦截器
 client.interceptors.response.use(
   (response) => response.data,
   (error) => {
@@ -60,7 +59,7 @@ export const testApi = {
   updateEval: (testId: number, data: any) => client.put(`/test/${testId}/evaluate`, data),
 }
 
-// SSE 测试执行（返回 EventSource）
+// SSE 测试执行
 export function startTestSSE(data: {
   record_id: string
   asr_model_id: number

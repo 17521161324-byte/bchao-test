@@ -1,53 +1,11 @@
 /* 全局样式 */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background: #f5f5f5;
-}
-
-#root {
-  min-height: 100vh;
-}
-
-/* 页面通用容器 */
-.page-container {
-  padding: 24px;
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-header h2 {
-  font-size: 20px;
-  font-weight: 600;
-  color: #1f1f1f;
-}
-
-/* 状态标签 */
-.status-match {
-  color: #52c41a;
-}
-.status-audio-only {
-  color: #faad14;
-}
-.status-result-only {
-  color: #ff4d4f;
-}
-
-/* 对比表格中的差异高亮 */
-.diff-wrong {
-  background-color: #fff2f0;
-  color: #cf1322;
-}
-.diff-correct {
-  background-color: #f6ffed;
-  color: #389e0d;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
+#app { min-height: 100vh; }
+.page-container { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.page-header { margin-bottom: 24px; }
+.page-header h2 { font-size: 20px; font-weight: 600; color: #1f1f1f; }
+.status-match { color: #52c41a; }
+.status-audio-only { color: #faad14; }
+.diff-wrong { background-color: #fff2f0; color: #cf1322; }
+.diff-correct { background-color: #f6ffed; color: #389e0d; }

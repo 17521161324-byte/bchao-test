@@ -5,24 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "vue-tsc -b && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "antd": "^5.21.0",
-    "@ant-design/icons": "^5.5.1",
+    "vue": "^3.5.12",
+    "vue-router": "^4.4.5",
+    "pinia": "^2.2.4",
+    "ant-design-vue": "^4.2.5",
+    "@ant-design/icons-vue": "^7.0.1",
     "axios": "^1.7.7",
-    "zustand": "^5.0.0",
-    "dayjs": "^1.11.13",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.27.0"
+    "dayjs": "^1.11.13"
   },
   "devDependencies": {
-    "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.2",
+    "@vitejs/plugin-vue": "^5.1.4",
+    "@vitejs/plugin-vue-jsx": "^4.1.1",
     "typescript": "^5.6.2",
-    "vite": "^5.4.8"
+    "vite": "^5.4.8",
+    "vue-tsc": "^2.1.6",
+    "unplugin-vue-components": "^0.27.4",
+    "unplugin-auto-import": "^0.18.3"
   }
 }
