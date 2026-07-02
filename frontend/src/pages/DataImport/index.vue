@@ -39,8 +39,8 @@
         :data-source="filteredRecords"
         :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
         size="small"
+        :custom-row="onRowClick"
         row-key="id"
-        @row-click="onRowClick"
       >
         <a-table-column title="病历号" data-index="record_id" :width="120" />
         <a-table-column title="日期" data-index="date" :width="120">
@@ -293,7 +293,10 @@ export default defineComponent({
     }
 
     function onRowClick(record: PatientExamination) {
-      store.openDrawer(record)
+      return {
+        onClick: () => store.openDrawer(record),
+        style: { cursor: 'pointer' }
+      }
     }
 
     function onDrawerClose() {
