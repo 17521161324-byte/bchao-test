@@ -104,3 +104,18 @@ export interface TestProgressEvent {
   seg_text?: string
   message?: string
 }
+
+export interface PatientExamination {
+  id: number
+  record_id: string
+  date: string
+  date_folder_id: number
+  timestamp_folder: string
+  segs: AudioSeg[]
+  result: BUltraResult | null
+}
+
+export interface PatientGroup {
+  record_id: string
+  examinations: PatientExamination[]
+}

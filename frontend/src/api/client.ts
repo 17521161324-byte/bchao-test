@@ -24,6 +24,7 @@ client.interceptors.response.use(
 // ========== 录音管理 ==========
 export const audioApi = {
   getTree: () => client.get('/audio/tree'),
+  getPatients: () => client.get('/audio/patients'),
   getStatus: () => client.get('/audio/status'),
   scan: () => client.post('/audio/scan'),
   getFileUrl: (path: string) => `${API_BASE}/audio/file?path=${encodeURIComponent(path)}`,
@@ -40,6 +41,7 @@ export const resultApi = {
     })
   },
   getByRecord: (recordId: string) => client.get(`/result/${recordId}`),
+  update: (resultId: number, data: any) => client.put(`/result/${resultId}`, data),
 }
 
 // ========== 模型配置 ==========

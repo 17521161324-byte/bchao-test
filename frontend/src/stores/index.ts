@@ -1,9 +1,6 @@
-/**
- * Pinia 全局状态管理
- */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { DateFolder, ModelConfig, DataStatus } from '../types'
+import type { DateFolder, ModelConfig, DataStatus, PatientGroup, PatientExamination } from '../types'
 import { audioApi, modelApi } from '../api/client'
 
 export const useAppStore = defineStore('app', () => {
@@ -11,6 +8,11 @@ export const useAppStore = defineStore('app', () => {
   const audioTree = ref<DateFolder[]>([])
   const dataStatus = ref<DataStatus | null>(null)
   const loadingTree = ref(false)
+
+  // 患者列表（新）
+  const patientGroups = ref<PatientGroup[]>([])
+  const selectedGroup = ref<PatientGroup | null>(null)
+  const selectedExam = ref<PatientExamination | null>(null)
 
   // 模型配置
   const asrModels = ref<ModelConfig[]>([])
@@ -31,6 +33,16 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function fetchPatients() {
+    loadingTree.value = true
+    try {
+      const data = await audioApi.getPatients()
+      patientGroups.value = data as PatientGroup[]
+    } finally {
+      loadingTree.value = false
+    }
+  }
+
   async function fetchDataStatus() {
     const data = await audioApi.getStatus()
     dataStatus.value = data as DataStatus
@@ -40,6 +52,13 @@ export const useAppStore = defineStore('app', () => {
     await audioApi.scan()
     await fetchAudioTree()
     await fetchDataStatus()
+  }
+
+  function selectExam(group: PatientGroup, exam: PatientExamination) {
+    selectedGroup.value = group
+    selectedExam.value = exam
+    selectedRecord.value = exam.record_id
+    selectedDate.value = exam.date
   }
 
   async function fetchModels() {
@@ -58,8 +77,9 @@ export const useAppStore = defineStore('app', () => {
 
   return {
     audioTree, dataStatus, loadingTree,
+    patientGroups, selectedGroup, selectedExam,
     asrModels, llmModels,
     selectedRecord, selectedDate,
-    fetchAudioTree, fetchDataStatus, scanRecordings, fetchModels, setSelectedRecord,
+    fetchAudioTree, fetchPatients, fetchDataStatus, scanRecordings, fetchModels, setSelectedRecord, selectExam,
   }
 })

@@ -16,18 +16,20 @@ from app.config import settings
 router = APIRouter()
 
 
-@router.get("/tree", response_model=list[DateFolderOut])
+@router.get("/tree")
 async def get_audio_tree(db: AsyncSession = Depends(get_db)):
     """获取录音文件树（日期→病历号→seg）"""
     result = await db.execute(
         select(DateFolder)
         .options(
             selectinload(DateFolder.patients)
-            .selectinload(PatientRecord.segs)
+            .selectinload(PatientRecord.segs),
+            selectinload(DateFolder.patients)
+            .selectinload(PatientRecord.result),
         )
         .order_by(DateFolder.date.desc())
     )
-    folders = result.scalars().all()
+    folders = result.unique().scalars().all()
 
     # 构建响应
     output = []
@@ -193,6 +195,73 @@ async def scan_recordings(db: AsyncSession = Depends(get_db)):
     await db.commit()
     logger.info(f"扫描完成: {scanned}")
     return {"message": "扫描完成", "scanned": scanned}
+
+
+@router.get("/patients")
+async def get_patients_list(db: AsyncSession = Depends(get_db)):
+    """获取患者检查列表（按病历号分组，含录音和结果）"""
+    result = await db.execute(
+        select(DateFolder)
+        .options(
+            selectinload(DateFolder.patients)
+            .selectinload(PatientRecord.segs),
+            selectinload(DateFolder.patients)
+            .selectinload(PatientRecord.result),
+        )
+        .order_by(DateFolder.date.desc())
+    )
+    folders = result.unique().scalars().all()
+
+    # 按病历号分组
+    patients_map: dict[str, list] = {}
+    for folder in folders:
+        for p in folder.patients:
+            record = {
+                "id": p.id,
+                "record_id": p.record_id,
+                "date": folder.date,
+                "date_folder_id": folder.id,
+                "timestamp_folder": p.timestamp_folder,
+                "segs": [
+                    {
+                        "id": s.id,
+                        "seg_index": s.seg_index,
+                        "filename": s.filename,
+                        "duration": s.duration,
+                        "file_path": s.file_path,
+                        "file_size": s.file_size,
+                    }
+                    for s in sorted(p.segs, key=lambda x: x.seg_index)
+                ],
+                "result": None,
+            }
+            if p.result:
+                record["result"] = {
+                    "id": p.result.id,
+                    "right_follicles": p.result.right_follicles,
+                    "left_follicles": p.result.left_follicles,
+                    "right_follicle_total": p.result.right_follicle_total,
+                    "left_follicle_total": p.result.left_follicle_total,
+                    "endometrium_thickness": p.result.endometrium_thickness,
+                    "endometrium_type": p.result.endometrium_type,
+                    "right_ovary_length": p.result.right_ovary_length,
+                    "right_ovary_width": p.result.right_ovary_width,
+                    "left_ovary_length": p.result.left_ovary_length,
+                    "left_ovary_width": p.result.left_ovary_width,
+                    "remark": p.result.remark,
+                }
+            if p.record_id not in patients_map:
+                patients_map[p.record_id] = []
+            patients_map[p.record_id].append(record)
+
+    # 转为列表，按日期排序
+    output = []
+    for record_id, records in patients_map.items():
+        output.append({
+            "record_id": record_id,
+            "examinations": sorted(records, key=lambda x: x["date"], reverse=True),
+        })
+    return output
 
 
 def self_find_audio_dir(record_path: str) -> str | None:

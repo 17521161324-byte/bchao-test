@@ -56,6 +56,49 @@ async def get_result_by_record(
     return result.scalar_one_or_none()
 
 
+@router.put("/{result_id}")
+async def update_result(
+    result_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """更新 B 超结果"""
+    result = await db.execute(
+        select(BUltraResult).where(BUltraResult.id == result_id)
+    )
+    obj = result.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(status_code=404, message="结果不存在")
+
+    # Update allowed fields
+    field_map = {
+        "right_follicle_total": "right_follicle_total",
+        "left_follicle_total": "left_follicle_total",
+        "endometrium_thickness": "endometrium_thickness",
+        "endometrium_type": "endometrium_type",
+        "right_ovary_length": "right_ovary_length",
+        "right_ovary_width": "right_ovary_width",
+        "left_ovary_length": "left_ovary_length",
+        "left_ovary_width": "left_ovary_width",
+        "remark": "remark",
+    }
+
+    for key, field in field_map.items():
+        if key in data:
+            setattr(obj, field, data[key])
+
+    # Recalculate follicle totals if follicles provided
+    if "right_follicles" in data:
+        obj.right_follicles = data["right_follicles"]
+        obj.right_follicle_total = sum(f.get("count", 0) for f in data["right_follicles"])
+    if "left_follicles" in data:
+        obj.left_follicles = data["left_follicles"]
+        obj.left_follicle_total = sum(f.get("count", 0) for f in data["left_follicles"])
+
+    await db.commit()
+    return {"message": "更新成功", "id": obj.id}
+
+
 async def parse_xlsx_to_db(filepath: str, date_folders: dict, db: AsyncSession) -> int:
     """解析 xlsx 文件并写入数据库"""
     wb = openpyxl.load_workbook(filepath, data_only=True)
