@@ -3,7 +3,9 @@
 """
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import text
 from app.config import settings
+import asyncio
 
 
 # 转换 SQLite URL 为异步格式
@@ -43,3 +45,11 @@ async def init_db():
     """初始化数据库表"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def execute_write(statement):
+    """Utility to write to DB safely"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(statement)
+        await session.commit()
+        return result

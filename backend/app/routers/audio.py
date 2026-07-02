@@ -3,7 +3,7 @@
 """
 import os
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from loguru import logger
@@ -366,22 +366,27 @@ async def get_records_flat(date: str = None, db: AsyncSession = Depends(get_db))
 @router.delete("/patient/{patient_id}")
 async def delete_patient(patient_id: int, db: AsyncSession = Depends(get_db)):
     """删除患者记录（包括关联的 B超结果）"""
-    result = await db.execute(
-        select(PatientRecord).where(PatientRecord.id == patient_id)
-    )
-    patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status_code=404, message="患者不存在")
+    import asyncio
 
-    # Delete associated result first
-    if patient.result:
-        await db.delete(patient.result)
-    # Delete associated segs
-    for seg in patient.segs:
-        await db.delete(seg)
-    # Delete patient
-    await db.delete(patient)
-    await db.commit()
+    def _do_delete():
+        import sqlite3
+        db_path = settings.DATABASE_URL.replace("sqlite:///", "")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # Delete associated result
+        cursor.execute("DELETE FROM b_ultra_results WHERE patient_id = ?", (patient_id,))
+        # Delete associated segs
+        cursor.execute("DELETE FROM audio_segs WHERE patient_id = ?", (patient_id,))
+        # Delete patient
+        cursor.execute("DELETE FROM patient_records WHERE id = ?", (patient_id,))
+        conn.commit()
+        deleted = cursor.rowcount
+        conn.close()
+        return deleted
+
+    deleted = await asyncio.to_thread(_do_delete)
+    if deleted == 0:
+        raise HTTPException(status_code=404, message="患者不存在")
     return {"message": "已删除", "id": patient_id}
 
 
