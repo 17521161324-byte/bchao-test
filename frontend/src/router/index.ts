@@ -8,7 +8,7 @@ const routes = [
   {
     path: '/',
     component: Layout,
-    redirect: '/data',
+    redirect: 'data',
     children: [
       { path: 'data', component: () => import('@/pages/DataImport/index.vue') },
       { path: 'model', component: () => import('@/pages/ModelConfig/index.vue') },
