@@ -197,9 +197,42 @@ async def scan_recordings(db: AsyncSession = Depends(get_db)):
     return {"message": "扫描完成", "scanned": scanned}
 
 
-@router.get("/patients")
-async def get_patients_list(db: AsyncSession = Depends(get_db)):
-    """获取患者检查列表（按病历号分组，含录音和结果）"""
+@router.get("/batches")
+async def get_batches(db: AsyncSession = Depends(get_db)):
+    """获取批次列表（按日期）及统计"""
+    result = await db.execute(
+        select(DateFolder.id, DateFolder.date)
+        .order_by(DateFolder.date.desc())
+    )
+    rows = result.all()
+
+    batches = []
+    for row in rows:
+        # Count patients in this batch
+        patient_count = await db.execute(
+            select(func.count(PatientRecord.id))
+            .where(PatientRecord.date_folder_id == row.id)
+        )
+        # Count matched (with results)
+        matched = await db.execute(
+            select(func.count(PatientRecord.id))
+            .join(BUltraResult, BUltraResult.patient_id == PatientRecord.id)
+            .where(PatientRecord.date_folder_id == row.id)
+        )
+        batches.append({
+            "id": row.id,
+            "date": row.date,
+            "patient_count": patient_count.scalar(),
+            "matched_count": matched.scalar(),
+        })
+    return batches
+
+
+@router.get("/verify")
+async def verify_data(date: str = None, db: AsyncSession = Depends(get_db)):
+    """数据核对：检测异常数据"""
+    import os
+
     result = await db.execute(
         select(DateFolder)
         .options(
@@ -212,7 +245,102 @@ async def get_patients_list(db: AsyncSession = Depends(get_db)):
     )
     folders = result.unique().scalars().all()
 
-    # 按病历号分组
+    if date:
+        folders = [f for f in folders if f.date == date]
+
+    issues = []
+    for folder in folders:
+        # Detect duplicates
+        seen_ids = {}
+        for p in folder.patients:
+            if p.record_id in seen_ids:
+                issues.append({
+                    "type": "duplicate",
+                    "date": folder.date,
+                    "record_id": p.record_id,
+                    "patient_id": p.id,
+                    "detail": f"重复病历号 (同日期已有 id={seen_ids[p.record_id]})",
+                    "action": "merge_or_delete",
+                })
+            else:
+                seen_ids[p.record_id] = p.id
+
+        # Check each patient
+        for p in folder.patients:
+            has_segs = len(p.segs) > 0
+            has_result = p.result is not None
+
+            # Check if files actually exist
+            missing_files = []
+            for s in p.segs:
+                if not os.path.isfile(s.file_path):
+                    missing_files.append(s.filename)
+
+            if not has_segs and has_result:
+                issues.append({
+                    "type": "no_audio_has_result",
+                    "date": folder.date,
+                    "record_id": p.record_id,
+                    "patient_id": p.id,
+                    "detail": f"无录音但有B超结果",
+                    "action": "delete_result",
+                })
+            elif has_segs and missing_files:
+                issues.append({
+                    "type": "missing_files",
+                    "date": folder.date,
+                    "record_id": p.record_id,
+                    "patient_id": p.id,
+                    "detail": f"缺少 {len(missing_files)} 个录音文件",
+                    "action": "investigate",
+                    "missing_files": missing_files[:5],
+                })
+
+    return {
+        "total_issues": len(issues),
+        "issues": issues,
+    }
+
+
+@router.delete("/patient/{patient_id}")
+async def delete_patient(patient_id: int, db: AsyncSession = Depends(get_db)):
+    """删除患者记录（包括关联的 B超结果）"""
+    result = await db.execute(
+        select(PatientRecord).where(PatientRecord.id == patient_id)
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, message="患者不存在")
+
+    # Delete associated result first
+    if patient.result:
+        await db.delete(patient.result)
+    # Delete associated segs
+    for seg in patient.segs:
+        await db.delete(seg)
+    # Delete patient
+    await db.delete(patient)
+    await db.commit()
+    return {"message": "已删除", "id": patient_id}
+async def get_patients_list(date: str = None, db: AsyncSession = Depends(get_db)):
+    """获取患者检查列表（按病历号分组，含录音和结果），支持按日期筛选"""
+    result = await db.execute(
+        select(DateFolder)
+        .options(
+            selectinload(DateFolder.patients)
+            .selectinload(PatientRecord.segs),
+            selectinload(DateFolder.patients)
+            .selectinload(PatientRecord.result),
+        )
+        .order_by(DateFolder.date.desc())
+    )
+    folders = result.unique().scalars().all()
+
+    # Filter by date if provided
+    if date:
+        folders = [f for f in folders if f.date == date]
+
+    # Group by record_id
     patients_map: dict[str, list] = {}
     for folder in folders:
         for p in folder.patients:
@@ -254,7 +382,7 @@ async def get_patients_list(db: AsyncSession = Depends(get_db)):
                 patients_map[p.record_id] = []
             patients_map[p.record_id].append(record)
 
-    # 转为列表，按日期排序
+    # Output sorted by date
     output = []
     for record_id, records in patients_map.items():
         output.append({

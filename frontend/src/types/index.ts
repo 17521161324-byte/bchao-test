@@ -105,6 +105,28 @@ export interface TestProgressEvent {
   message?: string
 }
 
+export interface Batch {
+  id: number
+  date: string
+  patient_count: number
+  matched_count: number
+}
+
+export interface DataIssue {
+  type: 'no_audio_has_result' | 'missing_files' | 'duplicate'
+  date: string
+  record_id: string
+  patient_id: number
+  detail: string
+  action: string
+  missing_files?: string[]
+}
+
+export interface VerificationResult {
+  total_issues: number
+  issues: DataIssue[]
+}
+
 export interface PatientExamination {
   id: number
   record_id: string

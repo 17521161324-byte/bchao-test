@@ -24,8 +24,11 @@ client.interceptors.response.use(
 // ========== 录音管理 ==========
 export const audioApi = {
   getTree: () => client.get('/audio/tree'),
-  getPatients: () => client.get('/audio/patients'),
+  getBatches: () => client.get('/audio/batches'),
+  getPatients: (date?: string) => client.get('/audio/patients', { params: date ? { date } : {} }),
   getStatus: () => client.get('/audio/status'),
+  verify: (date?: string) => client.get('/audio/verify', { params: date ? { date } : {} }),
+  deletePatient: (patientId: number) => client.delete(`/audio/patient/${patientId}`),
   scan: () => client.post('/audio/scan'),
   getFileUrl: (path: string) => `${API_BASE}/audio/file?path=${encodeURIComponent(path)}`,
 }

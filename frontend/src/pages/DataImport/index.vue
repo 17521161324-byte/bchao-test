@@ -1,6 +1,34 @@
 <template>
   <div class="page-container">
-    <div class="page-header"><h2>数据管理</h2></div>
+    <div class="page-header" style="display: flex; justify-content: space-between; align-items: center">
+      <h2>数据管理</h2>
+      <a-radio-group v-model:value="viewMode" button-style="solid" size="small">
+        <a-radio-button value="browse">数据浏览</a-radio-button>
+        <a-radio-button value="verify">
+          数据核对
+          <a-badge v-if="verification && verification.total_issues > 0" :count="verification.total_issues" size="small" />
+        </a-radio-button>
+      </a-radio-group>
+    </div>
+
+    <!-- 批次选择器 -->
+    <a-card style="margin-bottom: 16px">
+      <a-space>
+        <span style="color: #666">批次：</span>
+        <a-checkable-tag :checked="selectedBatch === null" @click="store.selectBatch(null)" style="cursor: pointer">
+          全部
+        </a-checkable-tag>
+        <a-checkable-tag
+          v-for="batch in batches"
+          :key="batch.date"
+          :checked="selectedBatch === batch.date"
+          @click="store.selectBatch(batch.date)"
+          style="cursor: pointer"
+        >
+          {{ formatDate(batch.date) }} ({{ batch.patient_count }}人)
+        </a-checkable-tag>
+      </a-space>
+    </a-card>
 
     <!-- 统计卡片 -->
     <a-row :gutter="16" style="margin-bottom: 16px">
@@ -22,7 +50,61 @@
       </a-col>
     </a-row>
 
-    <!-- 主体：左右分栏 -->
+    <!-- 主体：左右分栏 / 数据核对 -->
+    <template v-if="viewMode === 'verify'">
+      <a-card>
+        <template #extra>
+          <a-button size="small" @click="store.fetchVerification"><ReloadOutlined />刷新</a-button>
+        </template>
+        <a-spin v-if="verifying" />
+
+        <template v-else-if="verification">
+          <a-alert
+            v-if="verification.total_issues === 0"
+            type="success"
+            message="数据校验通过，未发现异常"
+            show-icon
+            style="margin-bottom: 16px"
+          />
+
+          <a-table
+            v-else
+            :data-source="verification.issues"
+            :pagination="{ pageSize: 20 }"
+            size="small"
+            row-key="patient_id"
+          >
+            <a-table-column title="问题类型" data-index="type" :width="140">
+              <template #default="{ record }">
+                <a-tag v-if="record.type === 'no_audio_has_result'" color="red">无录音有结果</a-tag>
+                <a-tag v-else-if="record.type === 'missing_files'" color="orange">文件缺失</a-tag>
+                <a-tag v-else color="blue">重复病历</a-tag>
+              </template>
+            </a-table-column>
+            <a-table-column title="日期" data-index="date" :width="100">
+              <template #default="{ record }">{{ formatDate(record.date) }}</template>
+            </a-table-column>
+            <a-table-column title="病历号" data-index="record_id" :width="120" />
+            <a-table-column title="详情" data-index="detail" />
+            <a-table-column title="操作" :width="100">
+              <template #default="{ record }">
+                <a-popconfirm
+                  v-if="record.type === 'no_audio_has_result'"
+                  title="确定删除此结果？"
+                  @confirm="handleDeleteIssue(record)"
+                >
+                  <a-button size="small" type="link" danger>删除结果</a-button>
+                </a-popconfirm>
+                <a-button v-else size="small" type="link" @click="handleIgnoreIssue(record)">忽略</a-button>
+              </template>
+            </a-table-column>
+          </a-table>
+        </template>
+      </a-card>
+    </template>
+
+    <!-- 数据浏览模式 -->
+    <template v-else>
     <a-row :gutter="16">
       <!-- 左侧：患者列表 -->
       <a-col :span="8">
@@ -242,6 +324,7 @@
         </template>
       </a-col>
     </a-row>
+    </template>
   </div>
 </template>
 
@@ -252,19 +335,27 @@ import {
   CheckCircleOutlined,
   WarningOutlined,
   EditOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons-vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '@/stores'
 import { resultApi } from '@/api/client'
 import { message } from 'ant-design-vue'
-import type { PatientGroup, BUltraResult } from '@/types'
+import type { PatientGroup, BUltraResult, DataIssue } from '@/types'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
 
 const store = useAppStore()
-const { dataStatus, loadingTree, patientGroups, selectedExam } = storeToRefs(store)
+const { dataStatus, loadingTree, batches, selectedBatch, patientGroups, selectedExam, verification, verifying } = storeToRefs(store)
 
 const searchText = ref('')
+const viewMode = ref('browse')
 const expandedGroups = ref<Record<string, boolean>>({})
+
+watch(viewMode, (mode) => {
+  if (mode === 'verify' && !verification.value) {
+    store.fetchVerification()
+  }
+})
 
 // Edit modal state
 const editModalOpen = ref(false)
@@ -282,6 +373,7 @@ const editForm = reactive({
 })
 
 onMounted(() => {
+  store.fetchBatches()
   store.fetchPatients()
   store.fetchDataStatus()
 })
@@ -344,6 +436,20 @@ async function handleSaveResult() {
   } finally {
     editSaving.value = false
   }
+}
+
+async function handleDeleteIssue(issue: DataIssue) {
+  try {
+    // Delete the BUltraResult for this patient
+    await store.deletePatient(issue.patient_id)
+    message.success('已删除')
+  } catch {
+    message.error('删除失败')
+  }
+}
+
+function handleIgnoreIssue(issue: DataIssue) {
+  message.info('已忽略')
 }
 </script>
 
