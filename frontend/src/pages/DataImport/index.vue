@@ -1,347 +1,239 @@
 <template>
   <div class="page-container">
-    <div class="page-header" style="display: flex; justify-content: space-between; align-items: center">
-      <h2>数据管理</h2>
-      <a-radio-group :value="viewMode" @change="viewMode = $event.target.value; onViewModeChange()" button-style="solid" size="small">
-        <a-radio-button value="browse">数据浏览</a-radio-button>
-        <a-radio-button value="verify">
-          数据核对
-          <a-badge v-if="verification && verification.total_issues > 0" :count="verification.total_issues" size="small" />
-        </a-radio-button>
-      </a-radio-group>
-    </div>
-
-    <!-- 批次选择器 -->
-    <a-card style="margin-bottom: 16px" v-if="viewMode === 'browse'">
-      <a-space>
-        <span style="color: #666">批次：</span>
-        <a-checkable-tag :checked="selectedBatch === null" @click="selectBatch(null)" style="cursor: pointer">
-          全部
-        </a-checkable-tag>
-        <a-checkable-tag
-          v-for="batch in batches"
-          :key="batch.date"
-          :checked="selectedBatch === batch.date"
-          @click="selectBatch(batch.date)"
-          style="cursor: pointer"
-        >
-          {{ formatDate(batch.date) }} ({{ batch.patient_count }}人)
-        </a-checkable-tag>
-      </a-space>
-    </a-card>
-
-    <!-- 统计卡片 -->
-    <a-row :gutter="16" style="margin-bottom: 16px" v-if="viewMode === 'browse'">
-      <a-col :span="6">
-        <a-card><a-statistic title="日期数" :value="dataStatus ? dataStatus.total_dates : 0" /></a-card>
-      </a-col>
-      <a-col :span="6">
-        <a-card><a-statistic title="总病历数" :value="dataStatus ? dataStatus.total_patients : 0" /></a-card>
-      </a-col>
-      <a-col :span="6">
-        <a-card>
-          <a-statistic title="已匹配" :value="dataStatus ? dataStatus.matched_count : 0" :value-style="{ color: '#52c41a' }" />
-        </a-card>
-      </a-col>
-      <a-col :span="6">
-        <a-card>
-          <a-statistic title="仅录音" :value="dataStatus ? dataStatus.audio_only_count : 0" :value-style="{ color: '#faad14' }" />
-        </a-card>
-      </a-col>
-    </a-row>
-
-    <!-- 数据核对视图 -->
-    <template v-if="viewMode === 'verify'">
-      <a-card>
-        <template #extra>
-          <a-button size="small" @click="reloadVerify"><ReloadOutlined />刷新</a-button>
-        </template>
-        <a-spin v-if="verifying" />
-
-        <template v-else-if="verification">
-          <a-alert
-            v-if="verification.total_issues === 0"
-            type="success"
-            message="数据校验通过，未发现异常"
-            show-icon
-            style="margin-bottom: 16px"
-          />
-
-          <a-table
-            v-else
-            :data-source="verification.issues"
-            :pagination="{ pageSize: 20 }"
-            size="small"
-            row-key="patient_id"
-          >
-            <a-table-column title="问题类型" data-index="type" :width="140">
-              <template #default="{ record }">
-                <a-tag v-if="record.type === 'no_audio_has_result'" color="red">无录音有结果</a-tag>
-                <a-tag v-else-if="record.type === 'missing_files'" color="orange">文件缺失</a-tag>
-                <a-tag v-else color="blue">重复病历</a-tag>
-              </template>
-            </a-table-column>
-            <a-table-column title="日期" data-index="date" :width="100">
-              <template #default="{ record }">{{ formatDate(record.date) }}</template>
-            </a-table-column>
-            <a-table-column title="病历号" data-index="record_id" :width="120" />
-            <a-table-column title="详情" data-index="detail" />
-            <a-table-column title="操作" :width="100">
-              <template #default="{ record }">
-                <a-popconfirm
-                  v-if="record.type === 'no_audio_has_result'"
-                  title="确定删除此结果？"
-                  @confirm="handleDeleteIssue(record)"
-                >
-                  <a-button size="small" type="link" danger>删除结果</a-button>
-                </a-popconfirm>
-                <a-button v-else size="small" type="link" @click="handleIgnoreIssue(record)">忽略</a-button>
-              </template>
-            </a-table-column>
-          </a-table>
-        </template>
-      </a-card>
-    </template>
-
-    <!-- 数据浏览视图 -->
-    <template v-else>
-      <a-row :gutter="16">
-        <!-- 左侧：患者列表 -->
-        <a-col :span="8">
-          <a-card title="患者列表" :body-style="{ padding: 0 }">
-            <template #extra>
-              <a-input-search
-                :value="searchText"
-                @update:value="searchText = $event"
-                placeholder="搜索病历号"
-                style="width: 180px"
-                allow-clear
-              />
-            </template>
-
-            <a-spin v-if="loadingTree" style="padding: 40px; text-align: center; display: block" />
-
-            <div v-else class="patient-list">
-              <div
-                v-for="group in filteredGroups"
-                :key="group.record_id"
-                class="patient-group"
-              >
-                <div
-                  class="patient-header"
-                  :class="{ expanded: expandedGroups[group.record_id] }"
-                  @click="toggleGroup(group.record_id)"
-                >
-                  <CaretRightOutlined class="expand-icon" :class="{ rotated: expandedGroups[group.record_id] }" />
-                  <span class="record-id">{{ group.record_id }}</span>
-                  <a-tag color="blue" size="small">{{ group.examinations.length }}次</a-tag>
-                </div>
-
-                <div v-if="expandedGroups[group.record_id]" class="exam-list">
-                  <div
-                    v-for="exam in group.examinations"
-                    :key="exam.id"
-                    class="exam-item"
-                    :class="{ active: selectedExam && selectedExam.id === exam.id }"
-                    @click="selectExam(group, exam)"
-                  >
-                    <span class="exam-date">{{ formatDate(exam.date) }}</span>
-                    <CheckCircleOutlined v-if="exam.result" class="status-icon matched" />
-                    <WarningOutlined v-else class="status-icon audio-only" />
-                  </div>
-                </div>
-              </div>
-
-              <a-empty v-if="filteredGroups.length === 0" description="无匹配患者" style="padding: 40px" />
-            </div>
-          </a-card>
-        </a-col>
-
-        <!-- 右侧：详情面板 -->
+    <!-- 筛选区域 -->
+    <a-card style="margin-bottom: 16px">
+      <a-row :gutter="16" align="middle">
         <a-col :span="16">
-          <a-card v-if="!selectedExam" description="从左侧选择一个检查查看详情" style="min-height: 500px">
-            <a-empty description="未选择" />
-          </a-card>
-
-          <template v-else>
-            <!-- 患者信息头 -->
-            <a-card style="margin-bottom: 16px">
-              <a-row :gutter="16" align="middle">
-                <a-col>
-                  <span style="font-size: 18px; font-weight: bold">{{ selectedExam.record_id }}</span>
-                </a-col>
-                <a-col>
-                  <a-tag color="blue">{{ formatDate(selectedExam.date) }}</a-tag>
-                </a-col>
-                <a-col>
-                  <a-tag>录音</a-tag>
-                </a-col>
-                <a-col v-if="selectedExam.result">
-                  <a-tag color="green">已匹配结果</a-tag>
-                </a-col>
-                <a-col v-else>
-                  <a-tag color="orange">仅录音</a-tag>
-                </a-col>
-              </a-row>
-            </a-card>
-
-            <!-- 录音播放器 -->
-            <a-card title="录音播放" style="margin-bottom: 16px">
-              <AudioPlayer :segs="selectedExam.segs" />
-            </a-card>
-
-            <!-- B 超结果 -->
-            <a-card>
-              <template #title>
-                <span>B 超检查结果 — {{ formatDate(selectedExam.date) }}</span>
-              </template>
-              <template #extra>
-                <a-button v-if="selectedExam.result" size="small" type="link" @click="openEditModal">
-                  <EditOutlined /> 编辑
-                </a-button>
-              </template>
-
-              <a-empty v-if="!selectedExam.result" description="暂无结果数据（可上传 xlsx 导入）" />
-
-              <a-descriptions v-else :column="2" bordered size="small" :label-style="{ fontWeight: 500 }">
-                <a-descriptions-item label="右侧卵泡">
-                  <span v-if="selectedExam.result.right_follicle_total > 0">
-                    {{ selectedExam.result.right_follicle_total }} 个
-                    <span style="color: #666; font-size: 12px">
-                      ({{ formatFollicles(selectedExam.result.right_follicles) }})
-                    </span>
-                  </span>
-                  <span v-else style="color: #999">-</span>
-                </a-descriptions-item>
-
-                <a-descriptions-item label="左侧卵泡">
-                  <span v-if="selectedExam.result.left_follicle_total > 0">
-                    {{ selectedExam.result.left_follicle_total }} 个
-                    <span style="color: #666; font-size: 12px">
-                      ({{ formatFollicles(selectedExam.result.left_follicles) }})
-                    </span>
-                  </span>
-                  <span v-else style="color: #999">-</span>
-                </a-descriptions-item>
-
-                <a-descriptions-item label="内膜厚度">
-                  {{ selectedExam.result.endometrium_thickness != null ? selectedExam.result.endometrium_thickness + ' mm' : '-' }}
-                </a-descriptions-item>
-
-                <a-descriptions-item label="内膜类型">
-                  {{ selectedExam.result.endometrium_type || '-' }}
-                </a-descriptions-item>
-
-                <a-descriptions-item label="右卵巢">
-                  <span v-if="selectedExam.result.right_ovary_length && selectedExam.result.right_ovary_width">
-                    {{ selectedExam.result.right_ovary_length }} × {{ selectedExam.result.right_ovary_width }} mm
-                  </span>
-                  <span v-else>-</span>
-                </a-descriptions-item>
-
-                <a-descriptions-item label="左卵巢">
-                  <span v-if="selectedExam.result.left_ovary_length && selectedExam.result.left_ovary_width">
-                    {{ selectedExam.result.left_ovary_length }} × {{ selectedExam.result.left_ovary_width }} mm
-                  </span>
-                  <span v-else>-</span>
-                </a-descriptions-item>
-
-                <a-descriptions-item label="备注" :span="2">
-                  {{ selectedExam.result.remark || '-' }}
-                </a-descriptions-item>
-              </a-descriptions>
-            </a-card>
-
-            <!-- 编辑结果对话框 -->
-            <a-modal
-              v-model:open="editModalOpen"
-              title="编辑 B 超结果"
-              :confirm-loading="editSaving"
-              ok-text="保存"
-              cancel-text="取消"
-              @ok="handleSaveResult"
-              width="600px"
+          <a-space>
+            <span style="color: #666">批次：</span>
+            <a-checkable-tag :checked="selectedBatch === null" @click="store.selectBatch(null)" style="cursor: pointer">
+              全部
+            </a-checkable-tag>
+            <a-checkable-tag
+              v-for="batch in batches"
+              :key="batch.date"
+              :checked="selectedBatch === batch.date"
+              @click="store.selectBatch(batch.date)"
+              style="cursor: pointer"
             >
-              <a-form :model="editForm" layout="vertical" size="small">
-                <a-row :gutter="16">
-                  <a-col :span="12">
-                    <a-form-item label="右侧卵泡总数">
-                      <a-input-number v-model:value="editForm.right_follicle_total" :min="0" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :span="12">
-                    <a-form-item label="左侧卵泡总数">
-                      <a-input-number v-model:value="editForm.left_follicle_total" :min="0" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                </a-row>
-                <a-row :gutter="16">
-                  <a-col :span="12">
-                    <a-form-item label="内膜厚度 (mm)">
-                      <a-input-number v-model:value="editForm.endometrium_thickness" :min="0" :step="0.1" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :span="12">
-                    <a-form-item label="内膜类型">
-                      <a-select v-model:value="editForm.endometrium_type" allow-clear placeholder="选择类型">
-                        <a-select-option value="A">A</a-select-option>
-                        <a-select-option value="B">B</a-select-option>
-                        <a-select-option value="C">C</a-select-option>
-                        <a-select-option value="A-B">A-B</a-select-option>
-                        <a-select-option value="B-C">B-C</a-select-option>
-                      </a-select>
-                    </a-form-item>
-                  </a-col>
-                </a-row>
-                <a-row :gutter="16">
-                  <a-col :span="12">
-                    <a-form-item label="右卵巢长 (mm)">
-                      <a-input-number v-model:value="editForm.right_ovary_length" :min="0" :step="0.0" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :span="12">
-                    <a-form-item label="右卵巢宽 (mm)">
-                      <a-input-number v-model:value="editForm.right_ovary_width" :min="0" :step="0.1" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                </a-row>
-                <a-row :gutter="16">
-                  <a-col :span="12">
-                    <a-form-item label="左卵巢长 (mm)">
-                      <a-input-number v-model:value="editForm.left_ovary_length" :min="0" :step="0.1" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :span="12">
-                    <a-form-item label="左卵巢宽 (mm)">
-                      <a-input-number v-model:value="editForm.left_ovary_width" :min="0" :step="0.1" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                </a-row>
-                <a-form-item label="备注">
-                  <a-textarea v-model:value="editForm.remark" :rows="2" placeholder="备注信息" />
-                </a-form-item>
-              </a-form>
-            </a-modal>
-          </template>
+              {{ formatDate(batch.date) }} ({{ batch.patient_count }}人)
+            </a-checkable-tag>
+          </a-space>
+        </a-col>
+        <a-col :span="8">
+          <a-input-search
+            v-model:value="searchText"
+            placeholder="搜索病历号"
+            allow-clear
+            @search="onSearch"
+          />
         </a-col>
       </a-row>
-    </template>
+    </a-card>
+
+    <!-- 数据表格 -->
+    <a-card>
+      <a-spin v-if="loadingTree" />
+      <a-table
+        v-else
+        :data-source="filteredRecords"
+        :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
+        size="small"
+        row-key="id"
+        @row-click="onRowClick"
+      >
+        <a-table-column title="病历号" data-index="record_id" :width="120" />
+        <a-table-column title="日期" data-index="date" :width="120">
+          <template #default="{ record }">{{ formatDate(record.date) }}</template>
+        </a-table-column>
+        <a-table-column title="录音" :width="100">
+          <template #default="{ record }">
+            <a-tag v-if="record.has_audio" color="green">有 ({{ record.segs.length }}段)</a-tag>
+            <a-tag v-else color="red">无</a-tag>
+          </template>
+        </a-table-column>
+        <a-table-column title="结果" :width="100">
+          <template #default="{ record }">
+            <a-tag v-if="record.has_result" color="green">有</a-tag>
+            <a-tag v-else color="default">无</a-tag>
+          </template>
+        </a-table-column>
+        <a-table-column title="操作" :width="100">
+          <template #default="{ record }">
+            <a-button size="small" type="link" danger @click.stop="handleDelete(record)">删除</a-button>
+          </template>
+        </a-table-column>
+      </a-table>
+    </a-card>
+
+    <!-- 详情抽屉 -->
+    <a-drawer
+      :open="drawerOpen"
+      title="检查详情"
+      placement="right"
+      width="600px"
+      @close="onDrawerClose"
+    >
+      <template v-if="selectedRecord">
+        <!-- 基本信息 -->
+        <a-descriptions :column="2" bordered size="small" style="margin-bottom: 16px">
+          <a-descriptions-item label="病历号">{{ selectedRecord.record_id }}</a-descriptions-item>
+          <a-descriptions-item label="日期">{{ formatDate(selectedRecord.date) }}</a-descriptions-item>
+          <a-descriptions-item label="录音分段">{{ selectedRecord.segs.length }} 段</a-descriptions-item>
+          <a-descriptions-item label="B超结果">
+            <a-tag v-if="selectedRecord.result" color="green">有</a-tag>
+            <a-tag v-else color="default">无</a-tag>
+          </a-descriptions-item>
+        </a-descriptions>
+
+        <!-- 录音播放器 -->
+        <a-collapse v-if="selectedRecord.segs.length > 0" style="margin-bottom: 16px">
+          <a-collapse-panel key="audio" header="录音播放">
+            <AudioPlayer :segs="selectedRecord.segs" />
+          </a-collapse-panel>
+        </a-collapse>
+
+        <!-- B 超结果详情 -->
+        <template v-if="selectedRecord.result">
+          <a-divider>B 超检查结果</a-divider>
+          <a-descriptions :column="2" bordered size="small">
+            <a-descriptions-item label="右侧卵泡">
+              <span v-if="selectedRecord.result.right_follicle_total > 0">
+                {{ selectedRecord.result.right_follicle_total }} 个
+                <span style="color: #666; font-size: 12px">
+                  ({{ formatFollicles(selectedRecord.result.right_follicles) }})
+                </span>
+              </span>
+              <span v-else style="color: #999">-</span>
+            </a-descriptions-item>
+
+            <a-descriptions-item label="左侧卵泡">
+              <span v-if="selectedRecord.result.left_follicle_total > 0">
+                {{ selectedRecord.result.left_follicle_total }} 个
+                <span style="color: #666; font-size: 12px">
+                  ({{ formatFollicles(selectedRecord.result.left_follicles) }})
+                </span>
+              </span>
+              <span v-else style="color: #999">-</span>
+            </a-descriptions-item>
+
+            <a-descriptions-item label="内膜厚度">
+              {{ selectedRecord.result.endometrium_thickness != null ? selectedRecord.result.endometrium_thickness + ' mm' : '-' }}
+            </a-descriptions-item>
+
+            <a-descriptions-item label="内膜类型">
+              {{ selectedRecord.result.endometrium_type || '-' }}
+            </a-descriptions-item>
+
+            <a-descriptions-item label="右卵巢">
+              <span v-if="selectedRecord.result.right_ovary_length && selectedRecord.result.right_ovary_width">
+                {{ selectedRecord.result.right_ovay_length }} × {{ selectedRecord.result.right_ovary_width }} mm
+              </span>
+              <span v-else>-</span>
+            </a-descriptions-item>
+
+            <a-descriptions-item label="左卵巢">
+              <span v-if="selectedRecord.result.left_ovary_length && selectedRecord.result.left_ovary_width">
+                {{ selectedRecord.result.left_ovary_length }} × {{ selectedRecord.result.left_ovary_width }} mm
+              </span>
+              <span v-else>-</span>
+            </a-descriptions-item>
+
+            <a-descriptions-item label="备注" :span="2">
+              {{ selectedRecord.result.remark || '-' }}
+            </a-descriptions-item>
+          </a-descriptions>
+
+          <!-- 编辑按钮 -->
+          <a-button type="primary" style="margin-top: 16px" @click="openEditModal">
+            <EditOutlined /> 编辑结果
+          </a-button>
+        </template>
+      </template>
+    </a-drawer>
+
+    <!-- 编辑结果对话框 -->
+    <a-modal
+      v-model:open="editModalOpen"
+      title="编辑 B 超结果"
+      :confirm-loading="editSaving"
+      ok-text="保存"
+      cancel-text="取消"
+      @ok="handleSaveResult"
+      width="600px"
+    >
+      <a-form :model="editForm" layout="vertical" size="small">
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="右侧卵泡总数">
+              <a-input-number v-model:value="editForm.right_follicle_total" :min="0" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="左侧卵泡总数">
+              <a-input-number v-model:value="editForm.left_follicle_total" :min="0" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="内膜厚度 (mm)">
+              <a-input-number v-model:value="editForm.endometrium_thickness" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="内膜类型">
+              <a-select v-model:value="editForm.endometrium_type" allow-clear placeholder="选择类型">
+                <a-select-option value="A">A</a-select-option>
+                <a-select-option value="B">B</a-select-option>
+                <a-select-option value="C">C</a-select-option>
+                <a-select-option value="A-B">A-B</a-select-option>
+                <a-select-option value="B-C">B-C</a-select-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="右卵巢长 (mm)">
+              <a-input-number v-model:value="editForm.right_ovary_length" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="右卵巢宽 (mm)">
+              <a-input-number v-model:value="editForm.right_ovary_width" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="左卵巢长 (mm)">
+              <a-input-number v-model:value="editForm.left_ovary_length" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="左卵巢宽 (mm)">
+              <a-input-number v-model:value="editForm.left_ovary_width" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-form-item label="备注">
+          <a-textarea v-model:value="editForm.remark" :rows="2" placeholder="备注信息" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
 <script lang="ts">
 import { defineComponent, ref, reactive, computed, onMounted, watch } from 'vue'
+import { message } from 'ant-design-vue'
 import {
-  CaretRightOutlined,
-  CheckCircleOutlined,
-  WarningOutlined,
   EditOutlined,
-  ReloadOutlined,
 } from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores'
 import { resultApi } from '@/api/client'
-import { message } from 'ant-design-vue'
-import type { PatientGroup, BUltraResult, DataIssue, PatientExamination } from '@/types'
+import type { PatientExamination, BUltraResult } from '@/types'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
 
 export default defineComponent({
@@ -350,13 +242,23 @@ export default defineComponent({
   setup() {
     const store = useAppStore()
     const searchText = ref('')
-    const viewMode = ref('browse')
-    const expandedGroups = ref<Record<string, boolean>>({})
-    const selectedExam = ref<PatientExamination | null>(null)
-    const verification = ref(null)
-    const verifying = ref(false)
 
-    // Edit modal
+    // Drawer state from store
+    const drawerOpen = computed(() => store.drawerOpen)
+    const selectedRecord = computed(() => store.selectedRecord)
+    const batches = computed(() => store.batches)
+    const selectedBatch = computed(() => store.selectedBatch)
+    const loadingTree = computed(() => store.loadingTree)
+    const allRecords = computed(() => store.records)
+
+    // Filtered records
+    const filteredRecords = computed(() => {
+      if (!searchText.value.trim()) return allRecords.value
+      const q = searchText.value.trim().toLowerCase()
+      return allRecords.value.filter((r) => r.record_id.toLowerCase().includes(q))
+    })
+
+    // Edit modal state
     const editModalOpen = ref(false)
     const editSaving = ref(false)
     const editForm = reactive({
@@ -373,25 +275,7 @@ export default defineComponent({
 
     onMounted(() => {
       store.fetchBatches()
-      store.fetchPatients().then(() => {
-        // Auto-expand first patient
-        if (store.patientGroups.length > 0) {
-          expandedGroups.value[store.patientGroups[0].record_id] = true
-        }
-      })
-      store.fetchDataStatus()
-    })
-
-    const batches = computed(() => store.batches)
-    const selectedBatch = computed(() => store.selectedBatch)
-    const patientGroups = computed(() => store.patientGroups)
-    const dataStatus = computed(() => store.dataStatus)
-    const loadingTree = computed(() => store.loadingTree)
-
-    const filteredGroups = computed(() => {
-      if (!searchText.value.trim()) return patientGroups.value
-      const q = searchText.value.trim().toLowerCase()
-      return patientGroups.value.filter((g) => g.record_id.toLowerCase().includes(q))
+      store.fetchRecords()
     })
 
     function formatDate(d: string): string {
@@ -404,35 +288,21 @@ export default defineComponent({
       return follicles.map((f) => `${f.size}×${f.count}`).join('  ')
     }
 
-    function selectBatch(date: string | null) {
-      store.selectBatch(date)
+    function onSearch() {
+      // Computed property handles filtering
     }
 
-    function onViewModeChange() {
-      if (viewMode.value === 'verify' && !verification.value) {
-        reloadVerify()
-      }
+    function onRowClick(record: PatientExamination) {
+      store.openDrawer(record)
     }
 
-    function reloadVerify() {
-      verifying.value = true
-      store.fetchVerification().then(() => {
-        verification.value = store.verification
-        verifying.value = false
-      })
-    }
-
-    function toggleGroup(recordId: string) {
-      expandedGroups.value[recordId] = !expandedGroups.value[recordId]
-    }
-
-    function selectExam(group: PatientGroup, exam: PatientExamination) {
-      selectedExam.value = exam
+    function onDrawerClose() {
+      store.closeDrawer()
     }
 
     function openEditModal() {
-      if (!selectedExam.value?.result) return
-      const r = selectedExam.value.result
+      if (!selectedRecord.value?.result) return
+      const r = selectedRecord.value.result
       editForm.right_follicle_total = r.right_follicle_total
       editForm.left_follicle_total = r.left_follicle_total
       editForm.endometrium_thickness = r.endometrium_thickness
@@ -446,13 +316,14 @@ export default defineComponent({
     }
 
     async function handleSaveResult() {
-      if (!selectedExam.value?.result) return
+      if (!selectedRecord.value?.result) return
       editSaving.value = true
       try {
-        await resultApi.update(selectedExam.value.result.id, editForm)
+        await resultApi.update(selectedRecord.value.result.id, editForm)
         message.success('保存成功')
         editModalOpen.value = false
-        const r = selectedExam.value.result
+        // Update local data
+        const r = selectedRecord.value.result
         r.right_follicle_total = editForm.right_follicle_total
         r.left_follicle_total = editForm.left_follicle_total
         r.endometrium_thickness = editForm.endometrium_thickness
@@ -469,88 +340,25 @@ export default defineComponent({
       }
     }
 
-    async function handleDeleteIssue(issue: DataIssue) {
+    async function handleDelete(record: PatientExamination) {
+      if (!confirm(`确定删除病历号 ${record.record_id} (${formatDate(record.date)}) 的记录？`)) return
       try {
-        await store.deletePatient(issue.patient_id)
+        await store.deletePatient(record.id)
         message.success('已删除')
-        verification.value = store.verification
       } catch {
         message.error('删除失败')
       }
     }
 
-    function handleIgnoreIssue(issue: DataIssue) {
-      message.info('已忽略')
-    }
-
     return {
-      searchText, viewMode, expandedGroups, selectedExam, verification, verifying,
-      editModalOpen, editForm, editSaving,
-      batches, selectedBatch, patientGroups, dataStatus, loadingTree, filteredGroups,
-      formatDate, formatFollicles, selectBatch, onViewModeChange, reloadVerify,
-      toggleGroup, selectExam, openEditModal, handleSaveResult, handleDeleteIssue, handleIgnoreIssue,
+      store, searchText, drawerOpen, selectedRecord,
+      batches, selectedBatch, loadingTree, allRecords, filteredRecords,
+      editModalOpen, editSaving, editForm,
+      formatDate, formatFollicles, onSearch, onRowClick, onDrawerClose, openEditModal, handleSaveResult, handleDelete,
     }
   }
 })
 </script>
 
 <style scoped>
-.patient-list {
-  max-height: 600px;
-  overflow-y: auto;
-}
-.patient-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  cursor: pointer;
-  border-bottom: 1px solid #f5f5f5;
-  transition: background 0.15s;
-}
-.patient-header:hover {
-  background: #fafafa;
-}
-.expand-icon {
-  transition: transform 0.2s;
-  font-size: 12px;
-}
-.expand-icon.rotated {
-  transform: rotate(90deg);
-}
-.record-id {
-  font-weight: 600;
-  font-size: 14px;
-  flex: 1;
-}
-.exam-list {
-  background: #fafafa;
-  border-bottom: 1px solid #e8e8e8;
-}
-.exam-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px 8px 40px;
-  cursor: pointer;
-  font-size: 13px;
-  border-left: 3px solid transparent;
-  transition: background 0.15s;
-}
-.exam-item:hover {
-  background: #e6f4ff;
-}
-.exam-item.active {
-  background: #e6f4ff;
-  border-left-color: #1677ff;
-}
-.exam-date {
-  font-weight: 500;
-}
-.status-icon.matched {
-  color: #52c41a;
-}
-.status-icon.audio-only {
-  color: #faad14;
-}
 </style>

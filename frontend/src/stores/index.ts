@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { DateFolder, ModelConfig, DataStatus, PatientGroup, PatientExamination, Batch, VerificationResult } from '../types'
+import type { DateFolder, ModelConfig, DataStatus, PatientExamination, Batch, VerificationResult } from '../types'
 import { audioApi, modelApi } from '../api/client'
 
 export const useAppStore = defineStore('app', () => {
@@ -13,18 +13,22 @@ export const useAppStore = defineStore('app', () => {
   const batches = ref<Batch[]>([])
   const selectedBatch = ref<string | null>(null)
 
-  // 患者列表（新）
-  const patientGroups = ref<PatientGroup[]>([])
-  const selectedGroup = ref<PatientGroup | null>(null)
-  const selectedExam = ref<PatientExamination | null>(null)
+  // 平铺记录列表（用于表格）
+  const records = ref<PatientExamination[]>([])
+
+  // 当前选中的记录（用于抽屉详情）
+  const selectedRecord = ref<PatientExamination | null>(null)
+
+  // 抽屉开关
+  const drawerOpen = ref(false)
 
   // 模型配置
   const asrModels = ref<ModelConfig[]>([])
   const llmModels = ref<ModelConfig[]>([])
 
-  // 当前选中的病历号
-  const selectedRecord = ref<string | null>(null)
-  const selectedDate = ref<string | null>(null)
+  // 数据核对
+  const verification = ref<VerificationResult | null>(null)
+  const verifying = ref(false)
 
   // Actions
   async function fetchAudioTree() {
@@ -46,11 +50,13 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function fetchPatients() {
+  async function fetchRecords() {
     loadingTree.value = true
     try {
-      const data = await audioApi.getPatients(selectedBatch.value ?? undefined)
-      patientGroups.value = data as PatientGroup[]
+      const data = await audioApi.getRecords(selectedBatch.value ?? undefined)
+      records.value = data as PatientExamination[]
+    } catch (e) {
+      console.error('fetchRecords error:', e)
     } finally {
       loadingTree.value = false
     }
@@ -67,10 +73,6 @@ export const useAppStore = defineStore('app', () => {
     await fetchDataStatus()
   }
 
-  // 数据核对
-  const verification = ref<VerificationResult | null>(null)
-  const verifying = ref(false)
-
   async function fetchVerification() {
     verifying.value = true
     try {
@@ -83,24 +85,28 @@ export const useAppStore = defineStore('app', () => {
 
   async function deletePatient(patientId: number) {
     await audioApi.deletePatient(patientId)
-    // Refresh both lists
-    await fetchPatients()
-    await fetchVerification()
-  }
-
-  function selectBatch(date: string | null) {
-    selectedBatch.value = date
-    fetchPatients()
+    await fetchRecords()
     if (verification.value) {
       fetchVerification()
     }
   }
 
-  function selectExam(group: PatientGroup, exam: PatientExamination) {
-    selectedGroup.value = group
-    selectedExam.value = exam
-    selectedRecord.value = exam.record_id
-    selectedDate.value = exam.date
+  function selectBatch(date: string | null) {
+    selectedBatch.value = date
+    fetchRecords()
+    if (verification.value) {
+      fetchVerification()
+    }
+  }
+
+  function openDrawer(record: PatientExamination) {
+    selectedRecord.value = record
+    drawerOpen.value = true
+  }
+
+  function closeDrawer() {
+    drawerOpen.value = false
+    selectedRecord.value = null
   }
 
   async function fetchModels() {
@@ -112,18 +118,12 @@ export const useAppStore = defineStore('app', () => {
     llmModels.value = llm as ModelConfig[]
   }
 
-  function setSelectedRecord(recordId: string | null, date: string | null) {
-    selectedRecord.value = recordId
-    selectedDate.value = date
-  }
-
   return {
     audioTree, dataStatus, loadingTree,
     batches, selectedBatch,
-    patientGroups, selectedGroup, selectedExam,
-    verification, verifying,
+    records, selectedRecord, drawerOpen,
     asrModels, llmModels,
-    selectedRecord, selectedDate,
-    fetchAudioTree, fetchBatches, fetchPatients, fetchDataStatus, scanRecordings, fetchModels, fetchVerification, deletePatient, setSelectedRecord, selectBatch, selectExam,
+    verification, verifying,
+    fetchAudioTree, fetchBatches, fetchRecords, fetchDataStatus, scanRecordings, fetchModels, fetchVerification, deletePatient, selectBatch, openDrawer, closeDrawer,
   }
 })

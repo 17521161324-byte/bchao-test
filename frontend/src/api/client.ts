@@ -26,6 +26,7 @@ export const audioApi = {
   getTree: () => client.get('/audio/tree'),
   getBatches: () => client.get('/audio/batches'),
   getPatients: (date?: string) => client.get('/audio/patients', { params: date ? { date } : {} }),
+  getRecords: (date?: string) => client.get('/audio/records', { params: date ? { date } : {} }),
   getStatus: () => client.get('/audio/status'),
   verify: (date?: string) => client.get('/audio/verify', { params: date ? { date } : {} }),
   deletePatient: (patientId: number) => client.delete(`/audio/patient/${patientId}`),

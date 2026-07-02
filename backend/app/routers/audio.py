@@ -302,6 +302,67 @@ async def verify_data(date: str = None, db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/records")
+async def get_records_flat(date: str = None, db: AsyncSession = Depends(get_db)):
+    """获取平铺的患者检查记录列表（用于表格展示）"""
+    result = await db.execute(
+        select(DateFolder)
+        .options(
+            selectinload(DateFolder.patients)
+            .selectinload(PatientRecord.segs),
+            selectinload(DateFolder.patients)
+            .selectinload(PatientRecord.result),
+        )
+        .order_by(DateFolder.date.desc())
+    )
+    folders = result.unique().scalars().all()
+
+    if date:
+        folders = [f for f in folders if f.date == date]
+
+    records = []
+    for folder in folders:
+        for p in folder.patients:
+            records.append({
+                "id": p.id,
+                "record_id": p.record_id,
+                "date": folder.date,
+                "date_folder_id": folder.id,
+                "timestamp_folder": p.timestamp_folder,
+                "has_audio": len(p.segs) > 0,
+                "has_result": p.result is not None,
+                "segs": [
+                    {
+                        "id": s.id,
+                        "seg_index": s.seg_index,
+                        "filename": s.filename,
+                        "duration": s.duration,
+                        "file_path": s.file_path,
+                        "file_size": s.file_size,
+                    }
+                    for s in sorted(p.segs, key=lambda x: x.seg_index)
+                ],
+                "result": None,
+            })
+            if p.result:
+                records[-1]["result"] = {
+                    "id": p.result.id,
+                    "right_follicles": p.result.right_follicles,
+                    "left_follicles": p.result.left_follicles,
+                    "right_follicle_total": p.result.right_follicle_total,
+                    "left_follicle_total": p.result.left_follicle_total,
+                    "endometrium_thickness": p.result.endometrium_thickness,
+                    "endometrium_type": p.result.endometrium_type,
+                    "right_ovary_length": p.result.right_ovary_length,
+                    "right_ovary_width": p.result.right_ovary_width,
+                    "left_ovary_length": p.result.left_ovary_length,
+                    "left_ovary_width": p.result.left_ovary_width,
+                    "remark": p.result.remark,
+                }
+
+    return records
+
+
 @router.delete("/patient/{patient_id}")
 async def delete_patient(patient_id: int, db: AsyncSession = Depends(get_db)):
     """删除患者记录（包括关联的 B超结果）"""
@@ -322,6 +383,9 @@ async def delete_patient(patient_id: int, db: AsyncSession = Depends(get_db)):
     await db.delete(patient)
     await db.commit()
     return {"message": "已删除", "id": patient_id}
+
+
+@router.get("/patients")
 async def get_patients_list(date: str = None, db: AsyncSession = Depends(get_db)):
     """获取患者检查列表（按病历号分组，含录音和结果），支持按日期筛选"""
     result = await db.execute(

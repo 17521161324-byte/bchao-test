@@ -1,0 +1,49 @@
+{
+  "name": "feishu-table",
+  "version": "1.0.0",
+  "description": "Feishu Bitable task management integration",
+  "tools": [
+    {
+      "name": "feishu_list_tasks",
+      "description": "List all tasks from Feishu bitable. Requires app_token and table_id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app_token": { "type": "string", "description": "Feishu bitable app token (from URL)" },
+          "table_id": { "type": "string", "description": "Table ID (from URL)" }
+        },
+        "required": ["app_token", "table_id"]
+      }
+    },
+    {
+      "name": "feishu_create_task",
+      "description": "Create a new task record in Feishu bitable.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app_token": { "type": "string" },
+          "table_id": { "type": "string" },
+          "fields": {
+            "type": "object",
+            "description": "Field values. Keys: 任务名, 模块, 优先级, 状态, 前后端, 预估工时, 验收标准"
+          }
+        },
+        "required": ["app_token", "table_id", "fields"]
+      }
+    },
+    {
+      "name": "feishu_update_task",
+      "description": "Update an existing task record.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app_token": { "type": "string" },
+          "table_id": { "type": "string" },
+          "record_id": { "type": "string", "description": "Record ID to update" },
+          "fields": { "type": "object", "description": "Fields to update" }
+        },
+        "required": ["app_token", "table_id", "record_id", "fields"]
+      }
+    }
+  ]
+}
