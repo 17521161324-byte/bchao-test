@@ -160,21 +160,37 @@
       ok-text="保存"
       cancel-text="取消"
       @ok="handleSaveResult"
-      width="600px"
+      width="700px"
     >
       <a-form :model="editForm" layout="vertical" size="small">
-        <a-row :gutter="16">
-          <a-col :span="12">
-            <a-form-item label="右侧卵泡总数">
-              <a-input-number v-model:value="editForm.right_follicle_total" :min="0" style="width: 100%" />
-            </a-form-item>
-          </a-col>
-          <a-col :span="12">
-            <a-form-item label="左侧卵泡总数">
-              <a-input-number v-model:value="editForm.left_follicle_total" :min="0" style="width: 100%" />
-            </a-form-item>
-          </a-col>
-        </a-row>
+        <!-- 右侧卵泡 -->
+        <a-form-item>
+          <template #label>
+            <span>右侧卵泡 <a-tag color="blue">合计: {{ rightFollicleTotal }} 个</a-tag></span>
+          </template>
+          <div v-for="(item, idx) in editForm.right_follicles" :key="'r'+idx" style="display: flex; gap: 8px; margin-bottom: 8px">
+            <a-input-number v-model:value="item.size" :min="0" :step="0.1" style="width: 120px" placeholder="直径mm" />
+            <span style="line-height: 32px">×</span>
+            <a-input-number v-model:value="item.count" :min="1" :step="1" style="width: 80px" placeholder="数量" />
+            <a-button size="small" danger @click="editForm.right_follicles.splice(idx, 1)">删除</a-button>
+          </div>
+          <a-button size="small" type="dashed" @click="editForm.right_follicles.push({size: 0, count: 1})">+ 添加卵泡</a-button>
+        </a-form-item>
+
+        <!-- 左侧卵泡 -->
+        <a-form-item>
+          <template #label>
+            <span>左侧卵泡 <a-tag color="blue">合计: {{ leftFollicleTotal }} 个</a-tag></span>
+          </template>
+          <div v-for="(item, idx) in editForm.left_follicles" :key="'l'+idx" style="display: flex; gap: 8px; margin-bottom: 8px">
+            <a-input-number v-model:value="item.size" :min="0" :step="0.1" style="width: 120px" placeholder="直径mm" />
+            <span style="line-height: 32px">×</span>
+            <a-input-number v-model:value="item.count" :min="1" :step="1" style="width: 80px" placeholder="数量" />
+            <a-button size="small" danger @click="editForm.left_follicles.splice(idx, 1)">删除</a-button>
+          </div>
+          <a-button size="small" type="dashed" @click="editForm.left_follicles.push({size: 0, count: 1})">+ 添加卵泡</a-button>
+        </a-form-item>
+
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item label="内膜厚度 (mm)">
@@ -222,11 +238,40 @@
         </a-form-item>
       </a-form>
     </a-modal>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="右卵巢长 (mm)">
+              <a-input-number v-model:value="editForm.right_ovary_length" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="右卵巢宽 (mm)">
+              <a-input-number v-model:value="editForm.right_ovary_width" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="左卵巢长 (mm)">
+              <a-input-number v-model:value="editForm.left_ovary_length" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="左卵巢宽 (mm)">
+              <a-input-number v-model:value="editForm.left_ovary_width" :min="0" :step="0.1" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-form-item label="备注">
+          <a-textarea v-model:value="editForm.remark" :rows="2" placeholder="备注信息" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, reactive, computed, onMounted, watch } from 'vue'
+import { defineComponent, ref, reactive, computed, onMounted } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   EditOutlined,
@@ -262,8 +307,8 @@ export default defineComponent({
     const editModalOpen = ref(false)
     const editSaving = ref(false)
     const editForm = reactive({
-      right_follicle_total: 0,
-      left_follicle_total: 0,
+      right_follicles: [] as {size: number, count: number}[],
+      left_follicles: [] as {size: number, count: number}[],
       endometrium_thickness: null as number | null,
       endometrium_type: null as string | null,
       right_ovary_length: null as number | null,
@@ -272,6 +317,13 @@ export default defineComponent({
       left_ovary_width: null as number | null,
       remark: '',
     })
+
+    const rightFollicleTotal = computed(() =>
+      editForm.right_follicles.reduce((sum, f) => sum + f.count, 0)
+    )
+    const leftFollicleTotal = computed(() =>
+      editForm.left_follicles.reduce((sum, f) => sum + f.count, 0)
+    )
 
     onMounted(() => {
       store.fetchBatches()
@@ -306,8 +358,8 @@ export default defineComponent({
     function openEditModal() {
       if (!selectedRecord.value?.result) return
       const r = selectedRecord.value.result
-      editForm.right_follicle_total = r.right_follicle_total
-      editForm.left_follicle_total = r.left_follicle_total
+      editForm.right_follicles = r.right_follicles ? [...r.right_follicles] : []
+      editForm.left_follicles = r.left_follicles ? [...r.left_follicles] : []
       editForm.endometrium_thickness = r.endometrium_thickness
       editForm.endometrium_type = r.endometrium_type
       editForm.right_ovary_length = r.right_ovary_length
@@ -322,11 +374,35 @@ export default defineComponent({
       if (!selectedRecord.value?.result) return
       editSaving.value = true
       try {
-        await resultApi.update(selectedRecord.value.result.id, editForm)
+        const payload = {
+          right_follicles: editForm.right_follicles,
+          left_follicles: editForm.left_follicles,
+          endometrium_thickness: editForm.endometrium_thickness,
+          endometrium_type: editForm.endometrium_type,
+          right_ovary_length: editForm.right_ovary_length,
+          right_ovary_width: editForm.right_ovary_width,
+          left_ovary_length: editForm.left_ovary_length,
+          left_ovary_width: editForm.left_ovary_width,
+          remark: editForm.remark,
+        }
+        await resultApi.update(selectedRecord.value.result.id, payload)
         message.success('保存成功')
         editModalOpen.value = false
-        // Update local data
-        const r = selectedRecord.value.result
+        // Refresh data
+        await store.fetchRecords()
+        // Update selectedRecord.result with fresh data
+        if (selectedRecord.value) {
+          const fresh = store.records.find(r => r.id === selectedRecord.value!.id)
+          if (fresh && fresh.result) {
+            selectedRecord.value.result = fresh.result
+          }
+        }
+      } catch {
+        message.error('保存失败')
+      } finally {
+        editSaving.value = false
+      }
+    }
         r.right_follicle_total = editForm.right_follicle_total
         r.left_follicle_total = editForm.left_follicle_total
         r.endometrium_thickness = editForm.endometrium_thickness
@@ -356,7 +432,7 @@ export default defineComponent({
     return {
       store, searchText, drawerOpen, selectedRecord,
       batches, selectedBatch, loadingTree, allRecords, filteredRecords,
-      editModalOpen, editSaving, editForm,
+      editModalOpen, editSaving, editForm, rightFollicleTotal, leftFollicleTotal,
       formatDate, formatFollicles, onSearch, onRowClick, onDrawerClose, openEditModal, handleSaveResult, handleDelete,
     }
   }
