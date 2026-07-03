@@ -79,17 +79,8 @@
 
           <!-- ASR 结果 -->
           <div v-if="asrResult">
-            <a-collapse :bordered="false">
-              <a-collapse-panel key="asr-result" :show-arrow="false">
-                <template #header>
-                  <span style="color: #666; font-size: 12px">转写结果 ({{ asrResult.segments.length }} 段)</span>
-                </template>
-                <div v-for="seg in asrResult.segments" :key="seg.seg_index" style="margin-bottom: 8px; padding: 8px; background: #fafafa; border-radius: 4px">
-                  <a-tag size="small" color="blue" style="margin-bottom: 4px">第 {{ seg.seg_index }} 段</a-tag>
-                  <div style="font-size: 13px; color: #333">{{ seg.text || '(空)' }}</div>
-                </div>
-              </a-collapse-panel>
-            </a-collapse>
+            <div style="font-size: 13px; color: #666; margin-bottom: 4px">转写结果：</div>
+            <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 14px; line-height: 1.8; white-space: pre-wrap">{{ asrResult.full_transcript || '(无内容)' }}</div>
           </div>
           <a-empty v-else description="暂无转写结果" :image="null" style="padding: 20px 0" />
         </a-card>
