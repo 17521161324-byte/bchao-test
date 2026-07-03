@@ -31,9 +31,12 @@
         <a-table-column title="成功" data-index="success_count" :width="80" />
         <a-table-column title="失败" data-index="failure_count" :width="80" />
         <a-table-column title="创建时间" data-index="created_at" :width="180" />
-        <a-table-column title="操作" :width="150">
+        <a-table-column title="操作" :width="180">
           <template #default="{ record }">
             <router-link :to="`/experiments/${record.id}`"><a-button size="small" type="link">详情</a-button></router-link>
+            <a-popconfirm title="确定删除此实验？" @confirm="handleDelete(record.id)">
+              <a-button size="small" type="link" danger>删除</a-button>
+            </a-popconfirm>
           </template>
         </a-table-column>
       </a-table>
@@ -207,6 +210,16 @@ export default defineComponent({
       }
     }
 
+    async function handleDelete(id: number) {
+      try {
+        await experimentApi.delete(id)
+        message.success('删除成功')
+        fetchExperiments()
+      } catch {
+        message.error('删除失败')
+      }
+    }
+
     function statusColor(status: string): string {
       const map: Record<string, string> = { pending: 'default', running: 'blue', paused: 'orange', partial: 'purple', completed: 'green', cancelled: 'red' }
       return map[status] || 'default'
@@ -220,7 +233,7 @@ export default defineComponent({
 
     return {
       loading, experiments, availableDates, createModalOpen, creating, loadingPatients, availablePatients,
-      createForm, showCreateModal, togglePatient, handleCreate, statusColor,
+      createForm, showCreateModal, togglePatient, handleCreate, handleDelete, statusColor,
       PlusOutlined,
     }
   },

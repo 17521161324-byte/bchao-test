@@ -54,6 +54,17 @@ async def create_experiment(
     return batch
 
 
+@router.delete("/{batch_id}")
+async def delete_experiment(batch_id: int, db: AsyncSession = Depends(get_db)):
+    """删除实验批次"""
+    batch = await db.get(ExperimentBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="实验不存在")
+    await db.delete(batch)
+    await db.commit()
+    return {"message": "已删除", "id": batch_id}
+
+
 @router.get("/{batch_id}", response_model=ExperimentDetailOut)
 async def get_experiment(
     batch_id: int,

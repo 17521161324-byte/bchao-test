@@ -9,6 +9,7 @@ export const experimentApi = {
   list: () => client.get('/experiments'),
   get: (id: number) => client.get(`/experiments/${id}`),
   create: (data: any) => client.post('/experiments', data),
+  delete: (id: number) => client.delete(`/experiments/${id}`),
   addCombination: (id: number, data: any) => client.post(`/experiments/${id}/combinations`, data),
   updateCombination: (batchId: number, comboId: number, data: any) => client.put(`/experiments/${batchId}/combinations/${comboId}`, data),
   deleteCombination: (batchId: number, comboId: number) => client.delete(`/experiments/${batchId}/combinations/${comboId}`),
