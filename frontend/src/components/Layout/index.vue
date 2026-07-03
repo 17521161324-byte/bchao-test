@@ -27,7 +27,9 @@
       </a-layout-header>
 
       <a-layout-content style="background: #f5f5f5; min-height: calc(100vh - 64px)">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <component :is="Component" :key="route.path" />
+        </router-view>
       </a-layout-content>
     </a-layout>
   </a-layout>

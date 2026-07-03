@@ -13,13 +13,13 @@
 
       <a-form-item label="选择日期批次">
         <a-select v-model:value="form.selected_dates" mode="multiple" placeholder="选择日期批次">
-          <a-select-option v-for="d in availableDates" :key="d" :value="t">{{ d }}</a-select-option>
+          <a-select-option v-for="d in availableDates" :key="d" :value="d">{{ d }}</a-select-option>
         </a-select>
       </a-form-item>
 
       <a-form-item label="选择患者">
         <a-select v-model:value="form.selected_patient_ids" mode="multiple" placeholder="留空表示所有患者">
-          <a-select-option v-for="p in availablePatients" :key="p" :value="t">{{ p }}</a-select-option>
+          <a-select-option v-for="p in availablePatients" :key="p" :value="p">{{ p }}</a-select-option>
         </a-select>
       </a-form-item>
 
@@ -31,7 +31,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { experimentApi } from '@/api/experiment'
