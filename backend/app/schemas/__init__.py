@@ -93,7 +93,7 @@ class ModelConfigCreate(BaseModel):
 
 
 class ModelConfigUpdate(BaseModel):
-    model_config = {"protected_namespaces": ()}
+    model_config = {"protected_namespaces": (), "from_attributes": True}
     name: Optional[str] = None
     model_type: Optional[str] = None
     provider: Optional[str] = None
@@ -113,6 +113,8 @@ class ModelConfigOut(BaseModel):
     model_type: str
     provider: str
     endpoint: str
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
     model_name: Optional[str] = None
     params: dict
     is_default: bool

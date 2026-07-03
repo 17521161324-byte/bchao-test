@@ -121,24 +121,35 @@ async def test_model_connection(
 
 @router.post("/init-defaults")
 async def init_default_models(db: AsyncSession = Depends(get_db)):
-    """初始化默认模型配置（本地 FunASR）"""
+    """初始化默认模型配置"""
     from app.config import settings
 
     # 检查是否已存在
-    result = await db.execute(
-        select(ModelConfig).where(ModelConfig.provider == "local")
-    )
-    if result.scalar_one_or_none():
-        return {"message": "默认模型已存在"}
+    result = await db.execute(select(ModelConfig).where(ModelConfig.provider == "local"))
+    if not result.scalar_one_or_none():
+        default_asr = ModelConfig(
+            name="本地 FunASR",
+            model_type="asr",
+            provider="local",
+            endpoint=settings.LOCAL_ASR_URL,
+            is_default=True,
+            status="active",
+        )
+        db.add(default_asr)
 
-    default_asr = ModelConfig(
-        name="本地 FunASR",
-        model_type="asr",
-        provider="local",
-        endpoint=settings.LOCAL_ASR_URL,
-        is_default=True,
-        status="active",
-    )
-    db.add(default_asr)
+    # 检查 MiMo
+    result = await db.execute(select(ModelConfig).where(ModelConfig.provider == "mimo"))
+    if not result.scalar_one_or_none():
+        mimo_asr = ModelConfig(
+            name="MiMo-V2.5-ASR",
+            model_type="asr",
+            provider="mimo",
+            endpoint="https://api.xiaomimimo.com/v1/chat/completions",
+            api_key="",
+            is_default=False,
+            status="active",
+        )
+        db.add(mimo_asr)
+
     await db.commit()
-    return {"message": "初始化成功", "model": default_asr.name}
+    return {"message": "初始化成功"}

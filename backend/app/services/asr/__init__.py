@@ -82,6 +82,9 @@ def create_asr(provider: str, **kwargs) -> BaseASR:
     match provider:
         case "local":
             return LocalFunASR(url=kwargs.get("endpoint", settings.LOCAL_ASR_URL))
+        case "mimo":
+            from app.services.asr.mimo_asr import MiMoASR
+            return MiMoASR(api_key=kwargs.get("api_key"), endpoint=kwargs.get("endpoint"))
         case "iflytek":
             return IFlytekASR(
                 api_key=kwargs.get("api_key", ""),
