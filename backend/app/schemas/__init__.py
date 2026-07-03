@@ -5,6 +5,14 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
+from app.schemas.experiment import (
+    ExperimentBatchCreate, ExperimentBatchOut,
+    ExperimentCombinationCreate, ExperimentCombinationUpdate, ExperimentCombinationOut,
+    ExperimentTaskSummary, ExperimentMetrics,
+    ExperimentDetailOut, ExperimentListResponse,
+    ExperimentPatientScopeUpdate, ExperimentControlAction,
+)
+
 
 # ========== 录音相关 ==========
 
@@ -106,7 +114,6 @@ class ModelConfigOut(BaseModel):
     model_type: str
     provider: str
     endpoint: str
-    api_key: Optional[str] = None
     model_name: Optional[str] = None
     params: dict
     is_default: bool

@@ -8,6 +8,8 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
 
+from app.models.experiment import ExperimentBatch, ExperimentCombination, ExperimentTask
+
 
 class DateFolder(Base):
     """日期文件夹"""

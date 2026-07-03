@@ -10,6 +10,7 @@
         <a-menu-item key="/test"><PlayCircleOutlined />单条测试</a-menu-item>
         <a-menu-item key="/eval"><AuditOutlined />结果评估</a-menu-item>
         <a-menu-item key="/history"><HistoryOutlined />测试历史</a-menu-item>
+        <a-menu-item key="/experiments"><ExperimentOutlined />批量实验</a-menu-item>
       </a-menu>
     </a-layout-sider>
 
@@ -38,7 +39,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores'
 import {
   FolderOutlined, SettingOutlined, PlayCircleOutlined,
-  AuditOutlined, HistoryOutlined, CloudServerOutlined,
+  AuditOutlined, HistoryOutlined, ExperimentOutlined, CloudServerOutlined,
 } from '@ant-design/icons-vue'
 
 const route = useRoute()
