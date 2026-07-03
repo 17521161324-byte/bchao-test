@@ -238,7 +238,8 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, reactive, computed, onMounted } from 'vue'
+import { defineComponent, ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   EditOutlined,
@@ -253,6 +254,7 @@ export default defineComponent({
   components: { AudioPlayer },
   setup() {
     const store = useAppStore()
+    const route = useRoute()
     const searchText = ref('')
 
     // Drawer state from store
@@ -268,6 +270,18 @@ export default defineComponent({
       if (!searchText.value.trim()) return allRecords.value
       const q = searchText.value.trim().toLowerCase()
       return allRecords.value.filter((r) => r.record_id.toLowerCase().includes(q))
+    })
+
+    onMounted(() => {
+      store.fetchBatches()
+      store.fetchRecords()
+    })
+
+    // Refresh data when navigating back to this page
+    watch(() => route.path, (newPath) => {
+      if (newPath === '/data') {
+        store.fetchRecords()
+      }
     })
 
     // Edit modal state
@@ -294,6 +308,11 @@ export default defineComponent({
 
     onMounted(() => {
       store.fetchBatches()
+      store.fetchRecords()
+    })
+
+    onActivated(() => {
+      // Refresh data when navigating back to this page
       store.fetchRecords()
     })
 
