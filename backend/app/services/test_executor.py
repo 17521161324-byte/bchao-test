@@ -37,6 +37,42 @@ class TestExecutor:
             "duration_seconds": 0,
         }
 
+        # === ASR 阶段 ===
+        asr_result = await self.execute_asr(
+            segs, asr_provider, asr_config,
+            hotwords=asr_config.get("hotwords"),
+            progress_callback=progress_callback,
+        )
+        result["asr_results"] = asr_result["asr_results"]
+        result["full_transcript"] = asr_result["full_transcript"]
+
+        # === LLM 阶段 ===
+        if llm_provider and llm_config:
+            try:
+                llm_result = await self.execute_llm(
+                    transcript=result["full_transcript"],
+                    llm_provider=llm_provider,
+                    llm_config=llm_config,
+                    prompt_template=prompt_template,
+                    progress_callback=progress_callback,
+                )
+                result["llm_raw_output"] = llm_result["llm_raw_output"]
+                result["structured_result"] = llm_result["structured_result"]
+                result["summary_text"] = llm_result["summary_text"]
+            except Exception as e:
+                logger.error(f"LLM 处理失败: {e}")
+                result["llm_raw_output"] = f"[LLM 处理失败: {str(e)}]"
+
+        result["duration_seconds"] = round(time.time() - start_time, 2)
+
+        if progress_callback:
+            await progress_callback({
+                "stage": "complete",
+                "message": "测试完成",
+            })
+
+        return result
+
     async def execute_asr(
         self,
         segs: list[dict],
@@ -108,13 +144,3 @@ class TestExecutor:
             "structured_result": response.structured,
             "summary_text": response.summary,
         }
-
-        result["duration_seconds"] = round(time.time() - start_time, 2)
-
-        if progress_callback:
-            await progress_callback({
-                "stage": "complete",
-                "message": "测试完成",
-            })
-
-        return result
