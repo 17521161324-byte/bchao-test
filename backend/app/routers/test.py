@@ -40,6 +40,7 @@ async def start_test(
     asr_model_id: int = Query(...),
     llm_model_id: int | None = Query(None),
     prompt_version: str = Query("v1.0"),
+    prompt_template: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -137,6 +138,7 @@ async def start_test(
                     asr_config=asr_config,
                     llm_provider=llm_model.provider if llm_model else None,
                     llm_config=llm_config,
+                    prompt_template=prompt_template,
                     progress_callback=on_progress,
                 )
 
