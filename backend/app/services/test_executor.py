@@ -37,23 +37,31 @@ class TestExecutor:
             "duration_seconds": 0,
         }
 
-        # === ASR 阶段 ===
+    async def execute_asr(
+        self,
+        segs: list[dict],
+        asr_provider: str,
+        asr_config: dict,
+        hotwords: list[str] | None = None,
+        progress_callback=None,
+    ) -> dict:
+        """执行 ASR 转写阶段"""
         asr = create_asr(asr_provider, **asr_config)
+        asr_results = []
         total = len(segs)
 
-        for i, seg in enumerate(segs):
+        for index, seg in enumerate(segs):
             if progress_callback:
                 await progress_callback({
                     "stage": "asr",
-                    "current": i + 1,
+                    "current": index + 1,
                     "total": total,
                     "seg_text": None,
-                    "message": f"正在转写第 {i+1}/{total} 段...",
+                    "message": f"正在转写第 {index+1}/{total} 段...",
                 })
-
             try:
-                text = await asr.transcribe(seg["file_path"])
-                result["asr_results"].append({
+                text = await asr.transcribe(seg["file_path"], hotwords=hotwords)
+                asr_results.append({
                     "seg_index": seg["seg_index"],
                     "text": text,
                     "duration": seg.get("duration", 0),
@@ -61,40 +69,45 @@ class TestExecutor:
                 if progress_callback:
                     await progress_callback({
                         "stage": "asr",
-                        "current": i + 1,
+                        "current": index + 1,
                         "total": total,
                         "seg_text": text,
                     })
             except Exception as e:
                 logger.error(f"ASR 转写失败 seg {seg['seg_index']}: {e}")
-                result["asr_results"].append({
+                asr_results.append({
                     "seg_index": seg["seg_index"],
                     "text": f"[转写失败: {str(e)}]",
                     "duration": 0,
                 })
 
-        # 拼接全文
-        result["full_transcript"] = "\n".join(
-            r["text"] for r in result["asr_results"]
-        )
+        return {
+            "asr_results": asr_results,
+            "full_transcript": "\n".join(item["text"] for item in asr_results),
+        }
 
-        # === LLM 阶段 ===
-        if llm_provider and llm_config:
-            if progress_callback:
-                await progress_callback({
-                    "stage": "llm",
-                    "message": "LLM 正在提取结构化信息...",
-                })
-            try:
-                llm = create_llm(llm_provider, **llm_config)
-                prompt = prompt_template.format(transcript=result["full_transcript"])
-                llm_resp = await llm.extract(result["full_transcript"], prompt)
-                result["llm_raw_output"] = llm_resp.raw_text
-                result["structured_result"] = llm_resp.structured
-                result["summary_text"] = llm_resp.summary
-            except Exception as e:
-                logger.error(f"LLM 处理失败: {e}")
-                result["llm_raw_output"] = f"[LLM 处理失败: {str(e)}]"
+    async def execute_llm(
+        self,
+        transcript: str,
+        llm_provider: str,
+        llm_config: dict,
+        prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
+        progress_callback=None,
+    ) -> dict:
+        """执行 LLM 后处理阶段"""
+        if progress_callback:
+            await progress_callback({
+                "stage": "llm",
+                "message": "LLM 正在提取结构化信息...",
+            })
+        llm = create_llm(llm_provider, **llm_config)
+        prompt = prompt_template.format(transcript=transcript)
+        response = await llm.extract(transcript, prompt)
+        return {
+            "llm_raw_output": response.raw_text,
+            "structured_result": response.structured,
+            "summary_text": response.summary,
+        }
 
         result["duration_seconds"] = round(time.time() - start_time, 2)
 
