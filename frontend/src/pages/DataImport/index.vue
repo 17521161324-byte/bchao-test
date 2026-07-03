@@ -435,34 +435,42 @@ export default defineComponent({
       params.set('record_id', selectedRecord.value.record_id)
       params.set('asr_model_id', String(testParams.asr_model_id))
       if (testParams.llm_model_id) params.set('llm_model_id', String(testParams.llm_model_id))
-      params.set('prompt_template', testParams.prompt_template)
 
-      const url = `/api/test/start?${params.toString()}`
-      const es = new EventSource(url)
-      const results: any[] = []
+      const es = new EventSource(`/api/test/start?${params.toString()}`)
 
-      es.onmessage = (event) => {
-        const data = JSON.parse(event.data)
-        if (data.event === 'progress') {
-          if (data.data?.stage === 'asr') {
-            testProgress.value = { current: data.data.current, total: data.data.total }
-          } else if (data.data?.stage === 'llm') {
+      es.addEventListener('progress', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (data.stage === 'asr') {
+            testProgress.value = { current: data.current, total: data.total }
+          } else if (data.stage === 'llm') {
             testProgress.value = { current: 0, total: 0 }
           }
-        } else if (data.event === 'complete') {
-          testResult.value = data.data
-          testRunning.value = false
-          es.close()
-        } else if (data.event === 'error') {
-          message.error(data.data?.message || '测试失败')
+        } catch {}
+      })
+
+      es.addEventListener('complete', async (e: MessageEvent) => {
+        try {
+          testResult.value = JSON.parse(e.data)
+        } catch {}
+        testRunning.value = false
+        es.close()
+      })
+
+      es.addEventListener('error', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data)
+          message.error(data.message || '测试失败')
+        } catch { message.error('测试失败') }
+        testRunning.value = false
+        es.close()
+      })
+
+      es.onerror = () => {
+        if (testRunning.value) {
           testRunning.value = false
           es.close()
         }
-      }
-
-      es.onerror = () => {
-        testRunning.value = false
-        es.close()
       }
     }
 
