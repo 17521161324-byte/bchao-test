@@ -106,7 +106,6 @@ class ModelConfigOut(BaseModel):
     model_type: str
     provider: str
     endpoint: str
-    api_key: Optional[str] = None
     model_name: Optional[str] = None
     params: dict
     is_default: bool
