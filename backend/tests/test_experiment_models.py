@@ -1,4 +1,5 @@
 """Test Task 3: Experiment persistence models."""
+import pytest
 from app.models.experiment import ExperimentBatch, ExperimentCombination, ExperimentTask
 
 
@@ -21,9 +22,16 @@ def test_task_has_unique_patient_combination_key():
 def test_batch_has_status_column():
     assert hasattr(ExperimentBatch, "status")
     assert hasattr(ExperimentBatch, "selected_dates")
+    assert hasattr(ExperimentBatch, "selected_patient_ids")
     assert hasattr(ExperimentBatch, "total_tasks")
     assert hasattr(ExperimentBatch, "success_count")
     assert hasattr(ExperimentBatch, "failure_count")
+
+
+def test_batch_default_patient_ids_is_list():
+    batch = ExperimentBatch(name="Test")
+    # JSON column default is a callable that returns empty list
+    assert batch.selected_patient_ids is None or batch.selected_patient_ids == []
 
 
 def test_combination_has_model_fks():

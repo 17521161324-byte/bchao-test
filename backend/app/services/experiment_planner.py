@@ -2,6 +2,10 @@
 实验任务规划与失效规则
 """
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
+
+from app.models.experiment import ExperimentTask, ExperimentCombination, TaskStatus, TaskStage
 
 
 def changed_stage(before: dict, after: dict) -> Optional[str]:
@@ -15,12 +19,12 @@ def changed_stage(before: dict, after: dict) -> Optional[str]:
     """
     # Normalize hotwords for comparison (order-independent)
     before_hotwords = sorted(before.get("hotwords", []))
-    after_hotsorted = sorted(after.get("hotwords", []))
+    after_hotwords = sorted(after.get("hotwords", []))
 
     # ASR-related changes
     if before.get("asr_model_id") != after.get("asr_model_id"):
         return "asr"
-    if before_hotwords != after_hotsorted:
+    if before_hotwords != after_hotwords:
         return "asr"
 
     # LLM-related changes
@@ -38,3 +42,106 @@ def task_pairs(patient_ids: list[int], combination_ids: list[int]) -> list[tuple
     顺序：患者优先（patient-major）。
     """
     return [(pid, cid) for pid in patient_ids for cid in combination_ids]
+
+
+async def plan_tasks(
+    db: AsyncSession,
+    batch_id: int,
+    combination_id: int,
+    patient_ids: list[int],
+) -> list[ExperimentTask]:
+    """
+    Idempotent upsert: create missing tasks for the given patients × combination.
+    Returns all tasks for this combination.
+    """
+    # Get existing tasks for this combination
+    result = await db.execute(
+        select(ExperimentTask).where(
+            ExperimentTask.combination_id == combination_id,
+            ExperimentTask.patient_id.in_(patient_ids),
+        )
+    )
+    existing = {t.patient_id: t for t in result.scalars().all()}
+
+    # Create missing tasks
+    for pid in patient_ids:
+        if pid not in existing:
+            task = ExperimentTask(
+                batch_id=batch_id,
+                combination_id=combination_id,
+                patient_id=pid,
+                stage=TaskStage.ASR.value,
+                status=TaskStatus.PENDING.value,
+            )
+            db.add(task)
+
+    await db.commit()
+
+    # Return all tasks
+    result = await db.execute(
+        select(ExperimentTask).where(
+            ExperimentTask.combination_id == combination_id,
+            ExperimentTask.patient_id.in_(patient_ids),
+        )
+    )
+    return result.scalars().all()
+
+
+async def invalidate_tasks(
+    db: AsyncSession,
+    combination_id: int,
+    stage: str,
+) -> int:
+    """
+    Invalidate tasks based on stage change.
+
+    Args:
+        stage: "asr" or "llm"
+
+    Returns:
+        Number of tasks affected
+    """
+    result = await db.execute(
+        select(ExperimentTask).where(
+            ExperimentTask.combination_id == combination_id,
+        )
+    )
+    tasks = result.scalars().all()
+
+    for task in tasks:
+        if stage == "asr":
+            # Clear ASR + LLM + evaluation, reset to pending
+            task.asr_results = []
+            task.full_transcript = ""
+            task.asr_duration = 0.0
+            task.llm_raw_output = None
+            task.structured_result = None
+            task.summary_text = None
+            task.llm_duration = 0.0
+            task.evaluation = None
+            task.accuracy = None
+            task.total_duration = 0.0
+            task.error_type = None
+            task.error_message = None
+            task.stage = TaskStage.ASR.value
+            task.status = TaskStatus.PENDING.value
+            task.started_at = None
+            task.completed_at = None
+        elif stage == "llm":
+            # Keep ASR transcript, clear LLM + evaluation, reset to pending
+            task.llm_raw_output = None
+            task.structured_result = None
+            task.summary_text = None
+            task.llm_duration = 0.0
+            task.evaluation = None
+            task.accuracy = None
+            task.total_duration = 0.0
+            task.error_type = None
+            task.error_message = None
+            task.stage = TaskStage.LLM.value
+            task.status = TaskStatus.PENDING.value
+            task.started_at = None
+            task.completed_at = None
+
+    await db.commit()
+    return len(tasks)

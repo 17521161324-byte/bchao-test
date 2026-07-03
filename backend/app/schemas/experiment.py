@@ -10,6 +10,15 @@ class ExperimentBatchCreate(BaseModel):
     name: str
     description: str = ""
     selected_dates: list[str] = Field(default_factory=list)
+    selected_patient_ids: list[str] = Field(default_factory=list)
+
+
+class ExperimentPatientScopeUpdate(BaseModel):
+    selected_patient_ids: list[str] = Field(default_factory=list)
+
+
+class ExperimentControlAction(BaseModel):
+    pass  # No body needed for start/pause/resume/cancel/retry
 
 
 class ExperimentBatchOut(BaseModel):
@@ -96,7 +105,7 @@ class ExperimentMetrics(BaseModel):
 
 
 class ExperimentDetailOut(ExperimentBatchOut):
-    combinations: list[ExperimentCombinationOut] = []
+    combinations: list[ExperimentCombinationOut] = Field(default_factory=list)
 
 
 class ExperimentListResponse(BaseModel):

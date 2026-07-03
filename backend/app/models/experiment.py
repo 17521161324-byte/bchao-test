@@ -42,6 +42,7 @@ class ExperimentBatch(Base):
     name = Column(String(200), nullable=False)
     description = Column(Text, default="")
     selected_dates = Column(JSON, default=list)  # ["20260622", "20260623"]
+    selected_patient_ids = Column(JSON, default=list)  # ["A017750", "A017503"]
     status = Column(String(20), default=BatchStatus.PENDING.value)
     total_tasks = Column(Integer, default=0)
     success_count = Column(Integer, default=0)
