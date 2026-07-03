@@ -93,7 +93,7 @@ export default defineComponent({
     async function fetchBatches() {
       try {
         const res = await audioApi.getBatches()
-        availableDates.value = res.data
+        availableDates.value = res
       } catch (e) {
         console.error('Failed to fetch batches:', e)
       }
@@ -109,7 +109,7 @@ export default defineComponent({
         const patients: any[] = []
         for (const date of dates) {
           const res = await audioApi.getRecords(date)
-          for (const exam of res.data) {
+          for (const exam of res) {
             patients.push({
               record_id: exam.record_id,
               date_folder_str: date,
@@ -167,7 +167,7 @@ export default defineComponent({
       try {
         const res = await experimentApi.create(form)
         message.success('创建成功')
-        router.push(`/experiments/${res.data.id}`)
+        router.push(`/experiments/${res.id}`)
       } catch {
         message.error('创建失败')
       } finally {
