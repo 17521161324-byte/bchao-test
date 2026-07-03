@@ -145,6 +145,34 @@ async def update_combination(
     return combo
 
 
+@router.delete("/{batch_id}/combinations/{combo_id}")
+async def delete_combination(
+    batch_id: int,
+    combo_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除实验组合"""
+    from sqlalchemy import delete as sa_delete
+    result = await db.execute(
+        select(ExperimentCombination).where(
+            ExperimentCombination.id == combo_id,
+            ExperimentCombination.batch_id == batch_id,
+        )
+    )
+    combo = result.scalar_one_or_none()
+    if not combo:
+        raise HTTPException(status_code=404, detail="组合不存在")
+
+    # Delete associated tasks
+    await db.execute(
+        sa_delete(ExperimentTask).where(ExperimentTask.combination_id == combo_id)
+    )
+    # Delete combination
+    await db.delete(combo)
+    await db.commit()
+    return {"message": "已删除", "id": combo_id}
+
+
 @router.put("/{batch_id}/patients", response_model=ExperimentBatchOut)
 async def update_patient_scope(
     batch_id: int,
@@ -208,6 +236,40 @@ async def start_experiment(
     await db.commit()
 
     return {"batch_id": batch_id, "total_tasks": total_tasks, "status": "running"}
+
+
+@router.get("/{batch_id}/progress")
+async def get_progress(batch_id: int, db: AsyncSession = Depends(get_db)):
+    """获取实验实时进度"""
+    from sqlalchemy import func
+    batch = await db.get(ExperimentBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="实验不存在")
+
+    # Count by status
+    result = await db.execute(
+        select(ExperimentTask.status, func.count(ExperimentTask.id))
+        .where(ExperimentTask.batch_id == batch_id)
+        .group_by(ExperimentTask.status)
+    )
+    counts = {row[0]: row[1] for row in result.all()}
+
+    total = batch.total_tasks or 1
+    success = counts.get("success", 0)
+    failed = counts.get("failed", 0)
+    running = counts.get("running", 0)
+    pending = counts.get("pending", 0)
+
+    return {
+        "batch_id": batch_id,
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "running": running,
+        "pending": pending,
+        "percent": round((success + failed) / total * 100, 1) if total > 0 else 0,
+        "status": batch.status,
+    }
 
 
 @router.post("/{batch_id}/pause", response_model=ExperimentBatchOut)
