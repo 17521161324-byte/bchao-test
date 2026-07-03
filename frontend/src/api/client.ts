@@ -60,6 +60,10 @@ export const modelApi = {
 
 // ========== 测试执行 ==========
 export const testApi = {
+  runAsr: (recordId: string, asrModelId: number) =>
+    client.get('/test/asr', { params: { record_id: recordId, asr_model_id: asrModelId } }),
+  runLlm: (data: { transcript: string; llm_model_id?: number; prompt_template: string }) =>
+    client.post('/test/llm', data),
   getHistory: (params?: any) => client.get('/test/history', { params }),
   getResult: (testId: number) => client.get(`/test/${testId}`),
   updateEval: (testId: number, data: any) => client.put(`/test/${testId}/evaluate`, data),

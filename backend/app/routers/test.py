@@ -34,6 +34,67 @@ async def list_test_history(
     return result.scalars().all()
 
 
+@router.get("/asr")
+async def run_asr_only(
+    record_id: str = Query(...),
+    asr_model_id: int = Query(...),
+    hotwords: str = Query(""),
+    db: AsyncSession = Depends(get_db),
+):
+    """单独运行 ASR（同步返回，不经过 SSE）"""
+    from app.services.asr import create_asr
+
+    result = await db.execute(
+        select(PatientRecord)
+        .options(selectinload(PatientRecord.segs))
+        .where(PatientRecord.record_id == record_id)
+        .order_by(PatientRecord.id)
+    )
+    patients = result.scalars().all()
+    if not patients:
+        raise HTTPException(status_code=404, detail=f"病历号 {record_id} 不存在")
+    patient = patients[0]
+
+    if not patient.segs:
+        raise HTTPException(status_code=400, message="该病历无录音文件")
+
+    asr_result = await db.execute(
+        select(ModelConfig).where(ModelConfig.id == asr_model_id)
+    )
+    asr_model = asr_result.scalar_one_or_none()
+    if not asr_model:
+        raise HTTPException(status_code=404, detail="ASR 模型不存在")
+
+    segs = [
+        {"seg_index": s.seg_index, "file_path": s.file_path, "duration": s.duration}
+        for s in sorted(patient.segs, key=lambda x: x.seg_index)
+    ]
+
+    asr = create_asr(asr_model.provider, **{
+        "endpoint": asr_model.endpoint,
+        "api_key": asr_model.api_key,
+        "api_secret": asr_model.api_secret,
+        "model_name": asr_model.model_name,
+    })
+
+    asr_results = []
+    for seg in segs:
+        text = await asr.transcribe(seg["file_path"], hotwords=hotwords.split(",") if hotwords else None)
+        asr_results.append({
+            "seg_index": seg["seg_index"],
+            "text": text,
+            "duration": seg["duration"],
+        })
+
+    return {
+        "model_name": asr_model.name,
+        "model_id": asr_model.id,
+        "record_id": record_id,
+        "segments": asr_results,
+        "full_transcript": "\n".join(r["text"] for r in asr_results),
+    }
+
+
 @router.get("/start")
 async def start_test(
     record_id: str = Query(...),
@@ -219,6 +280,47 @@ async def get_test_result(test_id: int, db: AsyncSession = Depends(get_db)):
     if not test:
         raise HTTPException(status_code=404, detail="测试记录不存在")
     return test
+
+
+@router.post("/llm")
+async def run_llm_extraction(data: dict, db: AsyncSession = Depends(get_db)):
+    """LLM 结构化提取（给定转写文本）"""
+    from app.services.llm import create_llm
+    from app.services.parser import DEFAULT_PROMPT_TEMPLATE
+
+    transcript = data.get("transcript", "")
+    if not transcript:
+        raise HTTPException(status_code=400, detail="转写文本为空")
+
+    llm_model_id = data.get("llm_model_id")
+    prompt_template = data.get("prompt_template", DEFAULT_PROMPT_TEMPLATE)
+
+    llm_model = None
+    if llm_model_id:
+        result = await db.execute(select(ModelConfig).where(ModelConfig.id == llm_model_id))
+        llm_model = result.scalar_one_or_none()
+
+    if llm_model:
+        llm = create_llm(llm_model.provider, **{
+            "endpoint": llm_model.endpoint,
+            "api_key": llm_model.api_key,
+            "api_secret": llm_model.api_secret,
+            "model_name": llm_model.model_name,
+        })
+    else:
+        raise HTTPException(status_code=400, message="请提供有效的 LLM 模型")
+
+    try:
+        response = await llm.extract(transcript, prompt_template)
+    except Exception as e:
+        raise HTTPException(status_code=500, message=f"LLM 调用失败: {str(e)}")
+
+    return {
+        "model_name": llm_model.name if llm_model else "unknown",
+        "model_id": llm_model.id if llm_model else None,
+        "structured": response.structured,
+        "summary": response.summary,
+    }
 
 
 @router.put("/{test_id}/evaluate", response_model=TestResultOut)
