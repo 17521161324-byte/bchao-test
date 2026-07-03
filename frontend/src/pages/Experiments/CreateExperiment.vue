@@ -12,31 +12,60 @@
       </a-form-item>
 
       <a-form-item label="选择日期批次">
-        <a-select v-model:value="form.selected_dates" mode="multiple" placeholder="选择日期批次" @change="onDatesChange">
+        <a-select v-model:value="form.selected_dates" mode="multiple" placeholder="选择日期批次">
           <a-select-option v-for="d in availableDates" :key="d.date" :value="d.date">
             {{ d.date }} ({{ d.patient_count }}人)
           </a-select-option>
         </a-select>
       </a-form-item>
 
-      <!-- 选中日期后的统计 -->
-      <a-card v-if="form.selected_dates.length > 0" size="small" style="margin-bottom: 16px; background: #fafafa">
-        <a-row :gutter="16">
-          <a-col :span="8">日期批次数: {{ form.selected_dates.length }}</a-col>
-          <a-col :span="8">患者总数: {{ selectedPatientCount }}</a-col>
-          <a-col :span="8">预计任务数: {{ estimatedTasks }}</a-col>
-        </a-row>
+      <!-- 选中日期后显示患者列表 -->
+      <a-card v-if="form.selected_dates.length > 0" size="small" style="margin-bottom: 16px">
+        <template #title>
+          选择参与实验的患者
+          <a-radio-group v-model:value="patientSelectMode" size="small" style="margin-left: 16px">
+            <a-radio-button value="all">全选</a-radio-button>
+            <a-radio-button value="none">清空</a-radio-button>
+          </a-radio-group>
+        </template>
+
+        <a-table
+          :data-source="availablePatients"
+          :loading="loadingPatients"
+          :pagination="{ pageSize: 10, total: availablePatients.length }"
+          size="small"
+          row-key="record_id"
+        >
+          <a-table-column title="选择" :width="60">
+            <template #default="{ record }">
+              <a-checkbox :checked="isPatientSelected(record.record_id)" @change="togglePatient(record.record_id)" />
+            </template>
+          </a-table-column>
+          <a-table-column title="病历号" data-index="record_id" />
+          <a-table-column title="日期" data-index="date_folder_str" :width="120" />
+          <a-table-column title="有录音" :width="80">
+            <template #default="{ record }">
+              <a-tag :color="record.has_audio ? 'green' : 'red'">{{ record.has_audio ? '有' : '无' }}</a-tag>
+            </template>
+          </a-table-column>
+          <a-table-column title="有结果" :width="80">
+            <template #default="{ record }">
+              <a-tag :color="record.has_result ? 'green' : 'default'">{{ record.has_result ? '有' : '无' }}</a-tag>
+            </template>
+          </a-table-column>
+        </a-table>
       </a-card>
 
       <a-form-item>
         <a-button type="primary" @click="handleCreate" :loading="creating">创建</a-button>
+        <router-link to="/experiments"><a-button style="margin-left: 8px">取消</a-button></router-link>
       </a-form-item>
     </a-form>
   </div>
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, reactive, onMounted, computed } from 'vue'
+import { defineComponent, ref, reactive, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { experimentApi } from '@/api/experiment'
@@ -47,6 +76,8 @@ export default defineComponent({
   setup() {
     const router = useRouter()
     const creating = ref(false)
+    const loadingPatients = ref(false)
+    const patientSelectMode = ref('all')
 
     const form = reactive({
       name: '',
@@ -56,34 +87,80 @@ export default defineComponent({
     })
 
     const availableDates = ref<{date: string, patient_count: number}[]>([])
+    const availablePatients = ref<any[]>([])
+    const allPatientIds = ref<string[]>([])
 
-    const selectedPatientCount = computed(() => {
-      return availableDates.value
-        .filter(d => form.selected_dates.includes(d.date))
-        .reduce((sum, d) => sum + d.patient_count, 0)
-    })
-
-    const estimatedTasks = computed(() => {
-      // Will be multiplied by number of combinations (at least 1)
-      return selectedPatientCount.value
-    })
-
-    async function fetchData() {
+    async function fetchBatches() {
       try {
         const res = await audioApi.getBatches()
         availableDates.value = res.data
       } catch (e) {
-        // ignore
+        console.error('Failed to fetch batches:', e)
       }
     }
 
-    function onDatesChange() {
-      // Triggered when dates selection changes
+    async function fetchPatientsForDates(dates: string[]) {
+      if (!dates.length) {
+        availablePatients.value = []
+        return
+      }
+      loadingPatients.value = true
+      try {
+        const patients: any[] = []
+        for (const date of dates) {
+          const res = await audioApi.getRecords(date)
+          for (const exam of res.data) {
+            patients.push({
+              record_id: exam.record_id,
+              date_folder_str: date,
+              has_audio: exam.has_audio,
+              has_result: exam.has_result,
+            })
+          }
+        }
+        availablePatients.value = patients
+        allPatientIds.value = patients.map(p => p.record_id)
+        // Default: all selected
+        form.selected_patient_ids = [...allPatientIds.value]
+      } catch (e) {
+        console.error('Failed to fetch patients:', e)
+      } finally {
+        loadingPatients.value = false
+      }
     }
+
+    function isPatientSelected(recordId: string): boolean {
+      return form.selected_patient_ids.includes(recordId)
+    }
+
+    function togglePatient(recordId: string): void {
+      const idx = form.selected_patient_ids.indexOf(recordId)
+      if (idx >= 0) {
+        form.selected_patient_ids.splice(idx, 1)
+      } else {
+        form.selected_patient_ids.push(recordId)
+      }
+    }
+
+    watch(patientSelectMode, (mode) => {
+      if (mode === 'all') {
+        form.selected_patient_ids = [...allPatientIds.value]
+      } else if (mode === 'none') {
+        form.selected_patient_ids = []
+      }
+    })
+
+    watch(() => form.selected_dates, (newDates) => {
+      fetchPatientsForDates(newDates)
+    })
 
     async function handleCreate() {
       if (!form.name.trim()) {
         message.error('请输入实验名称')
+        return
+      }
+      if (!form.selected_dates.length) {
+        message.error('请选择日期批次')
         return
       }
       creating.value = true
@@ -98,12 +175,9 @@ export default defineComponent({
       }
     }
 
-    onMounted(fetchData)
+    onMounted(fetchBatches)
 
-    return {
-      form, availableDates, selectedPatientCount, estimatedTasks,
-      handleCreate, onDatesChange, creating,
-    }
+    return { form, availableDates, availablePatients, loadingPatients, patientSelectMode, isPatientSelected, togglePatient, handleCreate, creating }
   },
 })
 </script>
