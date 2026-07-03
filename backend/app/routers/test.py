@@ -40,7 +40,7 @@ async def start_test(
     )
     patients = result.scalars().all()
     if not patients:
-        raise HTTPException(status_code=404, message=f"病历号 {record_id} 不存在")
+        raise HTTPException(status_code=404, detail=f"病历号 {record_id} 不存在")
     patient = patients[0]
 
     if not patient.segs:
@@ -110,7 +110,7 @@ async def start_test(
             llm_config = {
                 "endpoint": llm_model.endpoint,
                 "api_key": llm_model.api_key,
-                "api_secret": asr_model.api_secret,
+                "api_secret": llm_model.api_secret,
                 "model_name": llm_model.model_name,
             }
 
@@ -209,11 +209,58 @@ async def list_test_history(
     return result.scalars().all()
 
 
-@router.get("/{test_id}")
+@router.get("/{test_id}", response_model=TestResultOut)
 async def get_test_result(test_id: int, db: AsyncSession = Depends(get_db)):
     """获取测试结果"""
     result = await db.execute(select(TestRun).where(TestRun.id == test_id))
     test = result.scalar_one_or_none()
     if not test:
-        raise HTTPException(status_code=404, message="测试记录不存在")
+        raise HTTPException(status_code=404, detail="测试记录不存在")
+    return test
+
+
+@router.put("/{test_id}/evaluate", response_model=TestResultOut)
+async def update_evaluation(
+    test_id: int,
+    data: EvaluationUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """提交人工修正评估"""
+    result = await db.execute(select(TestRun).where(TestRun.id == test_id))
+    test = result.scalar_one_or_none()
+    if not test:
+        raise HTTPException(status_code=404, detail="测试记录不存在")
+
+    test.structured_result = data.structured_result
+    test.human_corrected = data.human_corrected
+
+    # 重新评估
+    patient = await db.execute(
+        select(PatientRecord).where(PatientRecord.record_id == test.record_id)
+    )
+    patient_obj = patient.scalar_one_or_none()
+    if patient_obj:
+        gt_result = await db.execute(
+            select(BUltraResult).where(BUltraResult.patient_id == patient_obj.id)
+        )
+        gt = gt_result.scalar_one_or_none()
+        if gt:
+            evaluation = evaluate_result(
+                identified=data.structured_result,
+                ground_truth={
+                    "right_follicle_total": gt.right_follicle_total,
+                    "left_follicle_total": gt.left_follicle_total,
+                    "endometrium_thickness": gt.endometrium_thickness,
+                    "endometrium_type": gt.endometrium_type,
+                    "right_ovary_length": gt.right_ovary_length,
+                    "right_ovary_width": gt.right_ovary_width,
+                    "left_ovary_length": gt.left_ovary_length,
+                    "left_ovary_width": gt.left_ovary_width,
+                }
+            )
+            test.evaluation = evaluation
+            test.accuracy = evaluation.get("accuracy")
+
+    await db.commit()
+    await db.refresh(test)
     return test
