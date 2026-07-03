@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from typing import Optional
 
 from app.database import get_db
-from app.models import ModelConfig
+from app.models import ModelConfig, DateFolder, PatientRecord
 from app.models.experiment import (
     ExperimentBatch, ExperimentCombination, ExperimentTask,
     BatchStatus, TaskStatus, TaskStage,
@@ -199,35 +199,41 @@ async def start_experiment(
     """启动实验"""
     result = await db.execute(
         select(ExperimentBatch)
-        .options(selectinload(ExperimentBatch.combinations))
         .where(ExperimentBatch.id == batch_id)
     )
     batch = result.scalar_one_or_none()
     if not batch:
         raise HTTPException(status_code=404, detail="实验不存在")
 
-    enabled_combos = [c for c in batch.combinations if c.enabled]
-    if not enabled_combos:
-        raise HTTPException(status_code=400, detail="没有启用的实验组合")
-
-    if not batch.selected_patient_ids:
-        raise HTTPException(status_code=400, detail="没有选择患者")
-
-    # Get patient IDs from database
-    from app.models import PatientRecord
-    patient_result = await db.execute(
-        select(PatientRecord.id).where(
-            PatientRecord.record_id.in_(batch.selected_patient_ids)
+    enabled_combos = await db.execute(
+        select(ExperimentCombination).where(
+            ExperimentCombination.batch_id == batch_id,
+            ExperimentCombination.enabled == True,
         )
     )
-    patient_ids = [r[0] for r in patient_result.all()]
+    combos = enabled_combos.scalars().all()
+    if not combos:
+        raise HTTPException(status_code=400, detail="没有启用的实验组合")
 
-    if not patient_ids:
-        raise HTTPException(status_code=400, detail="所选患者不存在")
+    # Only include patients from selected_dates
+    patient_records = await db.execute(
+        select(PatientRecord)
+        .join(DateFolder)
+        .where(
+            DateFolder.date.in_(batch.selected_dates),
+            PatientRecord.record_id.in_(batch.selected_patient_ids),
+        )
+    )
+    patients = patient_records.scalars().all()
+    if not patients:
+        raise HTTPException(status_code=400, detail="所选日期/患者组合无匹配数据")
 
-    # Generate tasks for each combination
+    patient_ids = [p.id for p in patients]
+
+    # Generate tasks
+    from app.services.experiment_planner import plan_tasks
     total_tasks = 0
-    for combo in enabled_combos:
+    for combo in combos:
         tasks = await plan_tasks(db, batch.id, combo.id, patient_ids)
         total_tasks += len(tasks)
 
@@ -363,18 +369,44 @@ async def retry_failures(
     return {"batch_id": batch_id, "retried": len(failed_tasks)}
 
 
-@router.get("/{batch_id}/tasks", response_model=list[ExperimentTaskSummary])
+@router.get("/{batch_id}/tasks")
 async def list_tasks(
     batch_id: int,
     status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """获取实验任务列表"""
-    query = select(ExperimentTask).where(ExperimentTask.batch_id == batch_id)
+    """获取实验任务列表（含患者信息）"""
+    query = (
+        select(ExperimentTask)
+        .options(selectinload(ExperimentTask.patient).selectinload(PatientRecord.date_folder))
+        .where(ExperimentTask.batch_id == batch_id)
+    )
     if status:
         query = query.where(ExperimentTask.status == status)
     result = await db.execute(query.order_by(ExperimentTask.id))
-    return result.scalars().all()
+    tasks = result.scalars().all()
+
+    output = []
+    for t in tasks:
+        output.append({
+            "id": t.id,
+            "batch_id": t.batch_id,
+            "combination_id": t.combination_id,
+            "patient_id": t.patient_id,
+            "record_id": t.patient.record_id if t.patient else None,
+            "date": t.patient.date_folder.date if t.patient and t.patient.date_folder else None,
+            "stage": t.stage,
+            "status": t.status,
+            "retry_count": t.retry_count,
+            "accuracy": t.accuracy,
+            "total_duration": t.total_duration,
+            "error_type": t.error_type,
+            "created_at": t.created_at,
+            "asr_results": t.asr_results,
+            "structured_result": t.structured_result,
+            "evaluation": t.evaluation,
+        })
+    return output
 
 
 @router.get("/{batch_id}/metrics")

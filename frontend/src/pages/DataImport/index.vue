@@ -300,6 +300,12 @@ export default defineComponent({
       isEditingResult.value = false
     }
 
+    function cancelEdit() {
+      isEditingResult.value = false
+      editForm.right_follicles = []
+      editForm.left_follicles = []
+    }
+
     async function handleSaveResult() {
       if (!selectedRecord.value?.result) return
       editSaving.value = true

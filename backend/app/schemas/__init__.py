@@ -24,8 +24,7 @@ class AudioSegOut(BaseModel):
     file_path: str
     file_size: int
 
-    class Config:
-        from_attributes = True
+    model_config = {"protected_namespaces": (), "from_attributes": True}
 
 
 class PatientRecordOut(BaseModel):
@@ -36,8 +35,7 @@ class PatientRecordOut(BaseModel):
     segs: list[AudioSegOut] = []
     has_result: bool = False
 
-    class Config:
-        from_attributes = True
+    model_config = {"protected_namespaces": (), "from_attributes": True}
 
 
 class DateFolderOut(BaseModel):
@@ -46,8 +44,7 @@ class DateFolderOut(BaseModel):
     patient_count: int = 0
     patients: list[PatientRecordOut] = []
 
-    class Config:
-        from_attributes = True
+    model_config = {"protected_namespaces": (), "from_attributes": True}
 
 
 class DataStatusOut(BaseModel):
@@ -77,13 +74,13 @@ class BUltraResultOut(BaseModel):
     left_ovary_width: Optional[float] = None
     remark: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"protected_namespaces": (), "from_attributes": True}
 
 
 # ========== 模型配置相关 ==========
 
 class ModelConfigCreate(BaseModel):
+    model_config = {"protected_namespaces": ()}
     name: str
     model_type: str  # asr / llm
     provider: str  # local / iflytek / tencent
@@ -96,6 +93,7 @@ class ModelConfigCreate(BaseModel):
 
 
 class ModelConfigUpdate(BaseModel):
+    model_config = {"protected_namespaces": ()}
     name: Optional[str] = None
     model_type: Optional[str] = None
     provider: Optional[str] = None
@@ -109,6 +107,7 @@ class ModelConfigUpdate(BaseModel):
 
 
 class ModelConfigOut(BaseModel):
+    model_config = {"protected_namespaces": (), "from_attributes": True}
     id: int
     name: str
     model_type: str
@@ -120,9 +119,6 @@ class ModelConfigOut(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class ModelTestResult(BaseModel):
@@ -164,8 +160,7 @@ class TestResultOut(BaseModel):
     duration_seconds: float = 0.0
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"protected_namespaces": (), "from_attributes": True}
 
 
 class TestProgressEvent(BaseModel):
