@@ -21,11 +21,7 @@
           </a-space>
         </a-col>
         <a-col :span="8">
-          <a-input-search
-            v-model:value="searchText"
-            placeholder="搜索病历号"
-            allow-clear
-          />
+          <a-input-search v-model:value="searchText" placeholder="搜索病历号" allow-clear />
         </a-col>
       </a-row>
     </a-card>
@@ -69,7 +65,7 @@
       :open="drawerOpen"
       title="检查详情"
       placement="right"
-      width="600px"
+      width="700px"
       @close="closeDrawer"
     >
       <template v-if="selectedRecord">
@@ -83,120 +79,125 @@
           </a-descriptions-item>
         </a-descriptions>
 
-        <!-- 录音播放器 -->
         <a-card v-if="selectedRecord.segs?.length" size="small" style="margin-bottom: 16px">
           <template #title>录音播放 ({{ selectedRecord.segs.length }}段)</template>
           <AudioPlayer :segs="selectedRecord.segs" />
         </a-card>
 
-        <!-- B 超结果 -->
+        <!-- B 超结果 - 左右并行可编辑 -->
         <template v-if="selectedRecord.result">
-          <a-divider>B 超检查结果</a-divider>
-          <a-descriptions :column="2" bordered size="small">
-            <a-descriptions-item label="右侧卵泡">
-              <span v-if="selectedRecord.result.right_follicle_total > 0">
-                {{ selectedRecord.result.right_follicle_total }} 个
-                <span style="color: #666; font-size: 12px">({{ formatFollicles(selectedRecord.result.right_follicles) }})</span>
-              </span>
-              <span v-else>-</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="左侧卵泡">
-              <span v-if="selectedRecord.result.left_follicle_total > 0">
-                {{ selectedRecord.result.left_follicle_total }} 个
-                <span style="color: #666; font-size: 12px">({{ formatFollicles(selectedRecord.result.left_follicles) }})</span>
-              </span>
-              <span v-else>-</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="内膜厚度">
-              {{ selectedRecord.result.endometrium_thickness != null ? selectedRecord.result.endometrium_thickness + ' mm' : '-' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="内膜类型">
-              {{ selectedRecord.result.endometrium_type || '-' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="右卵巢">
-              <span v-if="selectedRecord.result.right_ovary_length && selectedRecord.result.right_ovary_width">
-                {{ selectedRecord.result.right_ovary_length }} × {{ selectedRecord.result.right_ovary_width }} mm
-              </span>
-              <span v-else>-</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="左卵巢">
-              <span v-if="selectedRecord.result.left_ovary_length && selectedRecord.result.left_ovary_width">
-                {{ selectedRecord.result.left_ovary_length }} × {{ selectedRecord.result.left_ovary_width }} mm
-              </span>
-              <span v-else>-</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="备注" :span="2">
-              {{ selectedRecord.result.remark || '-' }}
-            </a-descriptions-item>
-          </a-descriptions>
-          <a-button type="primary" style="margin-top: 16px" @click="startEdit">编辑结果</a-button>
+          <a-divider>B 超检查结果
+            <a-button v-if="!isEditingResult" size="small" type="link" @click="startEdit">编辑</a-button>
+            <span v-else>
+              <a-button size="small" type="link" @click="handleSaveResult" :loading="editSaving">保存</a-button>
+              <a-button size="small" @click="cancelEdit">取消</a-button>
+            </span>
+          </a-divider>
+
+          <a-row :gutter="16">
+            <a-col :span="12">
+              <a-card size="small" title="右侧卵泡" style="margin-bottom: 16px">
+                <div v-if="isEditingResult">
+                  <div v-for="(f, idx) in editForm.right_follicles" :key="'r'+idx" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
+                    <a-input-number v-model:value="f.size" :min="0" :step="0.1" style="width: 100px" placeholder="尺寸" />
+                    <span>×</span>
+                    <a-input-number v-model:value="f.count" :min="1" :step="1" style="width: 60px" placeholder="数量" />
+                    <a-button size="small" danger @click="editForm.right_follicles.splice(idx, 1)">×</a-button>
+                  </div>
+                  <a-button size="small" type="dashed" @click="editForm.right_follicles.push({size: 0, count: 1})">+ 添加</a-button>
+                  <div style="margin-top: 8px; color: #666">合计: {{ editForm.right_follicles.reduce((s,f) => s + f.count, 0) }} 个</div>
+                </div>
+                <div v-else>
+                  <div v-if="selectedRecord.result.right_follicle_total > 0">
+                    <div style="font-size: 24px; font-weight: bold">{{ selectedRecord.result.right_follicle_total }} 个</div>
+                    <div style="color: #666; font-size: 12px">{{ formatFollicles(selectedRecord.result.right_follicles) }}</div>
+                  </div>
+                  <div v-else style="color: #999">-</div>
+                </div>
+              </a-card>
+            </a-col>
+
+            <a-col :span="12">
+              <a-card size="small" title="左侧卵泡" style="margin-bottom: 16px">
+                <div v-if="isEditingResult">
+                  <div v-for="(f, idx) in editForm.left_follicles" :key="'l'+idx" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
+                    <a-input-number v-model:value="f.size" :min="0" :step="0.1" style="width: 100px" placeholder="尺寸" />
+                    <span>×</span>
+                    <a-input-number v-model:value="f.count" :min="1" :step="1" style="width: 60px" placeholder="数量" />
+                    <a-button size="small" danger @click="editForm.left_follicles.splice(idx, 1)">×</a-button>
+                  </div>
+                  <a-button size="small" type="dashed" @click="editForm.left_follicles.push({size: 0, count: 1})">+ 添加</a-button>
+                  <div style="margin-top: 8px; color: #666">合计: {{ editForm.left_follicles.reduce((s,f) => s + f.count, 0) }} 个</div>
+                </div>
+                <div v-else>
+                  <div v-if="selectedRecord.result.left_follicle_total > 0">
+                    <div style="font-size: 24px; font-weight: bold">{{ selectedRecord.result.left_follicle_total }} 个</div>
+                    <div style="color: #666; font-size: 12px">{{ formatFollicles(selectedRecord.result.left_follicles) }}</div>
+                  </div>
+                  <div v-else style="color: #999">-</div>
+                </div>
+              </a-card>
+            </a-col>
+          </a-row>
+
+          <a-row :gutter="16">
+            <a-col :span="8">
+              <div style="margin-bottom: 8px">
+                <div style="color: #666; font-size: 12px">内膜厚度</div>
+                <a-input-number v-if="isEditingResult" v-model:value="editForm.endometrium_thickness" :min="0" :step="0.1" style="width: 100%" suffix="mm" />
+                <div v-else style="font-size: 16px">{{ selectedRecord.result.endometrium_thickness != null ? selectedRecord.result.endometrium_thickness + ' mm' : '-' }}</div>
+              </div>
+            </a-col>
+            <a-col :span="8">
+              <div style="margin-bottom: 8px">
+                <div style="color: #666; font-size: 12px">内膜类型</div>
+                <a-select v-if="isEditingResult" v-model:value="editForm.endometrium_type" allow-clear style="width: 100%">
+                  <a-select-option value="A">A</a-select-option>
+                  <a-select-option value="B">B</a-select-option>
+                  <a-select-option value="C">C</a-select-option>
+                  <a-select-option value="A-B">A-B</a-select-option>
+                </a-select>
+                <div v-else style="font-size: 16px">{{ selectedRecord.result.endometrium_type || '-' }}</div>
+              </div>
+            </a-col>
+            <a-col :span="8">
+              <div style="margin-bottom: 8px">
+                <div style="color: #666; font-size: 12px">备注</div>
+                <a-input v-if="isEditingResult" v-model:value="editForm.remark" size="small" />
+                <div v-else style="font-size: 16px">{{ selectedRecord.result.remark || '-' }}</div>
+              </div>
+            </a-col>
+          </a-row>
+
+          <a-row :gutter="16" style="margin-top: 8px">
+            <a-col :span="12">
+              <div style="margin-bottom: 8px">
+                <div style="color: #666; font-size: 12px">右卵巢</div>
+                <a-input-group v-if="isEditingResult" compact>
+                  <a-input-number v-model:value="editForm.right_ovary_length" :min="0" :step="0.1" placeholder="长" style="width: 45%" />
+                  <span style="line-height: 32px"> × </span>
+                  <a-input-number v-model:value="editForm.right_ovary_width" :min="0" :step="0.1" placeholder="宽" style="width: 45%" />
+                </a-input-group>
+                <div v-else style="font-size: 16px">
+                  {{ selectedRecord.result.right_ovary_length && selectedRecord.result.right_ovary_width ? `${selectedRecord.result.right_ovary_length} × ${selectedRecord.result.right_ovary_width} mm` : '-' }}
+                </div>
+              </div>
+            </a-col>
+            <a-col :span="12">
+              <div style="margin-bottom: 8px">
+                <div style="color: #666; font-size: 12px">左卵巢</div>
+                <a-input-group v-if="isEditingResult" compact>
+                  <a-input-number v-model:value="editForm.left_ovary_length" :min="0" :step="0.1" placeholder="长" style="width: 45%" />
+                  <span style="line-height: 32px"> × </span>
+                  <a-input-number v-model:value="editForm.left_ovary_width" :min="0" :step="0.1" placeholder="宽" style="width: 45%" />
+                </a-input-group>
+                <div v-else style="font-size: 16px">
+                  {{ selectedRecord.result.left_ovary_length && selectedRecord.result.left_ovary_width ? `${selectedRecord.result.left_ovary_length} × ${selectedRecord.result.left_ovary_width} mm` : '-' }}
+                </div>
+              </div>
+            </a-col>
+          </a-row>
         </template>
-
-        <!-- 编辑结果对话框 -->
-        <a-modal v-model:open="isEditingResult" title="编辑 B 超结果" :confirm-loading="editSaving" @ok="handleSaveResult" width="700px">
-          <a-form layout="vertical" size="small">
-            <!-- 右侧卵泡明细 -->
-            <a-form-item label="右侧卵泡明细">
-              <div v-for="(f, idx) in editForm.right_follicles" :key="'r'+idx" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
-                <a-input-number v-model:value="f.size" :min="0" :step="0.1" style="width: 100px" placeholder="尺寸mm" />
-                <span style="line-height: 32px">×</span>
-                <a-input-number v-model:value="f.count" :min="1" :step="1" style="width: 60px" placeholder="数量" />
-                <a-button size="small" danger @click="editForm.right_follicles.splice(idx, 1)">×</a-button>
-              </div>
-              <a-button size="small" type="dashed" @click="editForm.right_follicles.push({size: 0, count: 1})">+ 添加卵泡</a-button>
-              <span style="margin-left: 16px; color: #666">合计: {{ editForm.right_follicles.reduce((s,f) => s + f.count, 0) }} 个</span>
-            </a-form-item>
-
-            <!-- 左侧卵泡明细 -->
-            <a-form-item label="左侧卵泡明细">
-              <div v-for="(f, idx) in editForm.left_follicles" :key="'l'+idx" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
-                <a-input-number v-model:value="f.size" :min="0" :step="0.1" style="width: 100px" placeholder="尺寸mm" />
-                <span style="line-height: 32px">×</span>
-                <a-input-number v-model:value="f.count" :min="1" :step="1" style="width: 60px" placeholder="数量" />
-                <a-button size="small" danger @click="editForm.left_follicles.splice(idx, 1)">×</a-button>
-              </div>
-              <a-button size="small" type="dashed" @click="editForm.left_follicles.push({size: 0, count: 1})">+ 添加卵泡</a-button>
-              <span style="margin-left: 16px; color: #666">合计: {{ editForm.left_follicles.reduce((s,f) => s + f.count, 0) }} 个</span>
-            </a-form-item>
-
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item label="内膜厚度 (mm)">
-                  <a-input-number v-model:value="editForm.endometrium_thickness" :min="0" :step="0.1" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item label="内膜类型">
-                  <a-select v-model:value="editForm.endometrium_type" allow-clear>
-                    <a-select-option value="A">A</a-select-option>
-                    <a-select-option value="B">B</a-select-option>
-                    <a-select-option value="C">C</a-select-option>
-                    <a-select-option value="A-B">A-B</a-select-option>
-                  </a-select>
-                </a-form-item>
-              </a-col>
-            </a-row>
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item label="右卵巢长 (mm)"><a-input-number v-model:value="editForm.right_ovary_length" :min="0" :step="0.1" style="width: 100%" /></a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item label="右卵巢宽 (mm)"><a-input-number v-model:value="editForm.right_ovary_width" :min="0" :step="0.1" style="width: 100%" /></a-form-item>
-              </a-col>
-            </a-row>
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item label="左卵巢长 (mm)"><a-input-number v-model:value="editForm.left_ovary_length" :min="0" :step="0.1" style="width: 100%" /></a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item label="左卵巢宽 (mm)"><a-input-number v-model:value="editForm.left_ovary_width" :min="0" :step="0.1" style="width: 100%" /></a-form-item>
-              </a-col>
-            </a-row>
-            <a-form-item label="备注">
-              <a-textarea v-model:value="editForm.remark" :rows="2" />
-            </a-form-item>
-          </a-form>
-        </a-modal>
       </template>
     </a-drawer>
   </div>
@@ -251,7 +252,6 @@ export default defineComponent({
       }
     }
 
-    // Edit modal state
     const isEditingResult = ref(false)
     const editSaving = ref(false)
     const editForm = reactive({
@@ -296,6 +296,10 @@ export default defineComponent({
       isEditingResult.value = true
     }
 
+    function cancelEdit() {
+      isEditingResult.value = false
+    }
+
     async function handleSaveResult() {
       if (!selectedRecord.value?.result) return
       editSaving.value = true
@@ -326,7 +330,7 @@ export default defineComponent({
       searchText, drawerOpen, selectedRecord, batches, selectedBatch, loadingTree,
       allRecords, filteredRecords, isEditingResult, editSaving, editForm,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles,
-      startEdit, handleSaveResult,
+      startEdit, cancelEdit, handleSaveResult,
     }
   },
 })

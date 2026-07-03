@@ -48,7 +48,7 @@
       :open="modalOpen"
       @cancel="handleCancel"
       :confirm-loading="saving"
-      @ok="handleOk"
+      @ok="handleSubmit"
       :width="600"
     >
       <a-form ref="formRef" :model="form" layout="vertical" @finish="handleSave">
@@ -56,13 +56,13 @@
           <a-input v-model:value="form.name" placeholder="如：本地 FunASR" />
         </a-form-item>
         <a-form-item name="model_type" label="类型" :rules="[{ required: true, message: '请选择类型' }]">
-          <a-select v-model:value="form.model_type">
+          <a-select v-model:value="form.model_type" placeholder="请选择类型">
             <a-select-option value="asr">ASR（语音转文字）</a-select-option>
             <a-select-option value="llm">LLM（语义理解）</a-select-option>
           </a-select>
         </a-form-item>
         <a-form-item name="provider" label="Provider" :rules="[{ required: true, message: '请选择Provider' }]">
-          <a-select v-model:value="form.provider">
+          <a-select v-model:value="form.provider" placeholder="请选择Provider">
             <a-select-option value="local">本地</a-select-option>
             <a-select-option value="iflytek">讯飞</a-select-option>
             <a-select-option value="tencent">腾讯</a-select-option>
@@ -167,16 +167,16 @@ async function handleSave(values: any) {
     editing.value = null
     await fetchModels()
   } catch {
-    // 拦截器已处理
+    // interceptor handles error
   } finally {
     saving.value = false
   }
 }
 
-async function handleOk() {
+async function handleSubmit() {
   try {
-    await formRef.value?.validate()
-    // validate() passes → @finish fires → handleSave runs
+    const values = await formRef.value?.validate()
+    if (values) await handleSave(values)
   } catch {
     // validation failed
   }

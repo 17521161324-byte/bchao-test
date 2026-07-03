@@ -138,7 +138,7 @@ export default defineComponent({
     async function fetchBatches() {
       try {
         const res = await audioApi.getBatches()
-        availableDates.value = res.data
+        availableDates.value = res
       } catch (e) {
         console.error(e)
       }
