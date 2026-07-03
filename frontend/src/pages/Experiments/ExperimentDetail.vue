@@ -3,6 +3,9 @@
     <div class="page-header">
       <h2>{{ batch?.name || '实验详情' }}</h2>
       <a-space>
+        <router-link to="/experiments">
+          <a-button><ArrowLeftOutlined />返回</a-button>
+        </router-link>
         <a-button @click="fetchData"><ReloadOutlined />刷新</a-button>
       </a-space>
     </div>
@@ -109,7 +112,7 @@
 import { defineComponent, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, ReloadOutlined, ArrowLeftOutlined } from '@ant-design/icons-vue'
 import { experimentApi } from '@/api/experiment'
 import { modelApi } from '@/api/client'
 
@@ -300,7 +303,7 @@ export default defineComponent({
       fetchData, get_model_name, modelsValue,
       handleStart, handlePause, handleResume, handleCancel, handleRetry,
       toggleEnabled, showAddComboModal, handleAddCombo, handleDeleteCombo,
-      PlusOutlined, ReloadOutlined,
+      PlusOutlined, ReloadOutlined, ArrowLeftOutlined,
     }
   },
 })

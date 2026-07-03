@@ -70,10 +70,16 @@ async def update_result(
     if not obj:
         raise HTTPException(status_code=404, message="结果不存在")
 
-    # Update allowed fields
+    # Update follicles if provided (recalculate totals)
+    if "right_follicles" in data:
+        obj.right_follicles = data["right_follicles"]
+        obj.right_follicle_total = sum(f.get("count", 0) for f in data["right_follicles"])
+    if "left_follicles" in data:
+        obj.left_follicles = data["left_follicles"]
+        obj.left_follicle_total = sum(f.get("count", 0) for f in data["left_follicles"])
+
+    # Update allowed scalar fields
     field_map = {
-        "right_follicle_total": "right_follicle_total",
-        "left_follicle_total": "left_follicle_total",
         "endometrium_thickness": "endometrium_thickness",
         "endometrium_type": "endometrium_type",
         "right_ovary_length": "right_ovary_length",

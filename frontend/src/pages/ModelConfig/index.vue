@@ -46,28 +46,29 @@
     <a-modal
       :title="editing ? '编辑模型' : '新增模型'"
       :open="modalOpen"
-      @cancel="modalOpen = false"
-      @ok="formRef?.submit()"
+      @cancel="handleCancel"
+      :confirm-loading="saving"
+      @ok="handleOk"
       :width="600"
     >
       <a-form ref="formRef" :model="form" layout="vertical" @finish="handleSave">
-        <a-form-item name="name" label="名称" :rules="[{ required: true }]">
+        <a-form-item name="name" label="名称" :rules="[{ required: true, message: '请输入名称' }]">
           <a-input v-model:value="form.name" placeholder="如：本地 FunASR" />
         </a-form-item>
-        <a-form-item name="model_type" label="类型" :rules="[{ required: true }]">
+        <a-form-item name="model_type" label="类型" :rules="[{ required: true, message: '请选择类型' }]">
           <a-select v-model:value="form.model_type">
             <a-select-option value="asr">ASR（语音转文字）</a-select-option>
             <a-select-option value="llm">LLM（语义理解）</a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item name="provider" label="Provider" :rules="[{ required: true }]">
+        <a-form-item name="provider" label="Provider" :rules="[{ required: true, message: '请选择Provider' }]">
           <a-select v-model:value="form.provider">
             <a-select-option value="local">本地</a-select-option>
             <a-select-option value="iflytek">讯飞</a-select-option>
             <a-select-option value="tencent">腾讯</a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item name="endpoint" label="Endpoint URL" :rules="[{ required: true }]">
+        <a-form-item name="endpoint" label="Endpoint URL" :rules="[{ required: true, message: '请输入Endpoint' }]">
           <a-input v-model:value="form.endpoint" placeholder="http://172.16.10.142:50000/transcribe" />
         </a-form-item>
         <a-form-item name="model_name" label="模型名称（可选）">
@@ -105,6 +106,7 @@ import type { ModelConfig } from '@/types'
 
 const models = ref<ModelConfig[]>([])
 const loading = ref(false)
+const saving = ref(false)
 const modalOpen = ref(false)
 const editing = ref<ModelConfig | null>(null)
 const testing = ref<Record<number, boolean>>({})
@@ -152,6 +154,7 @@ async function handleTest(id: number) {
 }
 
 async function handleSave(values: any) {
+  saving.value = true
   try {
     if (editing.value) {
       await modelApi.update(editing.value.id, values)
@@ -165,7 +168,23 @@ async function handleSave(values: any) {
     await fetchModels()
   } catch {
     // 拦截器已处理
+  } finally {
+    saving.value = false
   }
+}
+
+async function handleOk() {
+  try {
+    await formRef.value?.validate()
+    // validate() passes → @finish fires → handleSave runs
+  } catch {
+    // validation failed
+  }
+}
+
+function handleCancel() {
+  modalOpen.value = false
+  editing.value = null
 }
 
 async function handleDelete(id: number) {
