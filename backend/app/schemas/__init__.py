@@ -5,6 +5,13 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
+from app.schemas.experiment import (
+    ExperimentBatchCreate, ExperimentBatchOut,
+    ExperimentCombinationCreate, ExperimentCombinationUpdate, ExperimentCombinationOut,
+    ExperimentTaskSummary, ExperimentMetrics,
+    ExperimentDetailOut, ExperimentListResponse,
+)
+
 
 # ========== 录音相关 ==========
 
