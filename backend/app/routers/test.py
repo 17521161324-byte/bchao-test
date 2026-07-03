@@ -19,6 +19,21 @@ from app.services.parser import evaluate_result
 router = APIRouter()
 
 
+@router.get("/history", response_model=list[TestResultOut])
+async def list_test_history(
+    record_id: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取测试历史列表"""
+    query = select(TestRun).order_by(TestRun.created_at.desc()).offset(skip).limit(limit)
+    if record_id:
+        query = query.where(TestRun.record_id == record_id)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
 @router.get("/start")
 async def start_test(
     record_id: str = Query(...),
@@ -192,21 +207,6 @@ async def start_test(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@router.get("/history", response_model=list[TestResultOut])
-async def list_test_history(
-    record_id: str | None = None,
-    skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db),
-):
-    """获取测试历史列表"""
-    query = select(TestRun).order_by(TestRun.created_at.desc()).offset(skip).limit(limit)
-    if record_id:
-        query = query.where(TestRun.record_id == record_id)
-    result = await db.execute(query)
-    return result.scalars().all()
 
 
 @router.get("/{test_id}", response_model=TestResultOut)

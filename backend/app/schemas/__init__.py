@@ -10,6 +10,7 @@ from app.schemas.experiment import (
     ExperimentCombinationCreate, ExperimentCombinationUpdate, ExperimentCombinationOut,
     ExperimentTaskSummary, ExperimentMetrics,
     ExperimentDetailOut, ExperimentListResponse,
+    ExperimentPatientScopeUpdate, ExperimentControlAction,
 )
 
 
