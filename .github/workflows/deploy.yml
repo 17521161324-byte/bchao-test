@@ -1,4 +1,4 @@
-# GitHub Actions - 自动部署到服务器
+# GitHub Actions - 自动部署到 Windows 服务器
 
 name: Deploy
 
@@ -12,17 +12,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 部署到服务器
+      - name: Deploy to Server
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            cd C:/bchao-test
+            cd E:/bchao-test
+
+            # 拉取最新代码
             git pull origin main
 
-            # 后端依赖更新
+            # 后端依赖更新与重启
             cd backend
             pip install -r requirements.txt
             pm2 restart bchao-backend
@@ -33,4 +35,7 @@ jobs:
             npm run build
 
             # Nginx 重载
-            nginx -s reload
+            cd /e/nginx-1.24.0
+            ./nginx.exe -s reload
+
+            echo "Deploy complete!"
