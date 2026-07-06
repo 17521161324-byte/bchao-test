@@ -97,6 +97,7 @@ class ModelConfig(Base):
     endpoint = Column(String(500))
     api_key = Column(String(500), nullable=True)
     api_secret = Column(String(500), nullable=True)
+    secret_key = Column(String(500), nullable=True)  # 火山引擎签名密钥
     model_name = Column(String(100), nullable=True)
     params = Column(JSON, default=dict)  # 额外参数
     is_default = Column(Boolean, default=False)

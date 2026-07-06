@@ -64,10 +64,10 @@
         <a-form-item name="provider" label="Provider" :rules="[{ required: true, message: '请选择Provider' }]">
           <a-select v-model:value="form.provider" placeholder="请选择Provider">
             <a-select-option value="local">本地</a-select-option>
+            <a-select-option value="volcengine">豆包 / 火山引擎</a-select-option>
+            <a-select-option value="mimo">MiMo</a-select-option>
             <a-select-option value="iflytek">讯飞</a-select-option>
             <a-select-option value="tencent">腾讯</a-select-option>
-            <a-select-option value="deepseek">DeepSeek</a-select-option>
-            <a-select-option value="mimo">MiMo</a-select-option>
           </a-select>
         </a-form-item>
         <a-form-item name="endpoint" label="Endpoint URL" :rules="[{ required: true, message: '请输入Endpoint' }]">
@@ -79,8 +79,11 @@
         <a-form-item name="api_key" label="API Key">
           <a-input-password v-model:value="form.api_key" placeholder="留空则不设置" />
         </a-form-item>
-        <a-form-item name="api_secret" label="API Secret（可选）">
+        <a-form-item name="api_secret" label="API Secret / Access Token（可选）">
           <a-input-password v-model:value="form.api_secret" />
+        </a-form-item>
+        <a-form-item name="secret_key" label="Secret Key（签名密钥，可选）">
+          <a-input-password v-model:value="form.secret_key" placeholder="豆包/火山引擎签名用" />
         </a-form-item>
         <a-form-item name="is_default" label="设为默认">
           <a-switch v-model:checked="form.is_default" />
@@ -122,6 +125,7 @@ const form = reactive({
   model_name: '',
   api_key: '',
   api_secret: '',
+  secret_key: '',
   is_default: false,
   status: 'active',
 })
@@ -199,7 +203,7 @@ function openCreate() {
   editing.value = null
   Object.assign(form, {
     name: '', model_type: 'asr', provider: 'local', endpoint: '',
-    model_name: '', api_key: '', api_secret: '', is_default: false, status: 'active',
+    model_name: '', api_key: '', api_secret: '', secret_key: '', is_default: false, status: 'active',
   })
   modalOpen.value = true
 }

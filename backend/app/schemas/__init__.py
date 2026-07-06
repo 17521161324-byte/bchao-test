@@ -179,6 +179,18 @@ class EvaluationUpdate(BaseModel):
     correction_note: Optional[str] = None
 
 
+# ========== 提示词模版相关 ==========
+
+class PromptTemplateOut(BaseModel):
+    id: int
+    name: str
+    content: str
+    is_default: bool
+    created_at: datetime
+
+    model_config = {"protected_namespaces": (), "from_attributes": True}
+
+
 # ========== 通用 ==========
 
 class ApiResponse(BaseModel):

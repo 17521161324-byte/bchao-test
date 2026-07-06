@@ -11,9 +11,10 @@
         :data-source="experiments"
         :loading="loading"
         row-key="id"
+        :scroll="{ x: 1600 }"
       >
         <a-table-column title="ID" data-index="id" :width="60" />
-        <a-table-column title="名称" data-index="name" />
+        <a-table-column title="实验名称" data-index="name" :width="150" />
         <a-table-column title="状态" :width="100">
           <template #default="{ record }">
             <a-tag :color="statusColor(record.status)">{{ record.status }}</a-tag>
@@ -24,14 +25,40 @@
             {{ record.selected_dates?.join(', ') || '-' }}
           </template>
         </a-table-column>
-        <a-table-column title="患者数" :width="80">
-          <template #default="{ record }">{{ record.selected_patient_ids?.length || 0 }}人</template>
+        <a-table-column title="患者数" :width="70">
+          <template #default="{ record }">{{ record.patient_count || 0 }}人</template>
         </a-table-column>
-        <a-table-column title="总任务" data-index="total_tasks" :width="80" />
-        <a-table-column title="成功" data-index="success_count" :width="80" />
-        <a-table-column title="失败" data-index="failure_count" :width="80" />
-        <a-table-column title="创建时间" data-index="created_at" :width="180" />
-        <a-table-column title="操作" :width="180">
+        <!-- 各字段准确率 -->
+        <a-table-column title="内膜厚度" :width="90">
+          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.endometrium_thickness) }}</template>
+        </a-table-column>
+        <a-table-column title="内膜类型" :width="90">
+          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.endometrium_type) }}</template>
+        </a-table-column>
+        <a-table-column title="卵巢" :width="80">
+          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.ovary_size) }}</template>
+        </a-table-column>
+        <a-table-column title="卵泡" :width="80">
+          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.follicle) }}</template>
+        </a-table-column>
+        <a-table-column title="备注" :width="80">
+          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.remark) }}</template>
+        </a-table-column>
+        <!-- 模型信息 -->
+        <a-table-column title="ASR模型" :width="120">
+          <template #default="{ record }">{{ record.asr_models?.join(', ') || '-' }}</template>
+        </a-table-column>
+        <a-table-column title="LLM模型" :width="120">
+          <template #default="{ record }">{{ record.llm_models?.join(', ') || '-' }}</template>
+        </a-table-column>
+        <a-table-column title="提示词模板" :width="120">
+          <template #default="{ record }">{{ record.prompt_templates?.join(', ') || '-' }}</template>
+        </a-table-column>
+        <a-table-column title="总任务" data-index="total_tasks" :width="70" />
+        <a-table-column title="成功" data-index="success_count" :width="60" />
+        <a-table-column title="失败" data-index="failure_count" :width="60" />
+        <a-table-column title="创建时间" data-index="created_at" :width="160" />
+        <a-table-column title="操作" :width="120" fixed="right">
           <template #default="{ record }">
             <router-link :to="`/experiments/${record.id}`"><a-button size="small" type="link">详情</a-button></router-link>
             <a-popconfirm title="确定删除此实验？" @confirm="handleDelete(record.id)">
@@ -57,6 +84,10 @@
 
         <a-form-item label="描述">
           <a-textarea v-model:value="createForm.description" :rows="2" />
+        </a-form-item>
+
+        <a-form-item label="备注">
+          <a-textarea v-model:value="createForm.remark" :rows="2" placeholder="可选：补充说明内部可见" />
         </a-form-item>
 
         <a-form-item label="选择日期批次" required>
@@ -124,6 +155,7 @@ export default defineComponent({
     const createForm = reactive({
       name: '',
       description: '',
+      remark: '',
       selected_dates: [] as string[],
       selected_patient_ids: [] as string[],
     })
@@ -132,7 +164,16 @@ export default defineComponent({
       loading.value = true
       try {
         const res = await experimentApi.list()
-        experiments.value = res.data
+        // 处理多种可能的响应格式
+        if (Array.isArray(res)) {
+          experiments.value = res
+        } else if (res && Array.isArray(res.data)) {
+          experiments.value = res.data
+        } else {
+          experiments.value = []
+        }
+      } catch (e) {
+        experiments.value = []
       } finally {
         loading.value = false
       }
@@ -176,6 +217,7 @@ export default defineComponent({
     function showCreateModal() {
       createForm.name = ''
       createForm.description = ''
+      createForm.remark = ''
       createForm.selected_dates = []
       createForm.selected_patient_ids = []
       createModalOpen.value = true
@@ -225,6 +267,11 @@ export default defineComponent({
       return map[status] || 'default'
     }
 
+    function formatAcc(val: number | undefined): string {
+      if (val == null || isNaN(val)) return '-'
+      return (val * 100).toFixed(0) + '%'
+    }
+
     watch(() => createForm.selected_dates, fetchPatientsForDates)
 
     onMounted(() => {
@@ -233,7 +280,7 @@ export default defineComponent({
 
     return {
       loading, experiments, availableDates, createModalOpen, creating, loadingPatients, availablePatients,
-      createForm, showCreateModal, togglePatient, handleCreate, handleDelete, statusColor,
+      createForm, showCreateModal, togglePatient, handleCreate, handleDelete, statusColor, formatAcc,
       PlusOutlined,
     }
   },

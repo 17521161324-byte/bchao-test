@@ -1,6 +1,7 @@
 """
 实验控制平面 API 路由
 """
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,18 +22,72 @@ from app.schemas import (
     ExperimentTaskSummary, ExperimentMetrics,
 )
 from app.services.experiment_planner import plan_tasks, invalidate_tasks
+from app.services.experiment_metrics import calculate_metrics
 from app.services.experiment_metrics import get_batch_metrics
 
 router = APIRouter()
 
 
-@router.get("", response_model=list[ExperimentListResponse])
+@router.get("")
 async def list_experiments(db: AsyncSession = Depends(get_db)):
     """获取实验批次列表"""
     result = await db.execute(
         select(ExperimentBatch).order_by(ExperimentBatch.created_at.desc())
     )
-    return result.scalars().all()
+    batches = result.scalars().all()
+
+    # 手动构建响应数据，避免 schema 验证问题
+    output = []
+    for b in batches:
+        # 确保 selected_patient_ids 是列表
+        pids = b.selected_patient_ids
+        if pids is None:
+            pids = []
+        elif isinstance(pids, str):
+            try:
+                pids = json.loads(pids)
+            except:
+                pids = []
+        else:
+            try:
+                # 通过 JSON 序列化/反序列化确保是普通列表
+                pids = json.loads(json.dumps(pids))
+            except:
+                pids = []
+
+        dates = b.selected_dates
+        if dates is None:
+            dates = []
+        elif isinstance(dates, str):
+            try:
+                dates = json.loads(dates)
+            except:
+                dates = []
+        else:
+            try:
+                dates = json.loads(json.dumps(dates))
+            except:
+                dates = []
+
+        output.append({
+            "id": b.id,
+            "name": b.name,
+            "status": b.status,
+            "remark": b.remark or "",
+            "selected_dates": dates,
+            "selected_patient_ids": pids,
+            "total_tasks": b.total_tasks or 0,
+            "success_count": b.success_count or 0,
+            "failure_count": b.failure_count or 0,
+            "created_at": b.created_at.isoformat() if b.created_at else None,
+            "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+            "patient_count": len(pids) if isinstance(pids, list) else 0,
+            "field_accuracy": {},
+            "asr_models": [],
+            "llm_models": [],
+            "prompt_templates": [],
+        })
+    return output
 
 
 @router.post("", response_model=ExperimentBatchOut)
@@ -44,6 +99,7 @@ async def create_experiment(
     batch = ExperimentBatch(
         name=data.name,
         description=data.description,
+        remark=data.remark,
         selected_dates=data.selected_dates,
         selected_patient_ids=data.selected_patient_ids,
         status=BatchStatus.PENDING.value,
@@ -79,7 +135,37 @@ async def get_experiment(
     batch = result.scalar_one_or_none()
     if not batch:
         raise HTTPException(status_code=404, detail="实验不存在")
-    return batch
+    # 手动构建响应以确保 JSON 字段正确序列化
+    return {
+        "id": batch.id,
+        "name": batch.name,
+        "description": batch.description,
+        "remark": batch.remark or "",
+        "selected_dates": batch.selected_dates or [],
+        "selected_patient_ids": batch.selected_patient_ids or [],
+        "status": batch.status,
+        "total_tasks": batch.total_tasks,
+        "success_count": batch.success_count,
+        "failure_count": batch.failure_count,
+        "created_at": batch.created_at,
+        "updated_at": batch.updated_at,
+        "started_at": batch.started_at,
+        "completed_at": batch.completed_at,
+        "combinations": [
+            {
+                "id": c.id,
+                "batch_id": c.batch_id,
+                "asr_model_id": c.asr_model_id,
+                "llm_model_id": c.llm_model_id,
+                "prompt_name": c.prompt_name or "",
+                "prompt_template": c.prompt_template or "",
+                "hotwords": c.hotwords or [],
+                "enabled": c.enabled,
+                "created_at": c.created_at,
+            }
+            for c in batch.combinations
+        ],
+    }
 
 
 @router.post("/{batch_id}/combinations", response_model=ExperimentCombinationOut)
@@ -389,7 +475,11 @@ async def list_tasks(
     """获取实验任务列表（含患者信息）"""
     query = (
         select(ExperimentTask)
-        .options(selectinload(ExperimentTask.patient).selectinload(PatientRecord.date_folder))
+        .options(
+            selectinload(ExperimentTask.patient).selectinload(PatientRecord.date_folder),
+            selectinload(ExperimentTask.combination).selectinload(ExperimentCombination.asr_model),
+            selectinload(ExperimentTask.combination).selectinload(ExperimentCombination.llm_model),
+        )
         .where(ExperimentTask.batch_id == batch_id)
     )
     if status:
@@ -414,8 +504,12 @@ async def list_tasks(
             "error_type": t.error_type,
             "created_at": t.created_at,
             "asr_results": t.asr_results,
+            "full_transcript": t.full_transcript,
             "structured_result": t.structured_result,
             "evaluation": t.evaluation,
+            "combination_asr_name": t.combination.asr_model.name if t.combination and t.combination.asr_model else "",
+            "combination_llm_name": t.combination.llm_model.name if t.combination and t.combination.llm_model else "",
+            "combination_prompt_name": t.combination.prompt_name or "",
         })
     return output
 

@@ -8,11 +8,12 @@ from loguru import logger
 
 from app.database import get_db
 from app.models import PromptTemplate
+from app.schemas import PromptTemplateOut
 
 router = APIRouter()
 
 
-@router.get("")
+@router.get("", response_model=list[PromptTemplateOut])
 async def list_templates(db: AsyncSession = Depends(get_db)):
     """列出所有提示词模版"""
     result = await db.execute(select(PromptTemplate).order_by(PromptTemplate.is_default.desc(), PromptTemplate.name))

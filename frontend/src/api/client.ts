@@ -4,7 +4,7 @@
 import axios, { AxiosInstance } from 'axios'
 import { message } from 'ant-design-vue'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001/api'
 
 const client: AxiosInstance = axios.create({
   baseURL: API_BASE,

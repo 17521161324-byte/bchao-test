@@ -184,5 +184,21 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
         )
         db.add(deepseek_llm)
 
+    # 检查豆包 / 火山引擎 ASR
+    result = await db.execute(select(ModelConfig).where(ModelConfig.provider == "volcengine"))
+    if not result.scalars().all():
+        volc_asr = ModelConfig(
+            name="豆包 ASR",
+            model_type="asr",
+            provider="volcengine",
+            endpoint="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+            api_key="",
+            api_secret="",
+            secret_key="",
+            is_default=False,
+            status="active",
+        )
+        db.add(volc_asr)
+
     await db.commit()
     return {"message": "初始化成功"}

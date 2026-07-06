@@ -46,9 +46,10 @@
     </a-card>
 
     <!-- 详情抽屉 -->
-    <a-drawer :open="drawerOpen" title="检查详情" placement="right" width="750px" @close="closeDrawer">
+    <a-drawer :open="drawerOpen" title="检查详情" placement="right" width="1200px" @close="closeDrawer">
       <template v-if="selectedRecord">
-        <a-descriptions :column="2" bordered size="small" style="margin-bottom: 16px">
+        <!-- 顶部描述区域 -->
+        <a-descriptions :column="4" bordered size="small" style="margin-bottom: 16px">
           <a-descriptions-item label="病历号">{{ selectedRecord.record_id }}</a-descriptions-item>
           <a-descriptions-item label="日期">{{ formatDate(selectedRecord.date) }}</a-descriptions-item>
           <a-descriptions-item label="录音分段">{{ selectedRecord.segs?.length || 0 }} 段</a-descriptions-item>
@@ -58,159 +59,193 @@
           </a-descriptions-item>
         </a-descriptions>
 
-        <!-- ==================== ASR 区域 ==================== -->
-        <a-card size="small" style="margin-bottom: 16px">
-          <template #title>
-            <span>语音转写 (ASR)</span>
-            <a-tag v-if="asrResult" color="blue" style="margin-left: 8px">{{ asrResult.model_name }}</a-tag>
-          </template>
-          <template #extra>
-            <a-select v-model:value="asrModelId" style="width: 180px" size="small" placeholder="选择ASR模型">
-              <a-select-option v-for="m in asrModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
-            </a-select>
-            <a-button type="primary" size="small" @click="runAsr" :loading="asrRunning" style="margin-left: 8px">
-              <template #icon><ScanOutlined /></template>
-              {{ asrRunning ? '转写中...' : (asrResult ? '重新识别' : '开始识别') }}
-            </a-button>
-          </template>
+        <!-- ASR + LLM 并行双列布局 -->
+        <a-row :gutter="16" style="margin-bottom: 16px">
+          <!-- ============ 左列：ASR ============ -->
+          <a-col :span="12">
+            <a-card size="small" style="margin-bottom: 16px; height: 100%">
+              <template #title>
+                <span>语音转写 (ASR)</span>
+                <a-tag v-if="asrResult" color="blue" style="margin-left: 8px">{{ asrResult.model_name }}</a-tag>
+              </template>
+              <template #extra>
+                <a-space :size="4">
+                  <a-select v-model:value="asrModelId" style="width: 150px" size="small" placeholder="选择ASR模型">
+                    <a-select-option v-for="m in asrModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
+                  </a-select>
+                  <a-button type="primary" size="small" @click="runAsr" :loading="asrRunning">
+                    <template #icon><ScanOutlined /></template>
+                    {{ asrRunning ? '转写中...' : (asrResult ? '重新识别' : '开始识别') }}
+                  </a-button>
+                </a-space>
+              </template>
 
-          <!-- 播放器 -->
-          <AudioPlayer v-if="selectedRecord.segs?.length" :segs="selectedRecord.segs" style="margin-bottom: 12px" />
+              <!-- 播放器 -->
+              <AudioPlayer v-if="selectedRecord.segs?.length" :segs="selectedRecord.segs" style="margin-bottom: 12px" />
 
-          <!-- ASR 结果 -->
-          <div v-if="asrResult">
-            <div style="font-size: 13px; color: #666; margin-bottom: 4px">转写结果：</div>
-            <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 14px; line-height: 1.8; white-space: pre-wrap">{{ asrResult.full_transcript || '(无内容)' }}</div>
-          </div>
-          <a-empty v-else description="暂无转写结果" style="padding: 20px 0" />
-        </a-card>
+              <!-- ASR 结果 -->
+              <div v-if="asrResult" style="max-height: 360px; overflow-y: auto">
+                <div style="font-size: 13px; color: #666; margin-bottom: 4px">转写结果：</div>
+                <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 14px; line-height: 1.8; white-space: pre-wrap">{{ asrResult.full_transcript || '(无内容)' }}</div>
+              </div>
+              <a-empty v-else description="暂无转写结果" style="padding: 20px 0" />
+            </a-card>
+          </a-col>
 
-        <!-- ==================== LLM 区域 ==================== -->
-        <a-card size="small" style="margin-bottom: 16px">
-          <template #title>
-            <span>LLM 结构化提取</span>
-            <a-tag v-if="llmResult" color="purple" style="margin-left: 8px">{{ llmResult.model_name }}</a-tag>
-          </template>
-          <template #extra>
-            <a-select v-model:value="llmModelId" style="width: 180px" size="small" placeholder="选择LLM模型" allow-clear>
-              <a-select-option v-for="m in llmModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
-            </a-select>
-            <a-button type="primary" size="small" @click="runLlm" :loading="llmRunning" :disabled="!asrResult" style="margin-left: 8px">
-              <template #icon><RobotOutlined /></template>
-              {{ llmRunning ? '提取中...' : '开始提取' }}
-            </a-button>
-          </template>
+          <!-- ============ 右列：LLM ============ -->
+          <a-col :span="12">
+            <a-card size="small" style="margin-bottom: 16px; height: 100%">
+              <template #title>
+                <span>LLM 结构化提取</span>
+                <a-tag v-if="llmResult" color="purple" style="margin-left: 8px">{{ llmResult.model_name }}</a-tag>
+              </template>
+              <template #extra>
+                <a-space :size="4">
+                  <a-select v-model:value="llmModelId" style="width: 150px" size="small" placeholder="选择LLM模型" allow-clear>
+                    <a-select-option v-for="m in llmModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
+                  </a-select>
+                  <a-button type="primary" size="small" @click="runLlm" :loading="llmRunning" :disabled="!asrResult">
+                    <template #icon><RobotOutlined /></template>
+                    {{ llmRunning ? '提取中...' : '开始提取' }}
+                  </a-button>
+                  <a-button type="link" size="small" @click="showTemplateModal = true">
+                    <template #icon><SettingOutlined /></template>
+                    模版
+                  </a-button>
+                </a-space>
+              </template>
 
-          <!-- 提示词模版选择 -->
-          <div style="margin-bottom: 12px">
-            <a-row :gutter="8" align="middle">
-              <a-col :span="16">
-                <a-select
-                  v-model:value="selectedTemplateId"
-                  style="width: 100%"
-                  size="small"
-                  placeholder="选择提示词模版"
-                  allow-clear
-                  @change="onTemplateChange"
-                >
-                  <a-select-option v-for="t in promptTemplates" :key="t.id" :value="t.id">
-                    {{ t.name }}
-                    <a-tag v-if="t.is_default" color="gold" style="margin-left: 4px">默认</a-tag>
-                  </a-select-option>
-                </a-select>
-              </a-col>
-              <a-col :span="8">
-                <a-button type="link" size="small" @click="showTemplateModal = true">
-                  <template #icon><SettingOutlined /></template>
-                  管理模版
-                </a-button>
-              </a-col>
-            </a-row>
-          </div>
-
-          <!-- 提示词编辑 -->
-          <div style="margin-bottom: 12px">
-            <div style="margin-bottom: 4px; color: #666; font-size: 12px">提示词模板内容</div>
-            <a-textarea v-model:value="llmPrompt" :rows="6" :disabled="!asrResult" placeholder="请先完成 ASR 转写，或从上方选择模版" />
-          </div>
-
-          <!-- LLM 结果 -->
-          <div v-if="llmResult">
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <div style="font-size: 12px; color: #666; margin-bottom: 4px">右侧卵泡</div>
-                <div style="font-size: 20px; font-weight: bold">
-                  {{ llmResult.structured?.right_follicle_total ?? '-' }}
-                  <CheckCircleOutlined v-if="compareField('right_follicle_total', true)" style="color: #52c41a" />
-                  <CloseCircleOutlined v-else-if="compareField('right_follicle_total', false)" style="color: #ff4d4f" />
+              <!-- LLM 结果 -->
+              <div v-if="llmResult" style="max-height: 320px; overflow-y: auto">
+                <!-- 准确率 -->
+                <div style="margin-bottom: 12px; text-align: right">
+                  <span style="font-size: 12px; color: #666">准确率：</span>
+                  <span style="font-size: 16px; font-weight: bold; color: #1677ff">{{ llmResult.accuracy != null ? (llmResult.accuracy * 100).toFixed(0) + '%' : '-' }}</span>
                 </div>
-              </a-col>
-              <a-col :span="12">
-                <div style="font-size: 12px; color: #666; margin-bottom: 4px">左侧卵泡</div>
-                <div style="font-size: 20px; font-weight: bold">
-                  {{ llmResult.structured?.left_follicle_total ?? '-' }}
-                  <CheckCircleOutlined v-if="compareField('left_follicle_total', true)" style="color: #52c41a" />
-                  <CloseCircleOutlined v-else-if="compareField('left_follicle_total', false)" style="color: #ff4d4f" />
-                </div>
-              </a-col>
-            </a-row>
-            <a-row :gutter="16" style="margin-top: 8px">
-              <a-col :span="8">
-                <div style="font-size: 12px; color: #666">内膜厚度</div>
-                <div style="font-size: 16px">
-                  {{ llmResult.structured?.endometrium_thickness != null ? llmResult.structured.endometrium_thickness + ' mm' : '-' }}
-                  <CheckCircleOutlined v-if="compareField('endometrium_thickness', true)" style="color: #52c41a" />
-                  <CloseCircleOutlined v-else-if="compareField('endometrium_thickness', false)" style="color: #ff4d4f" />
-                </div>
-              </a-col>
-              <a-col :span="8">
-                <div style="font-size: 12px; color: #666">内膜类型</div>
-                <div style="font-size: 16px">
-                  {{ llmResult.structured?.endometrium_type || '-' }}
-                  <CheckCircleOutlined v-if="compareField('endometrium_type', true)" style="color: #52c41a" />
-                  <CloseCircleOutlined v-else-if="compareField('endometrium_type', false)" style="color: #ff4d4f" />
-                </div>
-              </a-col>
-              <a-col :span="8">
-                <div style="font-size: 12px; color: #666">准确率</div>
-                <div style="font-size: 16px; font-weight: bold; color: #1677ff">{{ llmResult.accuracy != null ? (llmResult.accuracy * 100).toFixed(0) + '%' : '-' }}</div>
-              </a-col>
-            </a-row>
-          </div>
-          <a-empty v-else description="请先完成 ASR 转写" style="padding: 20px 0" />
-        </a-card>
 
-        <!-- ==================== B 超结果 ==================== -->
-        <template v-if="selectedRecord.result">
-          <a-divider>B 超检查结果（真实值）</a-divider>
-          <a-row :gutter="16">
-            <a-col :span="12">
-              <a-card size="small" title="右侧卵泡" style="margin-bottom: 16px">
-                <div style="font-size: 24px; font-weight: bold">{{ selectedRecord.result.right_follicle_total }} 个</div>
-                <div style="color: #666; font-size: 12px">{{ formatFollicles(selectedRecord.result.right_follicles) }}</div>
-              </a-card>
-            </a-col>
-            <a-col :span="12">
-              <a-card size="small" title="左侧卵泡" style="margin-bottom: 16px">
-                <div style="font-size: 24px; font-weight: bold">{{ selectedRecord.result.left_follicle_total }} 个</div>
-                <div style="color: #666; font-size: 12px">{{ formatFollicles(selectedRecord.result.left_follicles) }}</div>
-              </a-card>
-            </a-col>
-          </a-row>
-          <a-descriptions :column="2" bordered size="small">
-            <a-descriptions-item label="内膜厚度">
-              {{ selectedRecord.result.endometrium_thickness != null ? selectedRecord.result.endometrium_thickness + ' mm' : '-' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="内膜类型">{{ selectedRecord.result.endometrium_type || '-' }}</a-descriptions-item>
-            <a-descriptions-item label="右卵巢">
-              {{ selectedRecord.result.right_ovary_length && selectedRecord.result.right_ovary_width ? `${selectedRecord.result.right_ovary_length} × ${selectedRecord.result.right_ovary_width} mm` : '-' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="左卵巢">
-              {{ selectedRecord.result.left_ovary_length && selectedRecord.result.left_ovary_width ? `${selectedRecord.result.left_ovary_length} × ${selectedRecord.result.left_ovary_width} mm` : '-' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="备注" :span="2">{{ selectedRecord.result.remark || '-' }}</a-descriptions-item>
-          </a-descriptions>
-        </template>
+                <!-- 其他字段描述 -->
+                <a-descriptions :column="2" bordered size="small">
+                  <a-descriptions-item label="内膜厚度">
+                    <span :style="{ color: compareField('endometrium_thickness', true) ? '#52c41a' : (compareField('endometrium_thickness', false) ? '#ff4d4f' : 'inherit') }">
+                      {{ llmResult.structured?.endometrium_thickness != null ? llmResult.structured.endometrium_thickness + ' mm' : '-' }}
+                    </span>
+                  </a-descriptions-item>
+                  <a-descriptions-item label="内膜类型">
+                    <span :style="{ color: compareField('endometrium_type', true) ? '#52c41a' : (compareField('endometrium_type', false) ? '#ff4d4f' : 'inherit') }">
+                      {{ llmResult.structured?.endometrium_type || '-' }}
+                    </span>
+                  </a-descriptions-item>
+                  <a-descriptions-item label="右卵巢">
+                    {{ llmResult.structured?.right_ovary_length && llmResult.structured?.right_ovary_width ? `${llmResult.structured.right_ovary_length} × ${llmResult.structured.right_ovary_width} mm` : '-' }}
+                  </a-descriptions-item>
+                  <a-descriptions-item label="左卵巢">
+                    {{ llmResult.structured?.left_ovary_length && llmResult.structured?.left_ovary_width ? `${llmResult.structured.left_ovary_length} × ${llmResult.structured.left_ovary_width} mm` : '-' }}
+                  </a-descriptions-item>
+                </a-descriptions>
+
+                <!-- LLM 原始返回 JSON -->
+                <a-collapse style="margin-top: 12px">
+                  <a-collapse-panel key="raw" header="查看 LLM 原始返回">
+                    <pre style="background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto">{{ formatRawJson(llmResult) }}</pre>
+                  </a-collapse-panel>
+                </a-collapse>
+              </div>
+              <a-empty v-else description="请先完成 ASR 转写" style="padding: 20px 0" />
+            </a-card>
+          </a-col>
+        </a-row>
+
+        <!-- ==================== 卵泡明细 + B 超结果 并行显示 ==================== -->
+        <a-divider>卵泡明细对比</a-divider>
+        <a-row :gutter="16">
+          <!-- LLM 卵泡结果 -->
+          <a-col :span="12">
+            <a-card size="small" title="LLM 提取结果" style="margin-bottom: 16px">
+              <template #extra>
+                <a-tag v-if="llmResult" color="purple">{{ llmResult.model_name }}</a-tag>
+              </template>
+              <div v-if="llmResult">
+                <a-row :gutter="12" style="margin-bottom: 12px">
+                  <a-col :span="12">
+                    <a-card size="small" title="右侧卵泡" style="margin-bottom: 8px">
+                      <div style="font-size: 22px; font-weight: bold">
+                        {{ llmResult.structured?.right_follicle_total ?? '-' }}
+                        <span style="font-size: 14px; font-weight: normal">个</span>
+                        <CheckCircleOutlined v-if="compareField('right_follicle_total', true)" style="color: #52c41a; margin-left: 4px" />
+                        <CloseCircleOutlined v-else-if="compareField('right_follicle_total', false)" style="color: #ff4d4f; margin-left: 4px" />
+                      </div>
+                      <div style="color: #666; font-size: 12px; margin-top: 4px">
+                        {{ formatFollicles(llmResult.structured?.right_follicles) }}
+                      </div>
+                    </a-card>
+                  </a-col>
+                  <a-col :span="12">
+                    <a-card size="small" title="左侧卵泡" style="margin-bottom: 8px">
+                      <div style="font-size: 22px; font-weight: bold">
+                        {{ llmResult.structured?.left_follicle_total ?? '-' }}
+                        <span style="font-size: 14px; font-weight: normal">个</span>
+                        <CheckCircleOutlined v-if="compareField('left_follicle_total', true)" style="color: #52c41a; margin-left: 4px" />
+                        <CloseCircleOutlined v-else-if="compareField('left_follicle_total', false)" style="color: #ff4d4f; margin-left: 4px" />
+                      </div>
+                      <div style="color: #666; font-size: 12px; margin-top: 4px">
+                        {{ formatFollicles(llmResult.structured?.left_follicles) }}
+                      </div>
+                    </a-card>
+                  </a-col>
+                </a-row>
+                <a-descriptions :column="2" bordered size="small">
+                  <a-descriptions-item label="内膜厚度">
+                    <span :style="{ color: compareField('endometrium_thickness', true) ? '#52c41a' : (compareField('endometrium_thickness', false) ? '#ff4d4f' : 'inherit') }">
+                      {{ llmResult.structured?.endometrium_thickness != null ? llmResult.structured.endometrium_thickness + ' mm' : '-' }}
+                    </span>
+                  </a-descriptions-item>
+                  <a-descriptions-item label="内膜类型">
+                    <span :style="{ color: compareField('endometrium_type', true) ? '#52c41a' : (compareField('endometrium_type', false) ? '#ff4d4f' : 'inherit') }">
+                      {{ llmResult.structured?.endometrium_type || '-' }}
+                    </span>
+                  </a-descriptions-item>
+                </a-descriptions>
+              </div>
+              <a-empty v-else description="请先完成 LLM 提取" style="padding: 20px 0" />
+            </a-card>
+          </a-col>
+
+          <!-- B 超真实结果 -->
+          <a-col :span="12">
+            <a-card size="small" title="B 超检查结果（真实值）" style="margin-bottom: 16px" v-if="selectedRecord.result">
+              <a-row :gutter="12" style="margin-bottom: 12px">
+                <a-col :span="12">
+                  <a-card size="small" title="右侧卵泡" style="margin-bottom: 8px">
+                    <div style="font-size: 22px; font-weight: bold">{{ selectedRecord.result.right_follicle_total }} 个</div>
+                    <div style="color: #666; font-size: 12px; margin-top: 4px">{{ formatFollicles(selectedRecord.result.right_follicles) }}</div>
+                  </a-card>
+                </a-col>
+                <a-col :span="12">
+                  <a-card size="small" title="左侧卵泡" style="margin-bottom: 8px">
+                    <div style="font-size: 22px; font-weight: bold">{{ selectedRecord.result.left_follicle_total }} 个</div>
+                    <div style="color: #666; font-size: 12px; margin-top: 4px">{{ formatFollicles(selectedRecord.result.left_follicles) }}</div>
+                  </a-card>
+                </a-col>
+              </a-row>
+              <a-descriptions :column="2" bordered size="small">
+                <a-descriptions-item label="内膜厚度">
+                  {{ selectedRecord.result.endometrium_thickness != null ? selectedRecord.result.endometrium_thickness + ' mm' : '-' }}
+                </a-descriptions-item>
+                <a-descriptions-item label="内膜类型">{{ selectedRecord.result.endometrium_type || '-' }}</a-descriptions-item>
+                <a-descriptions-item label="右卵巢">
+                  {{ selectedRecord.result.right_ovary_length && selectedRecord.result.right_ovary_width ? `${selectedRecord.result.right_ovary_length} × ${selectedRecord.result.right_ovary_width} mm` : '-' }}
+                </a-descriptions-item>
+                <a-descriptions-item label="左卵巢">
+                  {{ selectedRecord.result.left_ovary_length && selectedRecord.result.left_ovary_width ? `${selectedRecord.result.left_ovary_length} × ${selectedRecord.result.left_ovary_width} mm` : '-' }}
+                </a-descriptions-item>
+                <a-descriptions-item label="备注" :span="2" v-if="selectedRecord.result.remark">{{ selectedRecord.result.remark }}</a-descriptions-item>
+              </a-descriptions>
+            </a-card>
+            <a-card v-else size="small" title="B 超检查结果" style="margin-bottom: 16px">
+              <a-empty description="该患者无 B 超结果" style="padding: 20px 0" />
+            </a-card>
+          </a-col>
+        </a-row>
       </template>
     </a-drawer>
 
@@ -350,8 +385,8 @@ export default defineComponent({
     async function loadModels() {
       try {
         const [asr, llm] = await Promise.all([modelApi.list('asr'), modelApi.list('llm')])
-        asrModels.value = asr as any[]
-        llmModels.value = llm as any[]
+        asrModels.value = asr as unknown as any[]
+        llmModels.value = llm as unknown as any[]
         if (asr.length > 0) asrModelId.value = asr[0].id
       } catch (e) { console.error(e) }
     }
@@ -419,7 +454,7 @@ export default defineComponent({
           llm_model_id: llmModelId.value,
           prompt_template: llmPrompt.value,
         })
-        llmResultMap.value = { ...llmResultMap.value, [selectedRecord.value.record_id]: res }
+        llmResultMap.value = { ...llmResultMap.value, [selectedRecord.value!.record_id]: res }
       } catch { message.error('LLM 提取失败') }
       finally { llmRunning.value = false }
     }
@@ -440,10 +475,10 @@ export default defineComponent({
     async function loadTemplates() {
       templateLoading.value = true
       try {
-        promptTemplates.value = await promptTemplateApi.list()
+        promptTemplates.value = await promptTemplateApi.list() as unknown as any[]
         if (promptTemplates.value.length === 0) {
           await promptTemplateApi.initDefaults()
-          promptTemplates.value = await promptTemplateApi.list()
+          promptTemplates.value = await promptTemplateApi.list() as unknown as any[]
         }
         const defaultTmpl = promptTemplates.value.find((t: any) => t.is_default)
         selectedTemplateId.value = defaultTmpl?.id ?? promptTemplates.value[0]?.id
@@ -528,11 +563,19 @@ export default defineComponent({
 
     function compareField(field: string, correct: boolean): boolean {
       if (!llmResult.value?.structured || !selectedRecord.value?.result) return false
-      const llmVal = llmResult.value.structured[field]
-      const gtVal = selectedRecord.value.result[field]
+      const llmVal = (llmResult.value.structured as any)[field]
+      const gtVal = (selectedRecord.value.result as any)[field]
       if (llmVal == null || gtVal == null) return false
       const match = String(llmVal).trim() === String(gtVal).trim()
       return correct ? match : !match && llmVal !== undefined
+    }
+
+    function formatRawJson(llmResult: any): string {
+      if (!llmResult) return ''
+      const { model_name, structured, raw_text, accuracy } = llmResult
+      const display: any = { model_name, accuracy, structured }
+      if (raw_text) display.raw_text = raw_text
+      return JSON.stringify(display, null, 2)
     }
 
     onMounted(() => { loadModels(); loadTemplates() })
@@ -540,7 +583,7 @@ export default defineComponent({
     return {
       searchText, drawerOpen, selectedRecord, batches, selectedBatch, loadingTree,
       allRecords, filteredRecords, asrModels, asrModelId, asrRunning, asrResult, runAsr,
-      llmModels, llmModelId, llmRunning, llmResult, llmPrompt, runLlm, compareField,
+      llmModels, llmModelId, llmRunning, llmResult, llmPrompt, runLlm, compareField, formatRawJson,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
       // 提示词模版

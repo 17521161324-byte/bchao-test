@@ -75,6 +75,7 @@ async def run_asr_only(
         "endpoint": asr_model.endpoint,
         "api_key": asr_model.api_key,
         "api_secret": asr_model.api_secret,
+        "secret_key": asr_model.secret_key,
         "model_name": asr_model.model_name,
     })
 

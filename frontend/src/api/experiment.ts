@@ -1,9 +1,7 @@
 /**
  * Experiment API client
  */
-import axios from 'axios';
-
-const client = axios.create({ baseURL: '/api' });
+import client from './client';
 
 export const experimentApi = {
   list: () => client.get('/experiments'),

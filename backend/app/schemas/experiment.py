@@ -9,6 +9,7 @@ from datetime import datetime
 class ExperimentBatchCreate(BaseModel):
     name: str
     description: str = ""
+    remark: str = ""
     selected_dates: list[str] = Field(default_factory=list)
     selected_patient_ids: list[str] = Field(default_factory=list)
 
@@ -25,7 +26,9 @@ class ExperimentBatchOut(BaseModel):
     id: int
     name: str
     description: str
-    selected_dates: list[str]
+    remark: str = ""
+    selected_dates: list[str] = Field(default_factory=list)
+    selected_patient_ids: list[str] = Field(default_factory=list)
     status: str
     total_tasks: int = 0
     success_count: int = 0
@@ -112,7 +115,18 @@ class ExperimentListResponse(BaseModel):
     id: int
     name: str
     status: str
+    remark: str = ""
+    selected_dates: list[str] = Field(default_factory=list)
+    selected_patient_ids: list[str] = Field(default_factory=list)
     total_tasks: int
     success_count: int
     failure_count: int
     created_at: datetime
+    # 新增字段
+    patient_count: int = 0
+    field_accuracy: dict = Field(default_factory=dict)
+    asr_models: list[str] = Field(default_factory=list)
+    llm_models: list[str] = Field(default_factory=list)
+    prompt_templates: list[str] = Field(default_factory=list)
+
+    model_config = {"protected_namespaces": (), "from_attributes": True}

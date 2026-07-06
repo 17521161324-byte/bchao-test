@@ -121,5 +121,13 @@ def create_asr(provider: str, **kwargs) -> BaseASR:
                 api_secret=kwargs.get("api_secret", ""),
                 endpoint=kwargs.get("endpoint", ""),
             )
+        case "volcengine":
+            from app.services.asr.volcengine_asr import VolcengineBigModelASR
+            return VolcengineBigModelASR(
+                api_key=kwargs.get("api_key"),
+                endpoint=kwargs.get("endpoint"),
+                access_key=kwargs.get("api_secret"),  # api_secret 存的是 access_token
+                secret_key=kwargs.get("secret_key"),  # 真正的签名密钥
+            )
         case _:
             raise ValueError(f"未知的 ASR provider: {provider}")

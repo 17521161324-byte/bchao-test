@@ -132,6 +132,7 @@ class ExperimentRunner:
                             "right_ovary_width": gt.right_ovary_width,
                             "left_ovary_length": gt.left_ovary_length,
                             "left_ovary_width": gt.left_ovary_width,
+                            "remark": gt.remark,
                         }
                     )
                     task.evaluation = evaluation

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     DEFAULT_ASR_PROVIDER: str = "local"
 
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000", "http://localhost:5190", "http://localhost:5180"]
 
     # 日志
     LOG_LEVEL: str = "INFO"

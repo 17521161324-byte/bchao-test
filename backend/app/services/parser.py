@@ -106,6 +106,7 @@ def evaluate_result(identified: dict, ground_truth: dict) -> dict:
         ("right_ovary_width", "right_ovary_width", "number", 2.0),
         ("left_ovary_length", "left_ovary_length", "number", 2.0),
         ("left_ovary_width", "left_ovary_width", "number", 2.0),
+        ("remark", "remark", "string", 0),
     ]
 
     correct = 0

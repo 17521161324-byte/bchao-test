@@ -41,6 +41,7 @@ class ExperimentBatch(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(200), nullable=False)
     description = Column(Text, default="")
+    remark = Column(Text, default="")  # 实验备注（独立于描述）
     selected_dates = Column(JSON, default=list)  # ["20260622", "20260623"]
     selected_patient_ids = Column(JSON, default=list)  # ["A017750", "A017503"]
     status = Column(String(20), default=BatchStatus.PENDING.value)
