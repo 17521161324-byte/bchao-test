@@ -48,15 +48,16 @@ async def run_asr_only(
         select(PatientRecord)
         .options(selectinload(PatientRecord.segs))
         .where(PatientRecord.record_id == record_id)
-        .order_by(PatientRecord.id)
+        .order_by(PatientRecord.id.desc())
     )
     patients = result.scalars().all()
     if not patients:
         raise HTTPException(status_code=404, detail=f"病历号 {record_id} 不存在")
-    patient = patients[0]
+    # 优先选有 segs 的记录
+    patient = next((p for p in patients if p.segs), patients[0])
 
     if not patient.segs:
-        raise HTTPException(status_code=400, message="该病历无录音文件")
+        raise HTTPException(status_code=400, detail="该病历无录音文件")
 
     asr_result = await db.execute(
         select(ModelConfig).where(ModelConfig.id == asr_model_id)
@@ -121,7 +122,7 @@ async def start_test(
     patient = patients[0]
 
     if not patient.segs:
-        raise HTTPException(status_code=400, message="该病历无录音文件")
+        raise HTTPException(status_code=400, detail="该病历无录音文件")
 
     # 查找 ASR 模型
     asr_result = await db.execute(
@@ -129,7 +130,7 @@ async def start_test(
     )
     asr_model = asr_result.scalar_one_or_none()
     if not asr_model:
-        raise HTTPException(status_code=404, message="ASR 模型不存在")
+        raise HTTPException(status_code=404, detail="ASR 模型不存在")
 
     # 查找 LLM 模型（可选）
     llm_model = None
@@ -308,12 +309,12 @@ async def run_llm_extraction(data: dict, db: AsyncSession = Depends(get_db)):
             "model_name": llm_model.model_name,
         })
     else:
-        raise HTTPException(status_code=400, message="请提供有效的 LLM 模型")
+        raise HTTPException(status_code=400, detail="请提供有效的 LLM 模型")
 
     try:
         response = await llm.extract(transcript, prompt_template)
     except Exception as e:
-        raise HTTPException(status_code=500, message=f"LLM 调用失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"LLM 调用失败: {str(e)}")
 
     return {
         "model_name": llm_model.name if llm_model else "unknown",

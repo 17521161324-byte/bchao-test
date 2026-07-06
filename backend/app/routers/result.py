@@ -24,7 +24,7 @@ async def upload_result_file(
 ):
     """上传 B 超结果 xlsx 文件"""
     if not file.filename.endswith((".xlsx", ".xls")):
-        raise HTTPException(status_code=400, message="只支持 xlsx/xls 文件")
+        raise HTTPException(status_code=400, detail="只支持 xlsx/xls 文件")
 
     # 保存文件
     save_path = os.path.join(settings.UPLOAD_DIR, file.filename)
@@ -41,7 +41,7 @@ async def upload_result_file(
         return {"message": "上传成功", "imported": count, "filename": file.filename}
     except Exception as e:
         logger.error(f"xlsx 解析失败: {e}")
-        raise HTTPException(status_code=500, message=f"解析失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
 
 
 @router.get("/{record_id}", response_model=BUltraResultOut | None)
@@ -68,7 +68,7 @@ async def update_result(
     )
     obj = result.scalar_one_or_none()
     if not obj:
-        raise HTTPException(status_code=404, message="结果不存在")
+        raise HTTPException(status_code=404, detail="结果不存在")
 
     # Update follicles if provided (recalculate totals)
     if "right_follicles" in data:

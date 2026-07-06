@@ -19,7 +19,9 @@ export default defineConfig({
     sourcemap: false,
   },
   server: {
-    port: 5173,
+    port: 5190,
+    strictPort: false,
+    host: '127.0.0.1',
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

@@ -61,9 +61,9 @@ export const modelApi = {
 // ========== 测试执行 ==========
 export const testApi = {
   runAsr: (recordId: string, asrModelId: number) =>
-    client.get('/test/asr', { params: { record_id: recordId, asr_model_id: asrModelId } }),
+    client.get('/test/asr', { params: { record_id: recordId, asr_model_id: asrModelId }, timeout: 600000 }),
   runLlm: (data: { transcript: string; llm_model_id?: number; prompt_template: string }) =>
-    client.post('/test/llm', data),
+    client.post('/test/llm', data, { timeout: 300000 }),
   getHistory: (params?: any) => client.get('/test/history', { params }),
   getResult: (testId: number) => client.get(`/test/${testId}`),
   updateEval: (testId: number, data: any) => client.put(`/test/${testId}/evaluate`, data),
@@ -84,6 +84,18 @@ export function startTestSSE(data: {
 
   const url = `${API_BASE}/test/start?${params.toString()}`
   return new EventSource(url)
+}
+
+// ========== 提示词模版 ==========
+export const promptTemplateApi = {
+  list: () => client.get('/prompt-template'),
+  get: (id: number) => client.get(`/prompt-template/${id}`),
+  create: (data: { name: string; content: string; is_default?: boolean }) =>
+    client.post('/prompt-template', data),
+  update: (id: number, data: { name?: string; content?: string; is_default?: boolean }) =>
+    client.put(`/prompt-template/${id}`, data),
+  delete: (id: number) => client.delete(`/prompt-template/${id}`),
+  initDefaults: () => client.post('/prompt-template/init-defaults'),
 }
 
 export default client

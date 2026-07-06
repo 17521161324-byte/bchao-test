@@ -66,6 +66,8 @@
             <a-select-option value="local">本地</a-select-option>
             <a-select-option value="iflytek">讯飞</a-select-option>
             <a-select-option value="tencent">腾讯</a-select-option>
+            <a-select-option value="deepseek">DeepSeek</a-select-option>
+            <a-select-option value="mimo">MiMo</a-select-option>
           </a-select>
         </a-form-item>
         <a-form-item name="endpoint" label="Endpoint URL" :rules="[{ required: true, message: '请输入Endpoint' }]">

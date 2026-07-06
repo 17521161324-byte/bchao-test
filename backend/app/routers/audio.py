@@ -72,10 +72,10 @@ async def get_audio_file(path: str):
     full_path = os.path.realpath(path)
 
     if not full_path.startswith(recordings_dir):
-        raise HTTPException(status_code=403, message="禁止访问")
+        raise HTTPException(status_code=403, detail="禁止访问")
 
     if not os.path.isfile(full_path):
-        raise HTTPException(status_code=404, message="文件不存在")
+        raise HTTPException(status_code=404, detail="文件不存在")
 
     from fastapi.responses import FileResponse
     return FileResponse(
@@ -126,7 +126,7 @@ async def scan_recordings(db: AsyncSession = Depends(get_db)):
     """
     recordings_dir = settings.RECORDINGS_DIR
     if not os.path.isdir(recordings_dir):
-        raise HTTPException(status_code=400, message=f"录音目录不存在: {recordings_dir}")
+        raise HTTPException(status_code=400, detail=f"录音目录不存在: {recordings_dir}")
 
     scanned = {"dates": 0, "patients": 0, "segs": 0}
 
@@ -386,7 +386,7 @@ async def delete_patient(patient_id: int, db: AsyncSession = Depends(get_db)):
 
     deleted = await asyncio.to_thread(_do_delete)
     if deleted == 0:
-        raise HTTPException(status_code=404, message="患者不存在")
+        raise HTTPException(status_code=404, detail="患者不存在")
     return {"message": "已删除", "id": patient_id}
 
 

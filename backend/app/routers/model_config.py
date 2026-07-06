@@ -51,7 +51,7 @@ async def update_model(
     result = await db.execute(select(ModelConfig).where(ModelConfig.id == model_id))
     model = result.scalar_one_or_none()
     if not model:
-        raise HTTPException(status_code=404, message="模型不存在")
+        raise HTTPException(status_code=404, detail="模型不存在")
 
     update_data = data.model_dump(exclude_unset=True)
     for k, v in update_data.items():
@@ -71,7 +71,7 @@ async def delete_model(
     result = await db.execute(select(ModelConfig).where(ModelConfig.id == model_id))
     model = result.scalar_one_or_none()
     if not model:
-        raise HTTPException(status_code=404, message="模型不存在")
+        raise HTTPException(status_code=404, detail="模型不存在")
     await db.delete(model)
     await db.commit()
     return {"message": "删除成功"}
@@ -90,18 +90,19 @@ async def test_model_connection(
     result = await db.execute(select(ModelConfig).where(ModelConfig.id == model_id))
     model = result.scalar_one_or_none()
     if not model:
-        raise HTTPException(status_code=404, message="模型不存在")
+        raise HTTPException(status_code=404, detail="模型不存在")
 
     start = time.time()
     try:
         if model.model_type == "asr":
             asr = create_asr(model.provider, endpoint=model.endpoint,
                             api_key=model.api_key or "", api_secret=model.api_secret or "")
-            ok = await asr.health_check()
+            # 仅当实现了 health_check 时才测试
+            ok = await asr.health_check() if hasattr(asr, 'health_check') else False
         elif model.model_type == "llm":
             llm = create_llm(model.provider, endpoint=model.endpoint,
                              api_key=model.api_key or "")
-            ok = await llm.health_check()
+            ok = await llm.health_check() if hasattr(llm, 'health_check') else False
         else:
             ok = False
 
@@ -124,9 +125,9 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
     """初始化默认模型配置"""
     from app.config import settings
 
-    # 检查是否已存在
+    # 检查是否已存在 local ASR（任意一条即可）
     result = await db.execute(select(ModelConfig).where(ModelConfig.provider == "local"))
-    if not result.scalar_one_or_none():
+    if not result.scalars().all():
         default_asr = ModelConfig(
             name="本地 FunASR",
             model_type="asr",
@@ -137,9 +138,11 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
         )
         db.add(default_asr)
 
-    # 检查 MiMo
-    result = await db.execute(select(ModelConfig).where(ModelConfig.provider == "mimo"))
-    if not result.scalar_one_or_none():
+    # 检查 MiMo ASR
+    result = await db.execute(select(ModelConfig).where(
+        ModelConfig.provider == "mimo", ModelConfig.model_type == "asr"
+    ))
+    if not result.scalars().all():
         mimo_asr = ModelConfig(
             name="MiMo-V2.5-ASR",
             model_type="asr",
@@ -150,6 +153,36 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
             status="active",
         )
         db.add(mimo_asr)
+
+    # 检查 MiMo-V2.5-LLM (用于结构化提取)
+    result = await db.execute(select(ModelConfig).where(ModelConfig.name == "MiMo-V2.5-LLM"))
+    if not result.scalars().all():
+        mimo_llm = ModelConfig(
+            name="MiMo-V2.5-LLM",
+            model_type="llm",
+            provider="mimo",
+            endpoint="https://api.xiaomimimo.com/v1",
+            api_key="",
+            model_name="mimo-v2.5",
+            is_default=True,
+            status="active",
+        )
+        db.add(mimo_llm)
+
+    # 检查 DeepSeek (用于结构化提取)
+    result = await db.execute(select(ModelConfig).where(ModelConfig.provider == "deepseek"))
+    if not result.scalars().all():
+        deepseek_llm = ModelConfig(
+            name="DeepSeek",
+            model_type="llm",
+            provider="deepseek",
+            endpoint="https://api.deepseek.com/v1",
+            api_key="",
+            model_name="deepseek-chat",
+            is_default=False,
+            status="active",
+        )
+        db.add(deepseek_llm)
 
     await db.commit()
     return {"message": "初始化成功"}

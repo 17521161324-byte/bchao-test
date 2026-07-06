@@ -133,3 +133,15 @@ class TestRun(Base):
     # 元信息
     duration_seconds = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PromptTemplate(Base):
+    """LLM 提示词模版"""
+    __tablename__ = "prompt_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True)  # 模版名称
+    content = Column(Text)  # 模版内容（含 {transcript} 占位符）
+    is_default = Column(Boolean, default=False)  # 是否为默认模版
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

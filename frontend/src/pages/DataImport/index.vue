@@ -82,7 +82,7 @@
             <div style="font-size: 13px; color: #666; margin-bottom: 4px">转写结果：</div>
             <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 14px; line-height: 1.8; white-space: pre-wrap">{{ asrResult.full_transcript || '(无内容)' }}</div>
           </div>
-          <a-empty v-else description="暂无转写结果" :image="null" style="padding: 20px 0" />
+          <a-empty v-else description="暂无转写结果" style="padding: 20px 0" />
         </a-card>
 
         <!-- ==================== LLM 区域 ==================== -->
@@ -101,10 +101,37 @@
             </a-button>
           </template>
 
+          <!-- 提示词模版选择 -->
+          <div style="margin-bottom: 12px">
+            <a-row :gutter="8" align="middle">
+              <a-col :span="16">
+                <a-select
+                  v-model:value="selectedTemplateId"
+                  style="width: 100%"
+                  size="small"
+                  placeholder="选择提示词模版"
+                  allow-clear
+                  @change="onTemplateChange"
+                >
+                  <a-select-option v-for="t in promptTemplates" :key="t.id" :value="t.id">
+                    {{ t.name }}
+                    <a-tag v-if="t.is_default" color="gold" style="margin-left: 4px">默认</a-tag>
+                  </a-select-option>
+                </a-select>
+              </a-col>
+              <a-col :span="8">
+                <a-button type="link" size="small" @click="showTemplateModal = true">
+                  <template #icon><SettingOutlined /></template>
+                  管理模版
+                </a-button>
+              </a-col>
+            </a-row>
+          </div>
+
           <!-- 提示词编辑 -->
           <div style="margin-bottom: 12px">
-            <div style="margin-bottom: 4px; color: #666; font-size: 12px">提示词模板</div>
-            <a-textarea v-model:value="llmPrompt" :rows="4" :disabled="!asrResult" placeholder="请先完成 ASR 转写" />
+            <div style="margin-bottom: 4px; color: #666; font-size: 12px">提示词模板内容</div>
+            <a-textarea v-model:value="llmPrompt" :rows="6" :disabled="!asrResult" placeholder="请先完成 ASR 转写，或从上方选择模版" />
           </div>
 
           <!-- LLM 结果 -->
@@ -150,7 +177,7 @@
               </a-col>
             </a-row>
           </div>
-          <a-empty v-else description="请先完成 ASR 转写" :image="null" style="padding: 20px 0" />
+          <a-empty v-else description="请先完成 ASR 转写" style="padding: 20px 0" />
         </a-card>
 
         <!-- ==================== B 超结果 ==================== -->
@@ -186,15 +213,86 @@
         </template>
       </template>
     </a-drawer>
+
+    <!-- 提示词模版管理弹窗 -->
+    <a-modal
+      v-model:open="showTemplateModal"
+      title="管理提示词模版"
+      width="800px"
+      :footer="null"
+    >
+      <a-tabs v-model:activeKey="templateTab">
+        <a-tab-pane key="list" tab="模版列表">
+          <a-table
+            :data-source="promptTemplates"
+            :loading="templateLoading"
+            size="small"
+            row-key="id"
+            :pagination="{ pageSize: 10 }"
+          >
+            <a-table-column title="名称" data-index="name" :width="180">
+              <template #default="{ record }">
+                {{ record.name }}
+                <a-tag v-if="record.is_default" color="gold" style="margin-left: 4px">默认</a-tag>
+              </template>
+            </a-table-column>
+            <a-table-column title="内容预览" data-index="content" ellipsis>
+              <template #default="{ record }">
+                <a-tooltip :title="record.content">{{ record.content }}</a-tooltip>
+              </template>
+            </a-table-column>
+            <a-table-column title="操作" :width="160">
+              <template #default="{ record }">
+                <a-space>
+                  <a-button size="small" @click="loadTemplateForEdit(record)">编辑</a-button>
+                  <a-popconfirm title="确认删除？" @confirm="deleteTemplate(record.id)">
+                    <a-button size="small" danger>删除</a-button>
+                  </a-popconfirm>
+                </a-space>
+              </template>
+            </a-table-column>
+          </a-table>
+        </a-tab-pane>
+
+        <a-tab-pane key="edit" tab="新增/编辑">
+          <a-form layout="vertical" size="small">
+            <a-form-item label="模版名称" required>
+              <a-input v-model:value="templateForm.name" placeholder="如：B超提取模版 v2" />
+            </a-form-item>
+            <a-form-item label="模版内容" required>
+              <template #label>
+                <span>模版内容 <span style="color: #ff4d4f">*</span></span>
+                <div style="color: #999; font-size: 11px; font-weight: normal">
+                  必须包含 <code>{transcript}</code> 占位符
+                </div>
+              </template>
+              <a-textarea v-model:value="templateForm.content" :rows="12" placeholder="模版内容..." />
+            </a-form-item>
+            <a-form-item>
+              <a-checkbox v-model:checked="templateForm.is_default">设为默认模版</a-checkbox>
+            </a-form-item>
+            <a-form-item>
+              <a-space>
+                <a-button type="primary" :loading="templateSaving" @click="saveTemplate">保存</a-button>
+                <a-button @click="resetTemplateForm">重置</a-button>
+                <a-button @click="templateTab = 'list'">返回列表</a-button>
+              </a-space>
+            </a-form-item>
+          </a-form>
+        </a-tab-pane>
+      </a-tabs>
+    </a-modal>
   </div>
 </template>
 
 <script lang="ts">
 import { defineComponent, ref, reactive, computed, onMounted } from 'vue'
 import { message } from 'ant-design-vue'
-import { ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons-vue'
+import {
+  ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
+} from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores'
-import { resultApi, modelApi, testApi } from '@/api/client'
+import { resultApi, modelApi, testApi, promptTemplateApi } from '@/api/client'
 import type { PatientExamination, BUltraResult } from '@/types'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
 
@@ -219,7 +317,9 @@ export default defineComponent({
     })
 
     function selectBatch(date: string | null) { store.selectBatch(date) }
-    function openDetail(record: PatientExamination) { store.openDrawer(record) }
+    function openDetail(record: PatientExamination) {
+  store.openDrawer(record)
+}
     function closeDrawer() { store.closeDrawer() }
     function onRowClick(record: PatientExamination) {
       return { onClick: () => openDetail(record), style: { cursor: 'pointer' } }
@@ -240,7 +340,12 @@ export default defineComponent({
     const asrModels = ref<any[]>([])
     const asrModelId = ref<number | undefined>(undefined)
     const asrRunning = ref(false)
-    const asrResult = ref<any>(null)
+    // 按 record_id 缓存 ASR 结果，患者切换回来时仍可看到之前的结果
+    const asrResultMap = ref<Record<string, any>>({})
+    const asrResult = computed(() => {
+      const id = selectedRecord.value?.record_id
+      return id ? asrResultMap.value[id] || null : null
+    })
 
     async function loadModels() {
       try {
@@ -256,7 +361,8 @@ export default defineComponent({
       asrRunning.value = true
       try {
         const res = await testApi.runAsr(selectedRecord.value.record_id, asrModelId.value)
-        asrResult.value = res
+        // 整体替换以触发响应式追踪
+        asrResultMap.value = { ...asrResultMap.value, [selectedRecord.value.record_id]: res }
       } catch { message.error('ASR 失败') }
       finally { asrRunning.value = false }
     }
@@ -265,7 +371,12 @@ export default defineComponent({
     const llmModels = ref<any[]>([])
     const llmModelId = ref<number | undefined>(undefined)
     const llmRunning = ref(false)
-    const llmResult = ref<any>(null)
+    // LLM 结果也按 record_id 缓存
+    const llmResultMap = ref<Record<string, any>>({})
+    const llmResult = computed(() => {
+      const id = selectedRecord.value?.record_id
+      return id ? llmResultMap.value[id] || null : null
+    })
     const llmPrompt = ref(`你是一名辅助生殖超声检查专家。请从以下 B 超检查的语音转写文本中提取关键信息，并以 JSON 格式返回。
 
 ## 需要提取的字段
@@ -308,9 +419,111 @@ export default defineComponent({
           llm_model_id: llmModelId.value,
           prompt_template: llmPrompt.value,
         })
-        llmResult.value = res
+        llmResultMap.value = { ...llmResultMap.value, [selectedRecord.value.record_id]: res }
       } catch { message.error('LLM 提取失败') }
       finally { llmRunning.value = false }
+    }
+
+    // ========== 提示词模版 ==========
+    const promptTemplates = ref<any[]>([])
+    const selectedTemplateId = ref<number | undefined>(undefined)
+    const showTemplateModal = ref(false)
+    const templateTab = ref<'list' | 'edit'>('list')
+    const templateLoading = ref(false)
+    const templateSaving = ref(false)
+    const templateForm = reactive<{ id?: number; name: string; content: string; is_default: boolean }>({
+      name: '',
+      content: '',
+      is_default: false,
+    })
+
+    async function loadTemplates() {
+      templateLoading.value = true
+      try {
+        promptTemplates.value = await promptTemplateApi.list()
+        if (promptTemplates.value.length === 0) {
+          await promptTemplateApi.initDefaults()
+          promptTemplates.value = await promptTemplateApi.list()
+        }
+        const defaultTmpl = promptTemplates.value.find((t: any) => t.is_default)
+        selectedTemplateId.value = defaultTmpl?.id ?? promptTemplates.value[0]?.id
+        if (selectedTemplateId.value) {
+          onTemplateChange(selectedTemplateId.value)
+        }
+      } catch (e) {
+        console.error('加载模版失败', e)
+      } finally {
+        templateLoading.value = false
+      }
+    }
+
+    function onTemplateChange(id: number | undefined) {
+      if (!id) return
+      const tmpl = promptTemplates.value.find((t: any) => t.id === id)
+      if (tmpl) {
+        llmPrompt.value = tmpl.content
+      }
+    }
+
+    function loadTemplateForEdit(record: any) {
+      templateForm.id = record.id
+      templateForm.name = record.name
+      templateForm.content = record.content
+      templateForm.is_default = record.is_default
+      templateTab.value = 'edit'
+    }
+
+    function resetTemplateForm() {
+      templateForm.id = undefined
+      templateForm.name = ''
+      templateForm.content = ''
+      templateForm.is_default = false
+    }
+
+    async function saveTemplate() {
+      if (!templateForm.name?.trim() || !templateForm.content?.trim()) {
+        message.error('请填写模版名称和内容')
+        return
+      }
+      if (!templateForm.content.includes('{transcript}')) {
+        message.error('模版内容必须包含 {transcript} 占位符')
+        return
+      }
+      templateSaving.value = true
+      try {
+        if (templateForm.id) {
+          await promptTemplateApi.update(templateForm.id, {
+            name: templateForm.name,
+            content: templateForm.content,
+            is_default: templateForm.is_default,
+          })
+          message.success('更新成功')
+        } else {
+          await promptTemplateApi.create({
+            name: templateForm.name,
+            content: templateForm.content,
+            is_default: templateForm.is_default,
+          })
+          message.success('创建成功')
+        }
+        await loadTemplates()
+        templateTab.value = 'list'
+        resetTemplateForm()
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '保存失败')
+      } finally {
+        templateSaving.value = false
+      }
+    }
+
+    async function deleteTemplate(id: number) {
+      try {
+        await promptTemplateApi.delete(id)
+        message.success('删除成功')
+        await loadTemplates()
+      } catch {
+        message.error('删除失败')
+      }
     }
 
     function compareField(field: string, correct: boolean): boolean {
@@ -322,14 +535,18 @@ export default defineComponent({
       return correct ? match : !match && llmVal !== undefined
     }
 
-    onMounted(() => { loadModels() })
+    onMounted(() => { loadModels(); loadTemplates() })
 
     return {
       searchText, drawerOpen, selectedRecord, batches, selectedBatch, loadingTree,
       allRecords, filteredRecords, asrModels, asrModelId, asrRunning, asrResult, runAsr,
       llmModels, llmModelId, llmRunning, llmResult, llmPrompt, runLlm, compareField,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles,
-      ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined,
+      ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
+      // 提示词模版
+      promptTemplates, selectedTemplateId, showTemplateModal, templateTab,
+      templateLoading, templateSaving, templateForm,
+      onTemplateChange, loadTemplateForEdit, resetTemplateForm, saveTemplate, deleteTemplate,
     }
   },
 })

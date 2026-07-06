@@ -54,6 +54,12 @@ class MiMoASR:
         try:
             async with httpx.AsyncClient(timeout=300) as client:
                 resp = await client.post(self.endpoint, headers=headers, json=body)
+
+                # 处理未授权等错误
+                if resp.status_code == 401:
+                    logger.error(f"MiMo ASR 认证失败: API Key 无效或过期")
+                    return ""
+
                 resp.raise_for_status()
                 result = resp.json()
 
@@ -64,9 +70,27 @@ class MiMoASR:
             except (KeyError, IndexError):
                 logger.error(f"MiMo 响应解析失败: {result}")
                 return ""
-        except Exception as e:
+        except httpx.HTTPStatusError as e:
             logger.error(f"MiMo ASR 调用失败: {e}")
             return ""
+        except Exception as e:
+            logger.error(f"MiMo ASR 未知错误: {e}")
+            return ""
+
+    async def health_check(self) -> bool:
+        """健康检查 - 简单验证 API Key 是否有效"""
+        try:
+            headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+            body = {
+                "model": "mimo-v2.5-asr",
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+                "max_tokens": 5
+            }
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(self.endpoint, headers=headers, json=body)
+                return resp.status_code == 200
+        except Exception:
+            return False
 
 
 class MiMoASRFactory:
