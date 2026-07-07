@@ -271,56 +271,60 @@
     <!-- 提示词模版管理弹窗 -->
     <a-modal
       v-model:open="showTemplateModal"
-      title="管理提示词模版"
-      width="800px"
+      title="提示词模版管理"
+      width="1000px"
       :footer="null"
+      destroy-on-close
     >
-      <a-tabs v-model:activeKey="templateTab">
-        <a-tab-pane key="list" tab="模版列表">
-          <a-table
+      <a-row :gutter="16">
+        <!-- 左侧:模版列表 -->
+        <a-col :span="6">
+          <a-button type="primary" size="small" style="margin-bottom: 12px" @click="createNewTemplate">
+            <template #icon><PlusOutlined /></template>
+            新增模版
+          </a-button>
+          <a-list
             :data-source="promptTemplates"
             :loading="templateLoading"
             size="small"
-            row-key="id"
-            :pagination="{ pageSize: 10 }"
+            bordered
+            style="max-height: 500px; overflow-y: auto"
           >
-            <a-table-column title="名称" data-index="name" :width="180">
-              <template #default="{ record }">
-                {{ record.name }}
-                <a-tag v-if="record.is_default" color="gold" style="margin-left: 4px">默认</a-tag>
-              </template>
-            </a-table-column>
-            <a-table-column title="内容预览" data-index="content" ellipsis>
-              <template #default="{ record }">
-                <a-tooltip :title="record.content">{{ record.content }}</a-tooltip>
-              </template>
-            </a-table-column>
-            <a-table-column title="操作" :width="160">
-              <template #default="{ record }">
-                <a-space>
-                  <a-button size="small" @click="loadTemplateForEdit(record)">编辑</a-button>
-                  <a-popconfirm title="确认删除？" @confirm="deleteTemplate(record.id)">
-                    <a-button size="small" danger>删除</a-button>
-                  </a-popconfirm>
-                </a-space>
-              </template>
-            </a-table-column>
-          </a-table>
-        </a-tab-pane>
+            <template #renderItem="{ item }">
+              <a-list-item
+                :style="{ background: selectedTemplateId === item.id ? '#e6f7ff' : 'transparent', cursor: 'pointer' }"
+                @click="selectTemplate(item.id)"
+              >
+                <a-list-item-meta>
+                  <template #title>
+                    <span>{{ item.name }}</span>
+                    <a-tag v-if="item.is_default" color="gold" style="margin-left: 4px">默认</a-tag>
+                  </template>
+                  <template #description>
+                    <div style="color: #999; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: pre-wrap; max-height: 40px">
+                      {{ item.content }}
+                    </div>
+                  </template>
+                </a-list-item-meta>
+              </a-list-item>
+            </template>
+          </a-list>
+        </a-col>
 
-        <a-tab-pane key="edit" tab="新增/编辑">
+        <!-- 右侧:模版详情/编辑 -->
+        <a-col :span="18">
           <a-form layout="vertical" size="small">
             <a-form-item label="模版名称" required>
               <a-input v-model:value="templateForm.name" placeholder="如：B超提取模版 v2" />
             </a-form-item>
-            <a-form-item label="模版内容" required>
+            <a-form-item required>
               <template #label>
                 <span>模版内容 <span style="color: #ff4d4f">*</span></span>
                 <div style="color: #999; font-size: 11px; font-weight: normal">
                   必须包含 <code>{transcript}</code> 占位符
                 </div>
               </template>
-              <a-textarea v-model:value="templateForm.content" :rows="12" placeholder="模版内容..." />
+              <a-textarea v-model:value="templateForm.content" :rows="14" placeholder="提示词模版内容..." />
             </a-form-item>
             <a-form-item>
               <a-checkbox v-model:checked="templateForm.is_default">设为默认模版</a-checkbox>
@@ -328,13 +332,13 @@
             <a-form-item>
               <a-space>
                 <a-button type="primary" :loading="templateSaving" @click="saveTemplate">保存</a-button>
-                <a-button @click="resetTemplateForm">重置</a-button>
-                <a-button @click="templateTab = 'list'">返回列表</a-button>
+                <a-button :disabled="!templateForm.id" danger @click="deleteTemplate(templateForm.id)">删除</a-button>
+                <a-button type="link" :disabled="!templateForm.content" @click="applyTemplateToCurrent">应用到当前检查</a-button>
               </a-space>
             </a-form-item>
           </a-form>
-        </a-tab-pane>
-      </a-tabs>
+        </a-col>
+      </a-row>
     </a-modal>
   </div>
 </template>
@@ -645,10 +649,13 @@ export default defineComponent({
           await promptTemplateApi.initDefaults()
           promptTemplates.value = await promptTemplateApi.list() as unknown as any[]
         }
+        // 自动选择默认模版或第一条
         const defaultTmpl = promptTemplates.value.find((t: any) => t.is_default)
-        selectedTemplateId.value = defaultTmpl?.id ?? promptTemplates.value[0]?.id
-        if (selectedTemplateId.value) {
-          onTemplateChange(selectedTemplateId.value)
+        const first = promptTemplates.value[0]
+        const target = defaultTmpl ?? first
+        if (target && !selectedTemplateId.value) {
+          selectedTemplateId.value = target.id
+          loadTemplateToForm(target)
         }
       } catch (e) {
         console.error('加载模版失败', e)
@@ -657,27 +664,52 @@ export default defineComponent({
       }
     }
 
-    function onTemplateChange(id: number | undefined) {
-      if (!id) return
+    // 点击左侧模版,加载到右侧表单
+    function selectTemplate(id: number) {
+      selectedTemplateId.value = id
       const tmpl = promptTemplates.value.find((t: any) => t.id === id)
-      if (tmpl) {
-        llmPrompt.value = tmpl.content
-      }
+      if (tmpl) loadTemplateToForm(tmpl)
     }
 
-    function loadTemplateForEdit(record: any) {
+    function loadTemplateToForm(record: any) {
       templateForm.id = record.id
       templateForm.name = record.name
       templateForm.content = record.content
       templateForm.is_default = record.is_default
-      templateTab.value = 'edit'
     }
 
-    function resetTemplateForm() {
+    function onTemplateChange(id: number | undefined) {
+      if (!id) return
+      const tmpl = promptTemplates.value.find((t: any) => t.id === id)
+      if (tmpl) llmPrompt.value = tmpl.content
+    }
+
+    function createNewTemplate() {
       templateForm.id = undefined
       templateForm.name = ''
       templateForm.content = ''
       templateForm.is_default = false
+      selectedTemplateId.value = undefined
+    }
+
+    function resetTemplateForm() {
+      if (templateForm.id) {
+        const tmpl = promptTemplates.value.find((t: any) => t.id === templateForm.id)
+        if (tmpl) loadTemplateToForm(tmpl)
+      } else {
+        createNewTemplate()
+      }
+    }
+
+    // 应用到当前检查
+    function applyTemplateToCurrent() {
+      if (!templateForm.content?.trim()) {
+        message.error('模版内容为空')
+        return
+      }
+      llmPrompt.value = templateForm.content
+      if (templateForm.id) selectedTemplateId.value = templateForm.id
+      message.success('已应用到当前检查')
     }
 
     async function saveTemplate() {
@@ -699,16 +731,17 @@ export default defineComponent({
           })
           message.success('更新成功')
         } else {
-          await promptTemplateApi.create({
+          const created = await promptTemplateApi.create({
             name: templateForm.name,
             content: templateForm.content,
             is_default: templateForm.is_default,
           })
+          templateForm.id = created?.id
           message.success('创建成功')
         }
         await loadTemplates()
-        templateTab.value = 'list'
-        resetTemplateForm()
+        // 保持当前编辑项选中
+        if (templateForm.id) selectedTemplateId.value = templateForm.id
       } catch (e: any) {
         message.error(e?.response?.data?.detail || '保存失败')
       } finally {
@@ -716,11 +749,19 @@ export default defineComponent({
       }
     }
 
-    async function deleteTemplate(id: number) {
+    async function deleteTemplate(id: number | undefined) {
+      if (!id) {
+        message.error('请先选择模版')
+        return
+      }
       try {
         await promptTemplateApi.delete(id)
         message.success('删除成功')
         await loadTemplates()
+        // 如果删除的是当前表单模版,重置表单
+        if (templateForm.id === id) {
+          createNewTemplate()
+        }
       } catch {
         message.error('删除失败')
       }
@@ -775,10 +816,10 @@ export default defineComponent({
       asrResultByModelId, currentAsrStatus, selectedAsrResult,
       llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles, getAsrModelStatusColor,
-      ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
-      promptTemplates, selectedTemplateId, showTemplateModal, templateTab,
+      ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined,
+      promptTemplates, selectedTemplateId, showTemplateModal,
       templateLoading, templateSaving, templateForm,
-      onTemplateChange, loadTemplateForEdit, resetTemplateForm, saveTemplate, deleteTemplate,
+      selectTemplate, createNewTemplate, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
       asrResultsAll, llmHistory,
     }
   },
