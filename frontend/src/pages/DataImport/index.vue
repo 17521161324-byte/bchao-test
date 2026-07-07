@@ -772,7 +772,13 @@ export default defineComponent({
     function onTemplateChange(id: number | undefined) {
       if (!id) return
       const tmpl = promptTemplates.value.find((t: any) => t.id === id)
-      if (tmpl) llmPrompt.value = tmpl.content
+      if (tmpl) {
+        llmPrompt.value = tmpl.content
+        // 提示用户重新提取
+        if (currentLlmResult.value && !llmRunning.value) {
+          message.info('提示词已切换,请重新点击"开始提取"', 2)
+        }
+      }
     }
 
     function createNewTemplate() {
