@@ -727,8 +727,8 @@ export default defineComponent({
     }
 
     function compareField(field: string, correct: boolean): boolean {
-      if (!llmResult.value?.structured || !selectedRecord.value?.result) return false
-      const llmVal = (llmResult.value.structured as any)[field]
+      if (!currentLlmResult.value?.structured || !selectedRecord.value?.result) return false
+      const llmVal = (currentLlmResult.value.structured as any)[field]
       const gtVal = (selectedRecord.value.result as any)[field]
       if (llmVal == null || gtVal == null) return false
       const match = String(llmVal).trim() === String(gtVal).trim()
@@ -774,12 +774,12 @@ export default defineComponent({
       asrModels, asrModelId, asrRunning, asrProgress, runAsr,
       asrResultByModelId, currentAsrStatus, selectedAsrResult,
       llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
-      selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles,
+      selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles, getAsrModelStatusColor,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
       promptTemplates, selectedTemplateId, showTemplateModal, templateTab,
       templateLoading, templateSaving, templateForm,
       onTemplateChange, loadTemplateForEdit, resetTemplateForm, saveTemplate, deleteTemplate,
-      asrResultsAll: asrResultsAll, llmHistory,
+      asrResultsAll, llmHistory,
     }
   },
 })
