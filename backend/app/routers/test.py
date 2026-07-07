@@ -462,3 +462,178 @@ async def update_evaluation(
     await db.commit()
     await db.refresh(test)
     return test
+
+
+# ------------------------------------------------------------------
+# LLM 历史记录 (用于批量查看和导出)
+# ------------------------------------------------------------------
+
+from fastapi.responses import StreamingResponse as SSEStreamingResponse
+import io
+from datetime import datetime
+from app.models import PatientLlmResult, PatientAsrResult
+
+
+@router.get("/llm-history")
+async def list_llm_history(
+    record_id: Optional[str] = None,
+    llm_model_name: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    """查询 LLM 历史记录 (跨患者)"""
+    query = (
+        select(PatientLlmResult, PatientRecord)
+        .join(PatientRecord, PatientLlmResult.patient_id == PatientRecord.id)
+        .options(selectinload(PatientLlmResult.asr_result))
+        .order_by(PatientLlmResult.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+
+    if record_id:
+        query = query.where(PatientRecord.record_id == record_id)
+    if llm_model_name:
+        query = query.where(PatientLlmResult.llm_model_name == llm_model_name)
+    if status:
+        query = query.where(PatientLlmResult.status == status)
+    if date_from:
+        query = query.where(PatientLlmResult.created_at >= date_from)
+    if date_to:
+        query = query.where(PatientLlmResult.created_at <= date_to)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    output = []
+    for llm, patient in rows:
+        output.append({
+            "id": llm.id,
+            "exam_record_id": patient.id,
+            "record_id": patient.record_id,
+            "date": patient.date_folder.date if patient.date_folder else None,
+            "asr_model_name": llm.asr_result.asr_model_name if llm.asr_result else None,
+            "llm_model_name": llm.llm_model_name,
+            "prompt_version": llm.prompt_version,
+            "prompt_len": len(llm.prompt_content) if llm.prompt_content else 0,
+            "summary_text": llm.summary_text,
+            "structured_result": llm.structured_result,
+            "accuracy": llm.accuracy,
+            "status": llm.status,
+            "error_message": llm.error_message,
+            "created_at": llm.created_at.isoformat() if llm.created_at else None,
+        })
+    return output
+
+
+@router.get("/llm-history/export")
+async def export_llm_history(
+    record_id: Optional[str] = None,
+    llm_model_name: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """导出 LLM 历史为 Excel"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+
+    query = (
+        select(PatientLlmResult, PatientRecord)
+        .join(PatientRecord, PatientLlmResult.patient_id == PatientRecord.id)
+        .order_by(PatientLlmResult.created_at.desc())
+        .limit(5000)
+    )
+    if record_id:
+        query = query.where(PatientRecord.record_id == record_id)
+    if llm_model_name:
+        query = query.where(PatientLlmResult.llm_model_name == llm_model_name)
+    if status:
+        query = query.where(PatientLlmResult.status == status)
+    if date_from:
+        query = query.where(PatientLlmResult.created_at >= date_from)
+    if date_to:
+        query = query.where(PatientLlmResult.created_at <= date_to)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "LLM历史"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1890FF", end_color="1890FF", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    headers = [
+        "ID", "病历号", "日期", "检查记录ID",
+        "ASR模型", "LLM模型", "提示词版本", "提示词长度",
+        "状态", "准确率", "内膜厚度", "内膜类型",
+        "右卵巢长", "右卵巢宽", "左卵巢长", "左卵巢宽",
+        "右卵泡总数", "左卵泡总数", "备注", "总结",
+        "创建时间",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = thin_border
+
+    for row_idx, (llm, patient) in enumerate(rows, 2):
+        structured = llm.structured_result or {}
+        row_data = [
+            llm.id,
+            patient.record_id,
+            patient.date_folder.date if patient.date_folder else "",
+            patient.id,
+            llm.asr_result.asr_model_name if llm.asr_result else "",
+            llm.llm_model_name,
+            llm.prompt_version,
+            len(llm.prompt_content) if llm.prompt_content else 0,
+            llm.status,
+            llm.accuracy,
+            structured.get("endometrium_thickness", ""),
+            structured.get("endometrium_type", ""),
+            structured.get("right_ovary_length", ""),
+            structured.get("right_ovary_width", ""),
+            structured.get("left_ovary_length", ""),
+            structured.get("left_ovary_width", ""),
+            structured.get("right_follicle_total", ""),
+            structured.get("left_follicle_total", ""),
+            structured.get("remark", ""),
+            llm.summary_text or "",
+            llm.created_at.strftime("%Y-%m-%d %H:%M:%S") if llm.created_at else "",
+        ]
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    col_widths = [6, 12, 10, 12, 15, 15, 10, 10, 8, 8, 10, 10, 10, 10, 10, 10, 10, 10, 30, 50, 20]
+    for idx, w in enumerate(col_widths, 1):
+        col_letter = chr(64 + idx) if idx <= 26 else "A" + chr(64 + idx - 26)
+        ws.column_dimensions[col_letter].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    return SSEStreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=llm_history_{timestamp}.xlsx"},
+    )
+
+
+from typing import Optional

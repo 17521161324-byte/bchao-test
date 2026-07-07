@@ -67,6 +67,13 @@ export const testApi = {
   getHistory: (params?: any) => client.get('/test/history', { params }),
   getResult: (testId: number) => client.get(`/test/${testId}`),
   updateEval: (testId: number, data: any) => client.put(`/test/${testId}/evaluate`, data),
+  // LLM 历史记录 (跨患者)
+  getLlmHistory: (params?: any) => client.get('/test/llm-history', { params }),
+  exportLlmHistory: (params?: any) => {
+    const qs = new URLSearchParams()
+    if (params) for (const [k, v] of Object.entries(params)) if (v) qs.set(k, String(v))
+    return `${API_BASE}/test/llm-history/export?${qs.toString()}`
+  },
 }
 
 /**
