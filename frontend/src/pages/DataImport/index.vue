@@ -691,15 +691,13 @@ export default defineComponent({
     // LLM 结构化结果兼容
     const structured = computed(() => currentLlmResult.value?.structured || currentLlmResult.value?.structured_result || {})
 
-    // LLM 转写/总结内容
+    // LLM 转写/总结内容 (只用于给人看,不影响结构化字段)
     const llmDisplayText = computed(() => {
       if (!currentLlmResult.value) return ''
       return (
         currentLlmResult.value.summary_text ||
-        currentLlmResult.value.summary ||
         currentLlmResult.value.structured?.summary ||
         currentLlmResult.value.raw_text ||
-        currentLlmResult.value.raw_output ||
         ''
       )
     })

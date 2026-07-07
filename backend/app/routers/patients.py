@@ -378,9 +378,17 @@ async def patient_llm_run(
             prompt_template=prompt_content,
         )
         record.structured_result = llm_result["structured_result"]
-        record.summary_text = llm_result["summary_text"]
         record.raw_output = llm_result["llm_raw_output"]
         record.status = "success"
+
+        # summary_text 优先取 structured 中的 summary 字段
+        structured = llm_result.get("structured_result") or {}
+        if structured.get("summary"):
+            record.summary_text = str(structured["summary"])
+        elif llm_result.get("summary_text"):
+            record.summary_text = llm_result["summary_text"]
+        else:
+            record.summary_text = ""
 
         # 评估
         if record.structured_result:
