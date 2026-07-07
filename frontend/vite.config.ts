@@ -24,14 +24,9 @@ export default defineConfig({
     host: '127.0.0.1',
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8001',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
-        agent: new (require('http').Agent)({ keepAlive: false }),
       },
     },
-  },
-  build: {
-    outDir: 'dist',
-    sourcemap: false,
   },
 })

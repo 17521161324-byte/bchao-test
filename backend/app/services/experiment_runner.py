@@ -6,6 +6,7 @@ import uuid
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import PatientRecord, AudioSeg, ModelConfig
 from app.models.experiment import ExperimentTask, ExperimentCombination, BatchStatus, TaskStatus, TaskStage
@@ -39,10 +40,13 @@ class ExperimentRunner:
         if not combo:
             raise ValueError(f"Combination {task.combination_id} not found")
 
-        # Load patient with segs
+        # Load patient with segs and result
         patient_result = await db.execute(
             select(PatientRecord)
-            .options(selectinload(PatientRecord))
+            .options(
+                selectinload(PatientRecord.segs),
+                selectinload(PatientRecord.result),
+            )
             .where(PatientRecord.id == task.patient_id)
         )
         patient = patient_result.scalar_one_or_none()
