@@ -1,7 +1,7 @@
 """
 患者级 ASR/LLM 持久化结果路由
 
-POST /api/patients/{patient_id}/asr/stream  SSE 流式 ASR, 保存到 patient_asr_results
+GET  /api/patients/{patient_id}/asr/stream    SSE 流式 ASR, 保存到 patient_asr_results
 GET  /api/patients/{patient_id}/asr-results
 GET  /api/patients/{patient_id}/asr-current
 PUT  /api/patients/{patient_id}/asr-results/{result_id}/current
@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 from loguru import logger
 
 from app.config import resolve_hotwords
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.models import (
     PatientRecord, AudioSeg, ModelConfig,
     PatientAsrResult, PatientLlmResult,
@@ -79,8 +79,12 @@ async def patient_asr_stream(
     hotwords: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """患者级 SSE 流式 ASR, 结果持久化到 patient_asr_results"""
-    # 读取 patient (预加载 date_folder)
+    """患者级 SSE 流式 ASR, 结果持久化到 patient_asr_results
+
+    前置阶段只读取必要快照 (plain dict), 避免跨 stream 长期持有 ORM 对象。
+    event_generator 内部使用独立 AsyncSessionLocal, 确保流式期间 DB 操作可靠。
+    """
+    # === 前置阶段: 读取必要快照 (不把 ORM 对象传进 generator) ===
     patient_result = await db.execute(
         select(PatientRecord)
         .options(selectinload(PatientRecord.date_folder))
@@ -90,7 +94,6 @@ async def patient_asr_stream(
     if not patient:
         raise HTTPException(status_code=404, detail=f"患者 {patient_id} 不存在")
 
-    # 读取 segs
     segs_result = await db.execute(
         select(AudioSeg).where(AudioSeg.patient_id == patient_id).order_by(AudioSeg.seg_index)
     )
@@ -101,89 +104,115 @@ async def patient_asr_stream(
     if not segs:
         raise HTTPException(status_code=400, detail="该患者无录音文件")
 
-    # 读取模型
     asr_model = await db.get(ModelConfig, asr_model_id)
     if not asr_model:
         raise HTTPException(status_code=404, detail="ASR 模型不存在")
 
-    # 解析热词
     parsed_hotwords = [w.strip() for w in hotwords.split(",")] if hotwords else None
     resolved_hotwords = resolve_hotwords(parsed_hotwords, asr_model.params)
 
-    # 创建 running 状态记录(asr_model_name 用模型名快照)
-    record = PatientAsrResult(
-        patient_id=patient_id,
-        record_id=patient.record_id,
-        date=patient.date_folder.date if patient.date_folder else None,
-        asr_model_id=asr_model_id,
-        asr_model_name=asr_model.name,
-        provider=asr_model.provider,
-        hotwords=resolved_hotwords or [],
-        status="running",
-    )
-    db.add(record)
-    await db.commit()
-    await db.refresh(record)
-
-    # 使用 create_asr 工厂 (与实验链路一致)
-    asr = create_asr(
-        asr_model.provider,
-        **{
-            "endpoint": asr_model.endpoint,
-            "api_key": asr_model.api_key,
-            "api_secret": asr_model.api_secret,
-            "secret_key": asr_model.secret_key,
-            "model_name": asr_model.model_name,
-        },
-    )
+    # 快照所有需要的纯数据 (不传 ORM 对象进 generator)
+    snap_patient_id = patient_id
+    snap_record_id = patient.record_id
+    snap_date = patient.date_folder.date if patient.date_folder else None
+    snap_asr_model_id = asr_model_id
+    snap_asr_model_name = asr_model.name
+    snap_provider = asr_model.provider
+    snap_hotwords = resolved_hotwords or []
+    snap_asr_config = {
+        "endpoint": asr_model.endpoint,
+        "api_key": asr_model.api_key,
+        "api_secret": asr_model.api_secret,
+        "secret_key": asr_model.secret_key,
+        "model_name": asr_model.model_name,
+    }
 
     async def event_generator():
-        start = time.time()
-        asr_results = []
-        try:
-            yield f"event: progress\ndata: {json.dumps({'stage': 'progress', 'total': len(segs), 'started': True}, ensure_ascii=False)}\n\n"
-
-            for seg in segs:
-                yield f"event: progress\ndata: {json.dumps({'stage': 'segment_start', 'seg_index': seg['seg_index'], 'total': len(segs)}, ensure_ascii=False)}\n\n"
-
-                text = await asr.transcribe(seg["file_path"], hotwords=resolved_hotwords)
-                asr_results.append({"seg_index": seg["seg_index"], "text": text, "duration": seg["duration"]})
-
-                yield f"event: segment\ndata: {json.dumps({'stage': 'segment', 'seg_index': seg['seg_index'], 'text': text, 'duration': seg['duration']}, ensure_ascii=False)}\n\n"
-
-            full_transcript = "\n".join(r["text"] for r in asr_results)
-            duration = round(time.time() - start, 2)
-
-            # 成功: 更新记录 + 设为当前 (在 yield complete 前完成, 让前端 refresh 能读到)
-            record.segments = asr_results
-            record.full_transcript = full_transcript
-            record.duration_seconds = duration
-            record.status = "success"
-            record.is_current = True
-            await db.commit()
-
-            # 同 patient 其他 ASR 设为 not current
-            await db.execute(
-                update(PatientAsrResult)
-                .where(
-                    PatientAsrResult.patient_id == patient_id,
-                    PatientAsrResult.id != record.id,
-                )
-                .values(is_current=False)
-            )
-            await db.commit()
-
-            yield f"event: complete\ndata: {json.dumps({'stage': 'complete', 'result_id': record.id, **_asr_response(record)}, ensure_ascii=False)}\n\n"
-
-        except Exception as e:
-            logger.error(f"患者 {patient_id} ASR 失败: {e}")
+        # === 独立 session, 不依赖请求级 db ===
+        async with AsyncSessionLocal() as stream_db:
+            record_id_internal = None
             try:
-                record.status = "failed"
-                record.error_message = str(e)
-                await db.commit()
-            except Exception:
-                pass
-            yield f"event: error\ndata: {json.dumps({'stage': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+                # 创建 running 记录
+                record = PatientAsrResult(
+                    patient_id=snap_patient_id,
+                    record_id=snap_record_id,
+                    date=snap_date,
+                    asr_model_id=snap_asr_model_id,
+                    asr_model_name=snap_asr_model_name,
+                    provider=snap_provider,
+                    hotwords=snap_hotwords,
+                    status="running",
+                )
+                stream_db.add(record)
+                await stream_db.commit()
+                await stream_db.refresh(record)
+                record_id_internal = record.id
+
+                yield f"event: progress\ndata: {json.dumps({'stage': 'progress', 'total': len(segs), 'started': True}, ensure_ascii=False)}\n\n"
+
+                # 使用独立 asr 实例
+                asr = create_asr(snap_provider, **snap_asr_config)
+                start = time.time()
+                asr_results = []
+
+                for seg in segs:
+                    yield f"event: progress\ndata: {json.dumps({'stage': 'segment_start', 'seg_index': seg['seg_index'], 'total': len(segs)}, ensure_ascii=False)}\n\n"
+
+                    text = await asr.transcribe(seg["file_path"], hotwords=snap_hotwords)
+                    asr_results.append({"seg_index": seg["seg_index"], "text": text, "duration": seg["duration"]})
+
+                    yield f"event: segment\ndata: {json.dumps({'stage': 'segment', 'seg_index': seg['seg_index'], 'text': text, 'duration': seg['duration']}, ensure_ascii=False)}\n\n"
+
+                full_transcript = "\n".join(r["text"] for r in asr_results)
+                duration_val = round(time.time() - start, 2)
+
+                # 重新获取记录并更新 (避免悬挂 ORM)
+                record = await stream_db.get(PatientAsrResult, record_id_internal)
+                record.segments = asr_results
+                record.full_transcript = full_transcript
+                record.duration_seconds = duration_val
+                record.status = "success"
+                record.is_current = True
+                await stream_db.commit()
+
+                # 同 patient 其他 ASR 设为 not current
+                await stream_db.execute(
+                    update(PatientAsrResult)
+                    .where(
+                        PatientAsrResult.patient_id == snap_patient_id,
+                        PatientAsrResult.id != record_id_internal,
+                    )
+                    .values(is_current=False)
+                )
+                await stream_db.commit()
+
+                # commit 成功后再发送 complete
+                yield f"event: complete\ndata: {json.dumps({'stage': 'complete', 'result_id': record_id_internal, **_asr_response(record)}, ensure_ascii=False)}\n\n"
+
+            except asyncio.CancelledError:
+                # 客户端中断 (关闭页面 / 网络断开)
+                logger.warning(f"患者 {snap_patient_id} ASR SSE 连接中断")
+                try:
+                    if record_id_internal:
+                        record = await stream_db.get(PatientAsrResult, record_id_internal)
+                        record.status = "failed"
+                        record.error_message = "SSE 连接中断或客户端取消"
+                        await stream_db.commit()
+                except Exception:
+                    pass
+                yield f"event: error\ndata: {json.dumps({'stage': 'error', 'message': '连接中断'}, ensure_ascii=False)}\n\n"
+
+            except Exception as e:
+                logger.error(f"患者 {snap_patient_id} ASR 失败: {e}")
+                try:
+                    if record_id_internal:
+                        record = await stream_db.get(PatientAsrResult, record_id_internal)
+                        record.status = "failed"
+                        record.error_message = str(e)
+                        await stream_db.commit()
+                except Exception:
+                    pass
+                yield f"event: error\ndata: {json.dumps({'stage': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
