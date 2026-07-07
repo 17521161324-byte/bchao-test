@@ -120,17 +120,24 @@
               </template>
               <template #extra>
                 <a-space :size="4">
-                  <a-select v-model:value="llmModelId" style="width: 150px" size="small" placeholder="选择LLM模型" allow-clear>
+                  <a-select
+                    v-model:value="selectedTemplateId"
+                    placeholder="选择模版"
+                    style="width: 140px"
+                    size="small"
+                    allow-clear
+                    @change="onTemplateChange"
+                  >
+                    <a-select-option v-for="t in promptTemplates" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
+                  </a-select>
+                  <a-select v-model:value="llmModelId" style="width: 140px" size="small" placeholder="LLM模型" allow-clear>
                     <a-select-option v-for="m in llmModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
                   </a-select>
                   <a-button type="primary" size="small" @click="runLlm" :loading="llmRunning" :disabled="!selectedAsrResult">
                     <template #icon><RobotOutlined /></template>
                     {{ llmRunning ? '提取中...' : '开始提取' }}
                   </a-button>
-                  <a-button type="link" size="small" @click="showTemplateModal = true">
-                    <template #icon><SettingOutlined /></template>
-                    模版
-                  </a-button>
+                  <a-button type="link" size="small" @click="showTemplateModal = true">模版</a-button>
                 </a-space>
               </template>
 
@@ -288,7 +295,7 @@
             :loading="templateLoading"
             size="small"
             bordered
-            style="max-height: 500px; overflow-y: auto"
+            style="max-height: 560px; overflow-y: auto"
           >
             <template #renderItem="{ item }">
               <a-list-item
@@ -311,25 +318,31 @@
           </a-list>
         </a-col>
 
-        <!-- 右侧:模版详情/编辑 -->
+        <!-- 右侧:模版详情/编辑 + 预览 -->
         <a-col :span="18">
           <a-form layout="vertical" size="small">
             <a-form-item label="模版名称" required>
               <a-input v-model:value="templateForm.name" placeholder="如：B超提取模版 v2" />
             </a-form-item>
-            <a-form-item required>
-              <template #label>
-                <span>模版内容 <span style="color: #ff4d4f">*</span></span>
-                <div style="color: #999; font-size: 11px; font-weight: normal">
-                  必须包含 <code>{transcript}</code> 占位符
-                </div>
-              </template>
-              <a-textarea v-model:value="templateForm.content" :rows="14" placeholder="提示词模版内容..." />
-            </a-form-item>
             <a-form-item>
-              <a-checkbox v-model:checked="templateForm.is_default">设为默认模版</a-checkbox>
+              <a-switch v-model:checked="templateForm.is_default" checked-children="默认" un-checked-children="非默认" />
             </a-form-item>
-            <a-form-item>
+
+            <a-tabs v-model:activeKey="templateTab" size="small">
+              <a-tab-pane key="edit" tab="编辑">
+                <a-textarea
+                  v-model:value="templateForm.content"
+                  :rows="18"
+                  placeholder="# 角色...&#10;## 任务...&#10;{transcript}"
+                  style="font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 13px"
+                />
+              </a-tab-pane>
+              <a-tab-pane key="preview" tab="预览">
+                <div class="markdown-preview" v-html="templatePreviewHtml"></div>
+              </a-tab-pane>
+            </a-tabs>
+
+            <a-form-item style="margin-top: 12px">
               <a-space>
                 <a-button type="primary" :loading="templateSaving" @click="saveTemplate">保存</a-button>
                 <a-button :disabled="!templateForm.id" danger @click="deleteTemplate(templateForm.id)">删除</a-button>
@@ -347,12 +360,15 @@
 import { defineComponent, ref, reactive, computed, onMounted, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
-  ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined,
+  ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
 } from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores'
 import { resultApi, modelApi, testApi, promptTemplateApi, patientApi } from '@/api/client'
 import type { PatientExamination, BUltraResult } from '@/types'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
+import MarkdownIt from 'markdown-it'
+
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
 export default defineComponent({
   name: 'DataImport',
@@ -632,7 +648,7 @@ export default defineComponent({
     const promptTemplates = ref<any[]>([])
     const selectedTemplateId = ref<number | undefined>(undefined)
     const showTemplateModal = ref(false)
-    const templateTab = ref<'list' | 'edit'>('list')
+    const templateTab = ref<'edit' | 'preview'>('edit')
     const templateLoading = ref(false)
     const templateSaving = ref(false)
     const templateForm = reactive<{ id?: number; name: string; content: string; is_default: boolean }>({
@@ -640,6 +656,40 @@ export default defineComponent({
       content: '',
       is_default: false,
     })
+
+    // Markdown 预览
+    const templatePreviewHtml = computed(() => md.render(templateForm.content || ''))
+
+    // Markdown 默认模版
+    const DEFAULT_TEMPLATE_CONTENT = `# 角色
+
+你是一名辅助生殖 B 超检查信息结构化专家。
+
+# 任务
+
+请根据 ASR 转写文本，提取本次 B 超检查中的结构化字段。
+
+# ASR 转写文本
+
+{transcript}
+
+# 输出要求
+
+请只返回 JSON，不要返回解释文字。
+
+\`\`\`json
+{
+  "right_follicle_total": null,
+  "left_follicle_total": null,
+  "endometrium_thickness": null,
+  "endometrium_type": null,
+  "right_ovary_length": null,
+  "right_ovary_width": null,
+  "left_ovary_length": null,
+  "left_ovary_width": null,
+  "remark": ""
+}
+\`\`\``
 
     async function loadTemplates() {
       templateLoading.value = true
@@ -687,9 +737,10 @@ export default defineComponent({
     function createNewTemplate() {
       templateForm.id = undefined
       templateForm.name = ''
-      templateForm.content = ''
+      templateForm.content = DEFAULT_TEMPLATE_CONTENT
       templateForm.is_default = false
       selectedTemplateId.value = undefined
+      templateTab.value = 'edit'
     }
 
     function resetTemplateForm() {
@@ -816,9 +867,9 @@ export default defineComponent({
       asrResultByModelId, currentAsrStatus, selectedAsrResult,
       llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles, getAsrModelStatusColor,
-      ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined,
-      promptTemplates, selectedTemplateId, showTemplateModal,
-      templateLoading, templateSaving, templateForm,
+      ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
+      promptTemplates, selectedTemplateId, showTemplateModal, templateTab,
+      templateLoading, templateSaving, templateForm, templatePreviewHtml,
       selectTemplate, createNewTemplate, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
       asrResultsAll, llmHistory,
     }
@@ -827,4 +878,25 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.markdown-preview {
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 16px;
+  min-height: 420px;
+  max-height: 520px;
+  overflow: auto;
+  background: #fff;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.markdown-preview h1 { font-size: 18px; font-weight: 600; margin: 16px 0 8px; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+.markdown-preview h2 { font-size: 16px; font-weight: 600; margin: 14px 0 8px; }
+.markdown-preview h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; }
+.markdown-preview p { margin: 6px 0; }
+.markdown-preview ul, .markdown-preview ol { padding-left: 24px; margin: 6px 0; }
+.markdown-preview li { margin: 3px 0; }
+.markdown-preview pre { background: #f6f8fa; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.markdown-preview code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; background: rgba(175,184,193,0.2); padding: 2px 4px; border-radius: 4px; }
+.markdown-preview pre code { background: transparent; padding: 0; }
+.markdown-preview blockquote { border-left: 4px solid #ddd; margin: 8px 0; padding: 4px 12px; color: #666; }
 </style>
