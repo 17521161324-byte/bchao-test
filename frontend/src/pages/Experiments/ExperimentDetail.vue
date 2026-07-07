@@ -395,12 +395,13 @@ export default defineComponent({
       // 遍历任务, 以 patient_id-combination_id 为 key 避免跨日期覆盖
       for (const task of tasks.value) {
         const key = `${task.patient_id}-${task.combination_id}`
-        // 优先使用后端返回的 ground_task (按 patient_id 精确关联)
+        // 优先使用后端返回的 ground_truth (按 exam_record_id 精确关联)
         const gt = task.ground_truth || null
         const llm = task.structured_result || {}
         map[key] = {
           id: task.id,
           task,
+          exam_record_id: task.patient_id, // patient_id 实际是 exam_record_id
           patient_id: task.patient_id,
           record_id: task.record_id,
           date: task.date || '',

@@ -1,5 +1,10 @@
 """
-患者级 ASR/LLM 持久化结果路由
+检查记录级 ASR/LLM 持久化结果路由
+
+业务语义说明:
+- 本模块所有 patient_id 实际为 exam_record_id (= patient_records.id)
+- record_id (病历号) 可跨日期重复, 不能作为结果关联键
+- 每个检查记录 (exam_record) 有独立的 ASR/LLM 结果
 
 GET  /api/patients/{patient_id}/asr/stream    SSE 流式 ASR, 保存到 patient_asr_results
 GET  /api/patients/{patient_id}/asr-results
@@ -248,7 +253,8 @@ def _asr_response(r: PatientAsrResult) -> dict:
     """构建兼容前端旧字段的响应"""
     return {
         "id": r.id,
-        "patient_id": r.patient_id,
+        "exam_record_id": r.patient_id,  # patient_id 实际是 exam_record_id
+        "patient_id": r.patient_id,      # 保留兼容
         "record_id": r.record_id,
         "date": r.date,
         "asr_model_id": r.asr_model_id,
@@ -268,7 +274,8 @@ def _asr_response(r: PatientAsrResult) -> dict:
 def _llm_response(r: PatientLlmResult) -> dict:
     return {
         "id": r.id,
-        "patient_id": r.patient_id,
+        "exam_record_id": r.patient_id,  # patient_id 实际是 exam_record_id
+        "patient_id": r.patient_id,      # 保留兼容
         "asr_result_id": r.asr_result_id,
         "llm_model_id": r.llm_model_id,
         "model_name": r.llm_model_name or "",  # 前端旧字段

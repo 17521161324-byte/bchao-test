@@ -43,7 +43,7 @@ class ExperimentBatch(Base):
     description = Column(Text, default="")
     remark = Column(Text, default="")  # 实验备注（独立于描述）
     selected_dates = Column(JSON, default=list)  # ["20260622", "20260623"]
-    selected_patient_ids = Column(JSON, default=list)  # ["A017750", "A017503"]
+    selected_patient_ids = Column(JSON, default=list)  # 实际存 record_id,后续升级为 exam_record_ids
     status = Column(String(20), default=BatchStatus.PENDING.value)
     total_tasks = Column(Integer, default=0)
     success_count = Column(Integer, default=0)
@@ -86,7 +86,7 @@ class ExperimentTask(Base):
     id = Column(Integer, primary_key=True, index=True)
     batch_id = Column(Integer, ForeignKey("experiment_batches.id"), nullable=False)
     combination_id = Column(Integer, ForeignKey("experiment_combinations.id"), nullable=False)
-    patient_id = Column(Integer, ForeignKey("patient_records.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patient_records.id"), nullable=False)  # 实际为 exam_record_id
 
     stage = Column(String(20), default=TaskStage.ASR.value)
     status = Column(String(20), default=TaskStatus.PENDING.value)

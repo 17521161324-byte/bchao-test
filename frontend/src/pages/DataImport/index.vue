@@ -245,7 +245,7 @@
               </a-descriptions>
             </a-card>
             <a-card v-else size="small" title="B 超检查结果" style="margin-bottom: 16px">
-              <a-empty description="该患者无 B 超结果" style="padding: 20px 0" />
+              <a-empty description="该检查记录无 B 超结果" style="padding: 20px 0" />
             </a-card>
           </a-col>
         </a-row>
@@ -378,7 +378,7 @@ export default defineComponent({
     const asrModels = ref<any[]>([])
     const asrModelId = ref<number | undefined>(undefined)
     const asrRunning = ref(false)
-    // 当前患者的 ASR 持久化结果 (从后端加载)
+    // 当前检查记录的 ASR 持久化结果 (从后端加载)
     const currentAsrResult = ref<any>(null)
     const asrHistory = ref<any[]>([])
     const asrProgress = ref<{ seg_index: number; total: number } | null>(null)
@@ -397,7 +397,7 @@ export default defineComponent({
       } catch (e) { console.error(e) }
     }
 
-    // 加载患者当前的 ASR 结果
+    // 加载当前检查记录的 ASR 结果
     async function loadCurrentAsrResult() {
       if (!selectedRecord.value) return
       const pid = selectedRecord.value.id
@@ -520,7 +520,7 @@ export default defineComponent({
     async function runLlm() {
       if (!selectedRecord.value) return
       if (!currentAsrResult.value) {
-        message.error('请先完成 ASR 转写')
+        message.error('请先完成该检查记录的 ASR 转写')
         return
       }
       if (!llmModelId.value) {
@@ -663,7 +663,7 @@ export default defineComponent({
       return JSON.stringify(display, null, 2)
     }
 
-    // 监听 drawer 中患者切换, 自动加载持久化结果
+    // 监听 drawer 中检查记录切换, 自动加载持久化结果
     watch(selectedRecord, async (rec) => {
       currentAsrResult.value = null
       currentLlmResult.value = null

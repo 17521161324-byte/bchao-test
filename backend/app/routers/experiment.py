@@ -512,7 +512,8 @@ async def list_tasks(
             "id": t.id,
             "batch_id": t.batch_id,
             "combination_id": t.combination_id,
-            "patient_id": t.patient_id,
+            "exam_record_id": t.patient_id,  # patient_id 实际是 exam_record_id
+            "patient_id": t.patient_id,      # 保留兼容
             "record_id": t.patient.record_id if t.patient else None,
             "date": t.patient.date_folder.date if t.patient and t.patient.date_folder else None,
             "stage": t.stage,

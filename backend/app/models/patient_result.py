@@ -1,8 +1,11 @@
 """
-患者级 ASR/LLM 持久化结果模型
+检查记录级 ASR/LLM 持久化结果模型
 
-patient_asr_results / patient_llm_results 是患者级正式结果;
-experiment_tasks 保留自己快照字段,同时通过 asr_result_id / llm_result_id 引用患者结果。
+业务语义:
+- patient_id 实际为 exam_record_id (= patient_records.id)
+- record_id (病历号) 可跨日期多次检查, 每次检查有独立 ID
+- 结果必须关联到具体检查记录, 而非病历号
+- experiment_tasks 保留快照字段, 通过 asr_result_id / llm_result_id 引用检查记录结果
 """
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, ForeignKey, JSON, Text, DateTime
