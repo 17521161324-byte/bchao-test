@@ -9,6 +9,7 @@ from datetime import datetime
 from app.database import Base
 
 from app.models.experiment import ExperimentBatch, ExperimentCombination, ExperimentTask
+from app.models.patient_result import PatientAsrResult, PatientLlmResult
 
 
 class DateFolder(Base):

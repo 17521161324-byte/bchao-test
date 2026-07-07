@@ -324,13 +324,13 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, reactive, computed, onMounted } from 'vue'
+import { defineComponent, ref, reactive, computed, onMounted, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
 } from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores'
-import { resultApi, modelApi, testApi, promptTemplateApi, startAsrSSE } from '@/api/client'
+import { resultApi, modelApi, testApi, promptTemplateApi, patientApi } from '@/api/client'
 import type { PatientExamination, BUltraResult } from '@/types'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
 
@@ -374,17 +374,13 @@ export default defineComponent({
       return follicles.map((f) => `${f.size}×${f.count}`).join('  ')
     }
 
-    // --- ASR ---
+    // --- ASR (持久化到后端) ---
     const asrModels = ref<any[]>([])
     const asrModelId = ref<number | undefined>(undefined)
     const asrRunning = ref(false)
-    // 按 record_id 缓存 ASR 结果，患者切换回来时仍可看到之前的结果
-    const asrResultMap = ref<Record<string, any>>({})
-    const asrResult = computed(() => {
-      const id = selectedRecord.value?.record_id
-      return id ? asrResultMap.value[id] || null : null
-    })
-    // SSE 进度与分段缓存
+    // 当前患者的 ASR 持久化结果 (从后端加载)
+    const currentAsrResult = ref<any>(null)
+    const asrHistory = ref<any[]>([])
     const asrProgress = ref<{ seg_index: number; total: number } | null>(null)
     const asrPartialSegments = ref<Record<number, string>>({})
 
@@ -397,74 +393,55 @@ export default defineComponent({
       } catch (e) { console.error(e) }
     }
 
+    // 加载患者当前的 ASR 结果
+    async function loadCurrentAsrResult() {
+      if (!selectedRecord.value) return
+      const pid = selectedRecord.value.id
+      try {
+        const res = await patientApi.getAsrCurrent(pid)
+        currentAsrResult.value = res || null
+      } catch { currentAsrResult.value = null }
+      try {
+        const h = await patientApi.listAsrResults(pid)
+        asrHistory.value = h || []
+      } catch { asrHistory.value = [] }
+    }
+
     async function runAsr() {
       if (!asrModelId.value || !selectedRecord.value) return
-      const recordId = selectedRecord.value.record_id
+      const pid = selectedRecord.value.id
       asrRunning.value = true
       asrProgress.value = null
       asrPartialSegments.value = {}
       try {
-        startAsrSSE(
-          { record_id: recordId, asr_model_id: asrModelId.value },
-          {
-            onProgress: (info) => { asrProgress.value = info },
-            onSegment: (info) => {
-              asrPartialSegments.value = { ...asrPartialSegments.value, [info.seg_index]: info.text }
-              const partialFull = Object.keys(asrPartialSegments.value)
-                .map(Number).sort((a, b) => a - b)
-                .map((idx) => asrPartialSegments.value[idx])
-                .join('\n')
-              const sortedKeys = Object.keys(asrPartialSegments.value).map(Number).sort((a, b) => a - b)
-              asrResultMap.value = {
-                ...asrResultMap.value,
-                [recordId]: {
-                  model_name: asrModels.value.find((m) => m.id === asrModelId.value)?.name || '',
-                  model_id: asrModelId.value,
-                  record_id: recordId,
-                  segments: sortedKeys.map((idx) => ({ seg_index: idx, text: asrPartialSegments.value[idx] })),
-                  full_transcript: partialFull,
-                  streaming: true,
-                },
-              }
-            },
-            onComplete: (info) => {
-              asrProgress.value = null
-              asrResultMap.value = {
-                ...asrResultMap.value,
-                [recordId]: {
-                  model_name: asrModels.value.find((m) => m.id === asrModelId.value)?.name || '',
-                  model_id: asrModelId.value,
-                  record_id: recordId,
-                  segments: info.segments,
-                  full_transcript: info.full_transcript,
-                  streaming: false,
-                },
-              }
-            },
-            onError: (msg) => {
-              message.error(`ASR 失败: ${msg}`)
-              asrProgress.value = null
-            },
-          },
-        )
+        const es = patientApi.runAsrSSE(pid, asrModelId.value)
+        es.addEventListener('progress', () => { /* 可由 complete 获取 */ })
+        es.addEventListener('segment', () => { /* 单段完成 */ })
+        es.addEventListener('complete', async (ev: MessageEvent) => {
+          asrProgress.value = null
+          asrRunning.value = false
+          try { await loadCurrentAsrResult() } catch { /* ignore */ }
+          es.close()
+        })
+        es.addEventListener('error', () => {
+          message.error('ASR 失败')
+          asrProgress.value = null
+          asrRunning.value = false
+          es.close()
+        })
       } catch (e) {
         message.error('ASR 启动失败')
         asrProgress.value = null
-      } finally {
         asrRunning.value = false
       }
     }
 
-    // --- LLM ---
+    // --- LLM (持久化到后端) ---
     const llmModels = ref<any[]>([])
     const llmModelId = ref<number | undefined>(undefined)
     const llmRunning = ref(false)
-    // LLM 结果也按 record_id 缓存
-    const llmResultMap = ref<Record<string, any>>({})
-    const llmResult = computed(() => {
-      const id = selectedRecord.value?.record_id
-      return id ? llmResultMap.value[id] || null : null
-    })
+    const currentLlmResult = ref<any>(null)
+    const llmHistory = ref<any[]>([])
     const llmPrompt = ref(`你是一名辅助生殖超声检查专家。请从以下 B 超检查的语音转写文本中提取关键信息，并以 JSON 格式返回。
 
 ## 需要提取的字段
@@ -498,18 +475,36 @@ export default defineComponent({
   "summary": ""
 }`)
 
+    async function loadCurrentLlmResult() {
+      if (!selectedRecord.value) return
+      const pid = selectedRecord.value.id
+      try {
+        const res = await patientApi.getLlmCurrent(pid)
+        currentLlmResult.value = res || null
+      } catch { currentLlmResult.value = null }
+      try {
+        const h = await patientApi.listLlmResults(pid)
+        llmHistory.value = h || []
+      } catch { llmHistory.value = [] }
+    }
+
     async function runLlm() {
-      if (!asrResult.value) return
+      if (!selectedRecord.value || !currentAsrResult.value) return
+      const pid = selectedRecord.value.id
       llmRunning.value = true
       try {
-        const res = await testApi.runLlm({
-          transcript: asrResult.value.full_transcript,
-          llm_model_id: llmModelId.value,
-          prompt_template: llmPrompt.value,
+        const res = await patientApi.runLlm(pid, {
+          llm_model_id: llmModelId.value!,
+          asr_result_id: currentAsrResult.value?.id,
+          prompt_content: llmPrompt.value,
         })
-        llmResultMap.value = { ...llmResultMap.value, [selectedRecord.value!.record_id]: res }
-      } catch { message.error('LLM 提取失败') }
-      finally { llmRunning.value = false }
+        await loadCurrentLlmResult()
+        message.success('LLM 提取成功')
+      } catch (e: any) {
+        message.error(`LLM 提取失败: ${e?.response?.data?.detail || e?.message || ''}`)
+      } finally {
+        llmRunning.value = false
+      }
     }
 
     // ========== 提示词模版 ==========
@@ -631,18 +626,35 @@ export default defineComponent({
       return JSON.stringify(display, null, 2)
     }
 
-    onMounted(() => { loadModels(); loadTemplates() })
+    // 监听 drawer 中患者切换, 自动加载持久化结果
+    watch(selectedRecord, async (rec) => {
+      currentAsrResult.value = null
+      currentLlmResult.value = null
+      asrHistory.value = []
+      llmHistory.value = []
+      if (rec && drawerOpen.value) {
+        await loadCurrentAsrResult()
+        await loadCurrentLlmResult()
+      }
+    })
+
+    onMounted(() => {
+      loadModels()
+      loadTemplates()
+      store.fetchBatches()
+      store.fetchRecords()
+    })
 
     return {
       searchText, drawerOpen, selectedRecord, batches, selectedBatch, loadingTree,
-      allRecords, filteredRecords, asrModels, asrModelId, asrRunning, asrResult, asrProgress, runAsr,
-      llmModels, llmModelId, llmRunning, llmResult, llmPrompt, runLlm, compareField, formatRawJson,
+      allRecords, filteredRecords, asrModels, asrModelId, asrRunning, asrResult: currentAsrResult, asrProgress, runAsr,
+      llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
-      // 提示词模版
       promptTemplates, selectedTemplateId, showTemplateModal, templateTab,
       templateLoading, templateSaving, templateForm,
       onTemplateChange, loadTemplateForEdit, resetTemplateForm, saveTemplate, deleteTemplate,
+      asrHistory, llmHistory,
     }
   },
 })

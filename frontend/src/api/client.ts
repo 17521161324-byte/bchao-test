@@ -169,4 +169,27 @@ export const promptTemplateApi = {
   initDefaults: () => client.post('/prompt-templates/init-defaults'),
 }
 
+// ========== 患者级 ASR/LLM 持久化结果 ==========
+export const patientApi = {
+  runAsrSSE(patientId: number, asrModelId: number, hotwords?: string): EventSource {
+    const params = new URLSearchParams()
+    params.set('asr_model_id', String(asrModelId))
+    if (hotwords) params.set('hotwords', hotwords)
+    return new EventSource(`${API_BASE}/patients/${patientId}/asr/stream?${params.toString()}`)
+  },
+  listAsrResults: (patientId: number) => client.get(`/patients/${patientId}/asr-results`),
+  getAsrCurrent: (patientId: number) => client.get(`/patients/${patientId}/asr-current`),
+  setAsrCurrent: (patientId: number, resultId: number) =>
+    client.put(`/patients/${patientId}/asr-results/${resultId}/current`),
+  runLlm: (patientId: number, data: {
+    llm_model_id: number
+    asr_result_id?: number
+    prompt_content?: string
+  }) => client.post(`/patients/${patientId}/llm/run`, data, { timeout: 300000 }),
+  listLlmResults: (patientId: number) => client.get(`/patients/${patientId}/llm-results`),
+  getLlmCurrent: (patientId: number) => client.get(`/patients/${patientId}/llm-current`),
+  setLlmCurrent: (patientId: number, resultId: number) =>
+    client.put(`/patients/${patientId}/llm-results/${resultId}/current`),
+}
+
 export default client

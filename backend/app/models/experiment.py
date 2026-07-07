@@ -117,6 +117,10 @@ class ExperimentTask(Base):
     error_type = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
 
+    # 患者级 ASR/LLM 结果引用
+    asr_result_id = Column(Integer, ForeignKey("patient_asr_results.id"), nullable=True)
+    llm_result_id = Column(Integer, ForeignKey("patient_llm_results.id"), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
