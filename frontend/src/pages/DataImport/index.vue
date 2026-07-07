@@ -169,7 +169,7 @@
         <a-row :gutter="16">
           <!-- LLM 卵泡结果 -->
           <a-col :span="12">
-            <a-card size="small" title="LLM 提取结果" style="margin-bottom: 16px">
+            <a-card size="small" title="LLM 提取结果 (来源:LLM结构化结果)" style="margin-bottom: 16px">
               <template #extra>
                 <a-tag v-if="llmResult" color="purple">{{ llmResult.model_name }}</a-tag>
               </template>
@@ -230,7 +230,7 @@
 
           <!-- B 超真实结果 -->
           <a-col :span="12">
-            <a-card size="small" title="B 超检查结果（真实值）" style="margin-bottom: 16px" v-if="selectedRecord.result">
+            <a-card size="small" title="B 超检查结果 (来源:原始检查结果)" style="margin-bottom: 16px" v-if="selectedRecord.result">
               <a-row :gutter="12" style="margin-bottom: 12px">
                 <a-col :span="12">
                   <a-card size="small" title="右侧卵泡" style="margin-bottom: 8px">
@@ -646,6 +646,11 @@ export default defineComponent({
       }
       const examRecordId = selectedRecord.value.id
       llmRunning.value = true
+      // 调试日志:确认使用哪个模板
+      console.log('[LLM] selectedTemplateId=', selectedTemplateId.value)
+      console.log('[LLM] prompt_len=', llmPrompt.value.length)
+      console.log('[LLM] prompt_has_right_follicles=', llmPrompt.value.includes('right_follicles'))
+      console.log('[LLM] llm_model_id=', llmModelId.value)
       try {
         const res = await patientApi.runLlm(examRecordId, {
           llm_model_id: llmModelId.value!,
@@ -768,8 +773,9 @@ export default defineComponent({
         const defaultTmpl = promptTemplates.value.find((t: any) => t.is_default)
         const first = promptTemplates.value[0]
         const target = defaultTmpl ?? first
-        if (target && !selectedTemplateId.value) {
+        if (target) {
           selectedTemplateId.value = target.id
+          llmPrompt.value = target.content  // 关键修复:同步到 llmPrompt
           loadTemplateToForm(target)
         }
       } catch (e) {
@@ -779,11 +785,14 @@ export default defineComponent({
       }
     }
 
-    // 点击左侧模版,加载到右侧表单
+    // 点击左侧模版,加载到右侧表单 + 同步到 llmPrompt
     function selectTemplate(id: number) {
       selectedTemplateId.value = id
       const tmpl = promptTemplates.value.find((t: any) => t.id === id)
-      if (tmpl) loadTemplateToForm(tmpl)
+      if (tmpl) {
+        llmPrompt.value = tmpl.content  // 关键修复
+        loadTemplateToForm(tmpl)
+      }
     }
 
     function loadTemplateToForm(record: any) {
@@ -942,7 +951,7 @@ export default defineComponent({
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
       promptTemplates, selectedTemplateId, showTemplateModal, showLlmDetailModal, templateTab,
       templateLoading, templateSaving, templateForm, templatePreviewHtml,
-      selectTemplate, createNewTemplate, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
+      onTemplateChange, selectTemplate, createNewTemplate, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
       asrResultsAll, llmHistory,
     }
   },

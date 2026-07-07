@@ -379,6 +379,7 @@ async def patient_llm_run(
         )
         record.structured_result = llm_result["structured_result"]
         record.raw_output = llm_result["llm_raw_output"]
+        record.prompt_content = prompt_content  # 保存实际使用的提示词
         record.status = "success"
 
         # summary_text 优先取 structured 中的 summary 字段
