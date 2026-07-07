@@ -69,7 +69,78 @@ export const testApi = {
   updateEval: (testId: number, data: any) => client.put(`/test/${testId}/evaluate`, data),
 }
 
-// SSE 测试执行
+/**
+ * ASR 流式转写 (SSE)
+ * @param data 参数
+ * @param callbacks 回调: onProgress / onSegment / onComplete / onError
+ * @returns close(): 主动关闭连接的函数
+ *
+ * 服务端事件:
+ * - progress: { stage, seg_index, total }
+ * - segment:  { stage, seg_index, text, duration }
+ * - complete: { stage, segments, full_transcript }
+ * - error:    { stage, message }
+ */
+export function startAsrSSE(
+  data: { record_id: string; asr_model_id: number; hotwords?: string },
+  callbacks: {
+    onProgress?: (info: { seg_index: number; total: number }) => void
+    onSegment?: (info: { seg_index: number; text: string; duration: number }) => void
+    onComplete?: (info: { segments: any[]; full_transcript: string }) => void
+    onError?: (message: string) => void
+  } = {},
+): () => void {
+  const params = new URLSearchParams()
+  params.set('record_id', data.record_id)
+  params.set('asr_model_id', String(data.asr_model_id))
+  if (data.hotwords) params.set('hotwords', data.hotwords)
+
+  const url = `${API_BASE}/test/asr/stream?${params.toString()}`
+  const es = new EventSource(url)
+
+  es.addEventListener('progress', (ev: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(ev.data)
+      callbacks.onProgress?.({ seg_index: parsed.seg_index, total: parsed.total })
+    } catch { /* ignore */ }
+  })
+
+  es.addEventListener('segment', (ev: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(ev.data)
+      callbacks.onSegment?.({ seg_index: parsed.seg_index, text: parsed.text, duration: parsed.duration })
+    } catch { /* ignore */ }
+  })
+
+  es.addEventListener('complete', (ev: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(ev.data)
+      callbacks.onComplete?.({ segments: parsed.segments, full_transcript: parsed.full_transcript })
+    } catch { /* ignore */ }
+    es.close()
+  })
+
+  es.addEventListener('error', (ev: MessageEvent) => {
+    // FastAPI SSE 的 error 事件可能是服务端主动发的错误, 也可能是连接断开
+    try {
+      // MessageEvent.data 只在有 data 字段时存在 ; Event (无 type) 的 ev 走这里
+      if (ev.data) {
+        const parsed = JSON.parse(ev.data)
+        callbacks.onError?.(parsed.message || 'ASR 流式请求失败')
+      } else {
+        // 无 data 的 error event 通常是连接问题, 不重复通知
+      }
+    } catch {
+      // ignore
+    }
+    es.close()
+  })
+
+  // 返回主动关闭函数
+  return () => es.close()
+}
+
+// SSE 测试执行 (ASR+LLM 完整链路)
 export function startTestSSE(data: {
   record_id: string
   asr_model_id: number

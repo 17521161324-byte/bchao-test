@@ -53,7 +53,6 @@ async def run_asr_only(
     patients = result.scalars().all()
     if not patients:
         raise HTTPException(status_code=404, detail=f"病历号 {record_id} 不存在")
-    # 优先选有 segs 的记录
     patient = next((p for p in patients if p.segs), patients[0])
 
     if not patient.segs:
@@ -95,6 +94,94 @@ async def run_asr_only(
         "segments": asr_results,
         "full_transcript": "\n".join(r["text"] for r in asr_results),
     }
+
+
+@router.get("/asr/stream")
+async def run_asr_stream(
+    record_id: str = Query(...),
+    asr_model_id: int = Query(...),
+    hotwords: str = Query(""),
+    db: AsyncSession = Depends(get_db),
+):
+    """单独运行 ASR (SSE 流式返回, 每完成一个 seg 即时推送)
+
+    事件类型:
+    - progress: 开始处理一个 seg, data = {"stage": "progress", "seg_index": int, "total": int}
+    - segment: 一个 seg 转写完成, data = {"stage": "segment", "seg_index": int, "text": str, "duration": float}
+    - complete: 全部完成, data = {"stage": "complete", "segments": [...], "full_transcript": str}
+    - error: 出错, data = {"stage": "error", "message": str}
+    """
+    from app.services.asr import create_asr
+
+    result = await db.execute(
+        select(PatientRecord)
+        .options(selectinload(PatientRecord.segs))
+        .where(PatientRecord.record_id == record_id)
+        .order_by(PatientRecord.id.desc())
+    )
+    patients = result.scalars().all()
+    if not patients:
+        raise HTTPException(status_code=404, detail=f"病历号 {record_id} 不存在")
+    patient = next((p for p in patients if p.segs), patients[0])
+
+    if not patient.segs:
+        raise HTTPException(status_code=400, detail="该病历无录音文件")
+
+    asr_result = await db.execute(
+        select(ModelConfig).where(ModelConfig.id == asr_model_id)
+    )
+    asr_model = asr_result.scalar_one_or_none()
+    if not asr_model:
+        raise HTTPException(status_code=404, detail="ASR 模型不存在")
+
+    segs = [
+        {"seg_index": s.seg_index, "file_path": s.file_path, "duration": s.duration}
+        for s in sorted(patient.segs, key=lambda x: x.seg_index)
+    ]
+
+    asr = create_asr(asr_model.provider, **{
+        "endpoint": asr_model.endpoint,
+        "api_key": asr_model.api_key,
+        "api_secret": asr_model.api_secret,
+        "secret_key": asr_model.secret_key,
+        "model_name": asr_model.model_name,
+    })
+
+    async def event_generator():
+        asr_results = []
+        total = len(segs)
+        try:
+            for seg in segs:
+                # 推送 progress
+                yield f"event: progress\ndata: {json.dumps({'stage': 'progress', 'seg_index': seg['seg_index'], 'total': total}, ensure_ascii=False)}\n\n"
+
+                # 转写
+                text = await asr.transcribe(seg["file_path"], hotwords=hotwords.split(",") if hotwords else None)
+                asr_results.append({
+                    "seg_index": seg["seg_index"],
+                    "text": text,
+                    "duration": seg["duration"],
+                })
+
+                # 推送 segment
+                yield f"event: segment\ndata: {json.dumps({'stage': 'segment', 'seg_index': seg['seg_index'], 'text': text, 'duration': seg['duration']}, ensure_ascii=False)}\n\n"
+
+            # 全部完成
+            full_transcript = "\n".join(r["text"] for r in asr_results)
+            yield f"event: complete\ndata: {json.dumps({'stage': 'complete', 'segments': asr_results, 'full_transcript': full_transcript}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"ASR 流式转写失败: {e}")
+            yield f"event: error\ndata: {json.dumps({'stage': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/start")

@@ -17,6 +17,11 @@
 
 结果判断:
 - 服务端 FULL_SERVER_RESPONSE 的 flags == 0b0011 表示最后一包结果,收到后立即结束
+
+并发设计:
+- sender task: 按 frame_size 分帧发送音频
+- receiver task: 边接收边聚合 result.text / utterances
+- 收到最终响应或错误后, 通过 Event 通知 sender 退出
 """
 import os
 import json
@@ -26,6 +31,11 @@ import asyncio
 from enum import IntEnum
 from typing import Optional
 from loguru import logger
+
+
+class VolcengineASRError(RuntimeError):
+    """豆包 ASR 服务端返回错误"""
+    pass
 
 
 class MessageType(IntEnum):
@@ -42,7 +52,9 @@ class VolcengineBigModelASR:
     - 分包: 默认 200ms/帧 (6400 bytes), 发包间隔 0.2s
     - 解析: 返回结构化 dict, 支持 gzip 解压, error 按 JSON 解析
     - 结束: 收到 flags==0b0011 的最终响应后立即退出
-    - 聚合: 智能合并多轮文本, 优先使用 utterances
+    - 聚合: 每轮响应独立生成 utterances_candidate, 用 _merge_text 合并
+    - 并发: sender/receiver 异步协作, 最终响应/错误后互相通知退出
+    - 错误: ERROR_RESPONSE 抛出 VolcengineASRError, 不返回空字符串
     """
 
     # 16k / 16bit / mono: 1 秒 = 32000 bytes
@@ -107,7 +119,7 @@ class VolcengineBigModelASR:
         """构建中间音频帧 (正序 sequence)"""
         header = self._build_header(
             MessageType.AUDIO_ONLY_REQUEST,
-            flags=0b0001,  # 带正序 sequence
+            flags=0b0001,
             serialization=0b0000,
             compression=0b0000,
         )
@@ -119,11 +131,11 @@ class VolcengineBigModelASR:
         """构建最后一帧 (负序 sequence, 表示音频结束)"""
         header = self._build_header(
             MessageType.AUDIO_ONLY_REQUEST,
-            flags=0b0011,  # 带负序 sequence (最后一包)
+            flags=0b0011,
             serialization=0b0000,
             compression=0b0000,
         )
-        seq_bytes = struct.pack(">i", -seq)  # 有符号负数
+        seq_bytes = struct.pack(">i", -seq)
         size = struct.pack(">I", len(audio_bytes))
         return header + seq_bytes + size + audio_bytes
 
@@ -156,7 +168,6 @@ class VolcengineBigModelASR:
         if flags & 0b0001:
             if len(data) < offset + 4:
                 return {"msg_type": msg_type, "flags": flags, "sequence": None, "payload": None, "raw_payload": b""}
-            # 正序/负序按有符号 i4 读取, 便于判断最终包
             sequence = struct.unpack(">i", data[offset:offset + 4])[0]
             offset += 4
 
@@ -188,10 +199,8 @@ class VolcengineBigModelASR:
             try:
                 payload = json.loads(raw_payload.decode("utf-8"))
             except Exception:
-                # 兜底: 非 JSON 时保留原始字符串
                 payload = {"error": raw_payload.decode("utf-8", errors="ignore")}
         else:
-            # 其他类型 (如服务端确认) 尝试 JSON 解析
             try:
                 payload = json.loads(raw_payload.decode("utf-8"))
             except Exception:
@@ -217,7 +226,7 @@ class VolcengineBigModelASR:
         - 候选比当前长或相等, 视为全量更新, 直接替换
         - 候选是当前子串, 保留当前 (更完整)
         - 当前是候选子串, 替换为候选
-        - 互不为子串, 追加去重 (保留 current + candidate 的差异尾段)
+        - 互不为子串, 找最大重叠后缀/前缀去重拼接
         """
         if not candidate:
             return current
@@ -230,9 +239,7 @@ class VolcengineBigModelASR:
         if current in candidate:
             return candidate
 
-        # 互不为子串: 找最大重叠后缀/前缀, 拼接
-        # 简化处理: 直接拼接, 保留 current + candidate
-        # 实际场景中服务端通常返回全量, 此分支极少触发
+        # 互不为子串: 找最大重叠后缀/前缀, 拼接去重
         overlap = 0
         max_overlap = min(len(current), len(candidate))
         for i in range(1, max_overlap + 1):
@@ -241,46 +248,35 @@ class VolcengineBigModelASR:
         return current + candidate[overlap:]
 
     @staticmethod
-    def _extract_text_from_result(result: dict) -> tuple[str, list[str]]:
-        """从单条响应 result 提取候选文本
+    def _extract_text_from_result(result: dict) -> str:
+        """从单条响应 result 提取候选文本 (返回最优单串)
 
-        返回 (best_text, list_of_utterances_text):
-        - 优先使用 utterances 中 definite=true 的句子拼接
-        - 否则使用 result.text
+        优先级:
+        1. utterances 中 definite=true 的句子拼接
+        2. result.text
+        3. 所有 utterances text 拼接 (兜底)
         """
         if not result:
-            return "", []
+            return ""
 
         utterances = result.get("utterances") or []
-        utterance_texts = [u.get("text", "") for u in utterances if u.get("text")]
 
-        # 优先: definite=true 的 utterances
+        # 最高优先: definite=true 的 utterances
         definite_texts = [u.get("text", "") for u in utterances if u.get("definite") and u.get("text")]
         if definite_texts:
-            return "".join(definite_texts), utterance_texts
+            return "".join(definite_texts)
 
-        # 否则: result.text
+        # 其次: result.text
         text = result.get("text", "")
-        return text, utterance_texts
+        if text:
+            return text
 
-    def _aggregate_text(self, full_text: str, parsed: dict) -> tuple[str, list[str]]:
-        """聚合多轮响应文本
-
-        返回 (new_full_text, all_utterances):
-        - 维护 full_text 为当前最优全量文本
-        - 维护 all_utterances 为所有见过的 utterance 候选
-        """
-        payload = parsed.get("payload")
-        if not payload or not isinstance(payload, dict):
-            return full_text, []
-
-        result = payload.get("result") or {}
-        candidate, utterance_texts = self._extract_text_from_result(result)
-        new_full = self._merge_text(full_text, candidate) if candidate else full_text
-        return new_full, utterance_texts
+        # 兜底: 所有 utterances 文本拼接
+        all_texts = [u.get("text", "") for u in utterances if u.get("text")]
+        return "".join(all_texts)
 
     # ------------------------------------------------------------------
-    # 主流程
+    # 主流程 (并发 sender/receiver)
     # ------------------------------------------------------------------
 
     async def transcribe(self, audio_path: str, hotwords: list[str] | None = None) -> str:
@@ -289,10 +285,10 @@ class VolcengineBigModelASR:
         流程:
         1. 建立 WebSocket 连接
         2. 发送 full client request (配置参数)
-        3. 等待服务端确认
-        4. 按 frame_size 分帧发送音频, 最后一帧带负序
-        5. 循环接收响应, 收到最终响应 (flags==0b0011) 后退出
-        6. 返回聚合后的完整文本
+        3. 启动 receiver task 边收边聚合
+        4. sender task 按 frame_size 分帧发送音频
+        5. 收到 flags==0b0011 最终响应后, receiver 通知 sender 退出
+        6. receiver 返回聚合后的完整文本
         """
         import websockets
 
@@ -306,7 +302,6 @@ class VolcengineBigModelASR:
             "X-Api-Request-Id": request_id,
         }
 
-        # 脱敏日志: 不输出 api_key / headers / 音频内容
         logger.info(
             f"[Volcengine] 开始转写: request_id={request_id}, "
             f"audio_size={len(audio_data)} bytes, "
@@ -314,38 +309,93 @@ class VolcengineBigModelASR:
             f"interval={self._send_interval}s"
         )
 
+        # 跨 task 状态
         full_text = ""
-        all_utterance_texts: list[str] = []
-        final_received = False
-        seq = 2  # 从 2 开始, 1 保留给 full client request
+        final_received = asyncio.Event()  # receiver 收到最终响应/错误后 set
+        ws_ref: list = []  # 让 sender 能感知连接是否断开
+        error_holder: list = []  # 传递错误信息给 sender
 
-        try:
-            async with websockets.connect(
-                self.endpoint,
-                additional_headers=headers,
-                ping_interval=None,
-            ) as ws:
-                # 1. 发送 full client request
+        async def receiver(ws):
+            """接收并聚合响应"""
+            nonlocal full_text
+            try:
+                while True:
+                    try:
+                        resp = await asyncio.wait_for(ws.recv(), timeout=60)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[Volcengine] 接收响应超时, request_id={request_id}")
+                        break
+
+                    parsed = self._parse_server_response(resp)
+                    msg_type = parsed.get("msg_type")
+                    flags = parsed.get("flags")
+                    sequence = parsed.get("sequence")
+
+                    logger.info(
+                        f"[Volcengine] 收到响应: msg_type={msg_type}, "
+                        f"flags={flags}, sequence={sequence}"
+                    )
+
+                    if msg_type == MessageType.FULL_SERVER_RESPONSE:
+                        # 聚合: 每轮响应独立生成 candidate, 与 full_text 合并
+                        payload = parsed.get("payload")
+                        if isinstance(payload, dict):
+                            result = payload.get("result") or {}
+                            candidate = self._extract_text_from_result(result)
+                            if candidate:
+                                full_text = self._merge_text(full_text, candidate)
+
+                        # 最终响应判断: flags == 0b0011
+                        if flags == 0b0011:
+                            logger.info(
+                                f"[Volcengine] 收到最终响应 (flags=0b0011), "
+                                f"text_len={len(full_text)}, request_id={request_id}"
+                            )
+                            final_received.set()
+                            return full_text
+
+                    elif msg_type == MessageType.ERROR_RESPONSE:
+                        # error payload 已按 JSON 解析
+                        error_payload = parsed.get("payload", {})
+                        error_holder.append(error_payload)
+                        # 脱敏: 只输出 code / message / request_id
+                        code = error_payload.get("code") if isinstance(error_payload, dict) else None
+                        message = error_payload.get("message") if isinstance(error_payload, dict) else str(error_payload)
+                        logger.error(
+                            f"[Volcengine] 服务端错误: code={code}, "
+                            f"message={message}, request_id={request_id}"
+                        )
+                        final_received.set()
+                        raise VolcengineASRError(f"豆包 ASR 错误: code={code}, message={message}")
+
+            except VolcengineASRError:
+                raise
+            except Exception as e:
+                logger.error(f"[Volcengine] receiver 异常: {e}, request_id={request_id}")
+            finally:
+                # 确保最终退出时 set, 避免 sender 悬挂
+                final_received.set()
+            return full_text
+
+        async def sender(ws):
+            """分帧发送音频, 收到 final_received 后提前退出"""
+            try:
+                # 发送 full client request
                 client_payload = self._build_full_client_request_payload()
                 client_header = self._build_header(MessageType.FULL_CLIENT_REQUEST)
                 client_frame = client_header + struct.pack(">I", len(client_payload)) + client_payload
                 await ws.send(client_frame)
 
-                # 2. 等待服务端确认
-                try:
-                    resp = await asyncio.wait_for(ws.recv(), timeout=10)
-                    parsed_ack = self._parse_server_response(resp)
-                    logger.info(
-                        f"[Volcengine] 服务端确认: msg_type={parsed_ack.get('msg_type')}, "
-                        f"flags={parsed_ack.get('flags')}"
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("[Volcengine] 等待服务端确认超时, 继续发送音频")
-
-                # 3. 分帧发送音频
+                # 分帧发送音频
                 offset = 0
                 total = len(audio_data)
+                seq = 2
                 while offset < total:
+                    # 如果 receiver 已收到最终响应, 提前停止发送
+                    if final_received.is_set():
+                        logger.info(f"[Volcengine] 收到最终响应, 提前停止发送, request_id={request_id}")
+                        break
+
                     chunk = audio_data[offset:offset + self._frame_size]
                     offset += self._frame_size
                     is_last = offset >= total
@@ -354,70 +404,69 @@ class VolcengineBigModelASR:
                         frame = self._build_last_audio_payload(chunk, seq)
                     else:
                         frame = self._build_audio_payload(chunk, seq)
-                    await ws.send(frame)
+
+                    try:
+                        await ws.send(frame)
+                    except Exception:
+                        # 连接断开, 停止发送
+                        break
                     seq += 1
 
-                    # 发包间隔, 最后一帧后不需要等
-                    if not is_last:
+                    # 发包间隔, 最后一帧或已收到最终响应后不等
+                    if not is_last and not final_received.is_set():
                         await asyncio.sleep(self._send_interval)
+            except Exception as e:
+                logger.warning(f"[Volcengine] sender 退出: {e}, request_id={request_id}")
 
-                # 4. 接收响应, 直到收到最终响应 (flags==0b0011)
-                while not final_received:
+        # 建立连接 + 并发运行 sender/receiver
+        try:
+            async with websockets.connect(
+                self.endpoint,
+                additional_headers=headers,
+                ping_interval=None,
+            ) as ws:
+                ws_ref.append(ws)
+
+                # 注意: 标准双向流式需要先发 full client request 再接收确认,
+                # 但豆包服务端实际行为是: 客户端发配置后, 服务端会先回一条确认。
+                # 此处采用先发 client request 再并发收发的方式
+
+                send_task = asyncio.create_task(sender(ws))
+                recv_task = asyncio.create_task(receiver(ws))
+
+                # 等待 receiver 完成 (收到最终响应或错误)
+                try:
+                    await asyncio.wait_for(recv_task, timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Volcengine] transcribe 总超时, request_id={request_id}")
+
+                # 等 sender 完成 (应该很快, 因为 final_received 已 set)
+                if not send_task.done():
+                    send_task.cancel()
                     try:
-                        resp = await asyncio.wait_for(ws.recv(), timeout=60)
-                        parsed = self._parse_server_response(resp)
+                        await send_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
-                        msg_type = parsed.get("msg_type")
-                        flags = parsed.get("flags")
-                        sequence = parsed.get("sequence")
+                # 取出 receiver 结果或异常
+                if recv_task.done():
+                    exc = recv_task.exception()
+                    if exc:
+                        raise exc
+                    full_text = recv_task.result()
 
-                        # 脱敏日志: 不输出 payload 内容, 只输出元信息
-                        logger.info(
-                            f"[Volcengine] 收到响应: msg_type={msg_type}, "
-                            f"flags={flags}, sequence={sequence}"
-                        )
-
-                        if msg_type == MessageType.FULL_SERVER_RESPONSE:
-                            full_text, utts = self._aggregate_text(full_text, parsed)
-                            all_utterance_texts.extend(utts)
-
-                            # 最终响应判断: flags == 0b0011
-                            if flags == 0b0011:
-                                logger.info(
-                                    f"[Volcengine] 收到最终响应 (flags=0b0011), "
-                                    f"text_len={len(full_text)}"
-                                )
-                                final_received = True
-                                break
-
-                        elif msg_type == MessageType.ERROR_RESPONSE:
-                            # error payload 已按 JSON 解析
-                            logger.error(f"[Volcengine] 服务端错误: {parsed.get('payload')}")
-                            # 收到错误也退出, 避免死等
-                            break
-
-                    except asyncio.TimeoutError:
-                        logger.warning("[Volcengine] 接收响应超时, 主动退出")
-                        break
-                    except Exception as e:
-                        logger.warning(f"[Volcengine] 接收响应异常: {e}")
-                        break
-
+        except VolcengineASRError:
+            raise
         except Exception as e:
-            logger.error(f"[Volcengine] WebSocket 调用失败: {e}")
+            logger.error(f"[Volcengine] WebSocket 调用失败: {e}, request_id={request_id}")
             raise RuntimeError(f"豆包 ASR 调用失败: {e}") from e
 
-        # 最终文本选择: 优先使用 utterances 拼接 (更完整), 否则用 full_text
-        if all_utterance_texts:
-            utterances_combined = "".join(all_utterance_texts)
-            if len(utterances_combined) >= len(full_text):
-                full_text = utterances_combined
-
+        final_text = full_text
         logger.info(
             f"[Volcengine] 转写完成: request_id={request_id}, "
-            f"final_text_len={len(full_text)}"
+            f"final_text_len={len(final_text)}"
         )
-        return full_text
+        return final_text
 
     async def health_check(self) -> bool:
         """连通性测试 (仅检查 TCP+TLS 握手, 不发送音频)"""

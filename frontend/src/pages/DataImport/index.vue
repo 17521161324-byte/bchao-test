@@ -77,6 +77,9 @@
                     <template #icon><ScanOutlined /></template>
                     {{ asrRunning ? '转写中...' : (asrResult ? '重新识别' : '开始识别') }}
                   </a-button>
+                  <span v-if="asrProgress" style="font-size: 12px; color: #666; margin-left: 8px">
+                    处理中 {{ asrProgress.seg_index }} / {{ asrProgress.total }}
+                  </span>
                 </a-space>
               </template>
 
@@ -327,7 +330,7 @@ import {
   ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
 } from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores'
-import { resultApi, modelApi, testApi, promptTemplateApi } from '@/api/client'
+import { resultApi, modelApi, testApi, promptTemplateApi, startAsrSSE } from '@/api/client'
 import type { PatientExamination, BUltraResult } from '@/types'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
 
@@ -381,6 +384,9 @@ export default defineComponent({
       const id = selectedRecord.value?.record_id
       return id ? asrResultMap.value[id] || null : null
     })
+    // SSE 进度与分段缓存
+    const asrProgress = ref<{ seg_index: number; total: number } | null>(null)
+    const asrPartialSegments = ref<Record<number, string>>({})
 
     async function loadModels() {
       try {
@@ -393,13 +399,60 @@ export default defineComponent({
 
     async function runAsr() {
       if (!asrModelId.value || !selectedRecord.value) return
+      const recordId = selectedRecord.value.record_id
       asrRunning.value = true
+      asrProgress.value = null
+      asrPartialSegments.value = {}
       try {
-        const res = await testApi.runAsr(selectedRecord.value.record_id, asrModelId.value)
-        // 整体替换以触发响应式追踪
-        asrResultMap.value = { ...asrResultMap.value, [selectedRecord.value.record_id]: res }
-      } catch { message.error('ASR 失败') }
-      finally { asrRunning.value = false }
+        startAsrSSE(
+          { record_id: recordId, asr_model_id: asrModelId.value },
+          {
+            onProgress: (info) => { asrProgress.value = info },
+            onSegment: (info) => {
+              asrPartialSegments.value = { ...asrPartialSegments.value, [info.seg_index]: info.text }
+              const partialFull = Object.keys(asrPartialSegments.value)
+                .map(Number).sort((a, b) => a - b)
+                .map((idx) => asrPartialSegments.value[idx])
+                .join('\n')
+              const sortedKeys = Object.keys(asrPartialSegments.value).map(Number).sort((a, b) => a - b)
+              asrResultMap.value = {
+                ...asrResultMap.value,
+                [recordId]: {
+                  model_name: asrModels.value.find((m) => m.id === asrModelId.value)?.name || '',
+                  model_id: asrModelId.value,
+                  record_id: recordId,
+                  segments: sortedKeys.map((idx) => ({ seg_index: idx, text: asrPartialSegments.value[idx] })),
+                  full_transcript: partialFull,
+                  streaming: true,
+                },
+              }
+            },
+            onComplete: (info) => {
+              asrProgress.value = null
+              asrResultMap.value = {
+                ...asrResultMap.value,
+                [recordId]: {
+                  model_name: asrModels.value.find((m) => m.id === asrModelId.value)?.name || '',
+                  model_id: asrModelId.value,
+                  record_id: recordId,
+                  segments: info.segments,
+                  full_transcript: info.full_transcript,
+                  streaming: false,
+                },
+              }
+            },
+            onError: (msg) => {
+              message.error(`ASR 失败: ${msg}`)
+              asrProgress.value = null
+            },
+          },
+        )
+      } catch (e) {
+        message.error('ASR 启动失败')
+        asrProgress.value = null
+      } finally {
+        asrRunning.value = false
+      }
     }
 
     // --- LLM ---
@@ -582,7 +635,7 @@ export default defineComponent({
 
     return {
       searchText, drawerOpen, selectedRecord, batches, selectedBatch, loadingTree,
-      allRecords, filteredRecords, asrModels, asrModelId, asrRunning, asrResult, runAsr,
+      allRecords, filteredRecords, asrModels, asrModelId, asrRunning, asrResult, asrProgress, runAsr,
       llmModels, llmModelId, llmRunning, llmResult, llmPrompt, runLlm, compareField, formatRawJson,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
