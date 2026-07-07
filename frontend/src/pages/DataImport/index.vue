@@ -347,7 +347,7 @@
 import { defineComponent, ref, reactive, computed, onMounted, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
-  ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
+  ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined,
 } from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores'
 import { resultApi, modelApi, testApi, promptTemplateApi, patientApi } from '@/api/client'
