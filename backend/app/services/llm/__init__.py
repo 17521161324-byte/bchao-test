@@ -44,15 +44,15 @@ class OpenAILLM(BaseLLM):
         self._use_bearer = kwargs.get("auth_scheme", "bearer").lower() == "bearer"
 
     def _headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
         if self._use_bearer:
-            return {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-        return {
-            "api-key": self.api_key,
-            "Content-Type": "application/json",
-        }
+            # 只有 api_key 非空时才加 Authorization, 否则 httpx 会报 "Illegal header value b'Bearer '"
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+        else:
+            if self.api_key:
+                headers["api-key"] = self.api_key
+        return headers
 
     async def _chat_complete(self, system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
         url = f"{self.endpoint}/chat/completions"
