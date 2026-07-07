@@ -984,7 +984,7 @@ export default defineComponent({
   background: #f5f5f5;
   padding: 12px;
   border-radius: 6px;
-  max-height: 240px;
+  max-height: 400px;
   overflow-y: auto;
   white-space: pre-wrap;
   font-size: 13px;
