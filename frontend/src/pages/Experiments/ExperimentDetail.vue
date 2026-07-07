@@ -93,16 +93,19 @@
         :data-source="filteredTasks"
         :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
         size="small"
-        row-key="record_id"
+        :row-key="(row: any) => row.task ? `${row.task.id}-${row.task.patient_id}` : `pending-${row.record_id}-${row.date}`"
         :scroll="{ x: 1800 }"
       >
         <a-table-column title="病历号" data-index="record_id" :width="100" fixed="left" />
         <a-table-column title="日期" data-index="date" :width="100" />
-        <a-table-column title="状态" :width="80">
+        <a-table-column title="状态" :width="100">
           <template #default="{ record }">
-            <a-tag :color="record.status === 'success' ? 'green' : record.status === 'failed' ? 'red' : 'default'">
+            <a-tag :color="record.status === 'success' ? 'green' : record.status === 'failed' ? 'red' : record.status === 'running' ? 'blue' : 'default'">
               {{ record.status }}
             </a-tag>
+            <a-tooltip v-if="record.error_message" :title="record.error_message">
+              <span style="color: #ff4d4f; margin-left: 4px">⚠</span>
+            </a-tooltip>
           </template>
         </a-table-column>
 
@@ -279,7 +282,6 @@ export default defineComponent({
     const batchId = computed(() => Number(route.params.id))
     const batch = ref<any>(null)
     const tasks = ref<any[]>([])
-    const groundTruths = ref<Record<number, any>>({})
     const filter = ref('all')
     const modelsMap = ref<Record<number, string>>({})
     const progress = ref<any>(null)
@@ -385,81 +387,37 @@ export default defineComponent({
       } catch { /* ignore */ }
     }
 
-    async function fetchGroundTruths() {
-      try {
-        const batchData = batch.value
-        if (!batchData?.selected_dates?.length) {
-          groundTruths.value = {}
-          return
-        }
-
-        const gtMap: Record<string, any> = {}
-        for (const date of batchData.selected_dates) {
-          const records = await audioApi.getRecords(date)
-          for (const rec of records) {
-            if (rec && rec.result) {
-              gtMap[rec.record_id] = rec.result
-            }
-          }
-        }
-        groundTruths.value = gtMap
-      } catch (e) {
-        console.error('fetchGroundTruths error:', e)
-        groundTruths.value = {}
-      }
-    }
-
-    // 患者信息缓存（用于从 selected_patient_ids 获取患者信息）
-    const patientsInfo = ref<Record<string, any>>({})
-
-    async function fetchPatientsInfo() {
-      try {
-        const batch = batch.value
-        if (!batch?.selected_patient_ids?.length) return
-
-        // 获取所有日期的患者记录
-        const dates = batch.selected_dates || []
-        const infoMap: Record<string, any> = {}
-        for (const date of dates) {
-          const res = await audioApi.getRecords(date)
-          for (const exam of res) {
-            infoMap[exam.record_id] = {
-              record_id: exam.record_id,
-              date: exam.date || date,
-              has_audio: exam.has_audio,
-              has_result: exam.has_result,
-            }
-          }
-        }
-        patientsInfo.value = infoMap
-      } catch { /* ignore */ }
-    }
+    // fetchGroundTruths / fetchPatientsInfo 已不需要 (后端 /{batch_id}/tasks 已返回 ground_truth)
 
     const comparisonData = computed(() => {
       const map: Record<string, any> = {}
 
-      // 先从任务中添加患者
+      // 遍历任务, 以 patient_id-combination_id 为 key 避免跨日期覆盖
       for (const task of tasks.value) {
-        const key = task.record_id
-        const gt = groundTruths.value[key] || {}
+        const key = `${task.patient_id}-${task.combination_id}`
+        // 优先使用后端返回的 ground_task (按 patient_id 精确关联)
+        const gt = task.ground_truth || null
         const llm = task.structured_result || {}
         map[key] = {
           id: task.id,
           task,
-          record_id: key,
+          patient_id: task.patient_id,
+          record_id: task.record_id,
           date: task.date || '',
           status: task.status,
+          error_type: task.error_type,
+          error_message: task.error_message,
           total_duration: task.total_duration,
           full_transcript: task.full_transcript,
           hasTask: true,
-          // 真实值
-          gt_right: gt.right_follicle_total,
-          gt_left: gt.left_follicle_total,
-          gt_endo_thick: gt.endometrium_thickness,
-          gt_endo_type: gt.endometrium_type,
-          gt_r_ovary: formatOvary(gt.right_ovary_length, gt.right_ovary_width),
-          gt_l_ovary: formatOvary(gt.left_ovary_length, gt.left_ovary_width),
-          gt_remark: gt.remark,
+          // 真实值 (来自 ground_truth)
+          gt_right: gt ? gt.right_follicle_total : undefined,
+          gt_left: gt ? gt.left_follicle_total : undefined,
+          gt_endo_thick: gt ? gt.endometrium_thickness : undefined,
+          gt_endo_type: gt ? gt.endometrium_type : undefined,
+          gt_r_ovary: gt ? formatOvary(gt.right_ovary_length, gt.right_ovary_width) : '-',
+          gt_l_ovary: gt ? formatOvary(gt.left_ovary_length, gt.left_ovary_width) : '-',
+          gt_remark: gt ? gt.remark : undefined,
           // LLM 识别值
           llm_right: llm.right_follicle_total,
           llm_left: llm.left_follicle_total,
@@ -471,30 +429,31 @@ export default defineComponent({
         }
       }
 
-      // 添加 selected_patient_ids 中但还没有任务的患者
+      // 添加 selected_patient_ids 中但还没有任务的患者 (如实验新建但未启动)
+      // 由于没有 task 信息, 此时显示为 pending, 日期留空
       if (batch.value?.selected_patient_ids) {
         for (const recordId of batch.value.selected_patient_ids) {
-          if (!map[recordId]) {
-            // 从 groundTruths 中获取真实值（通过 record_id 查找）
-            const gtValues = groundTruths.value[recordId] || {}
-            map[recordId] = {
+          const key = `pending-${recordId}`
+          if (!map[key]) {
+            map[key] = {
               id: null,
               task: null,
+              patient_id: null,
               record_id: recordId,
               date: '',
               status: 'pending',
+              error_type: undefined,
+              error_message: undefined,
               total_duration: null,
               full_transcript: '',
               hasTask: false,
-              // 真实值
-              gt_right: gtValues.right_follicle_total,
-              gt_left: gtValues.left_follicle_total,
-              gt_endo_thick: gtValues.endometrium_thickness,
-              gt_endo_type: gtValues.endometrium_type,
-              gt_r_ovary: formatOvary(gtValues.right_ovary_length, gtValues.right_ovary_width),
-              gt_l_ovary: formatOvary(gtValues.left_ovary_length, gtValues.left_ovary_width),
-              gt_remark: gtValues.remark,
-              // LLM 识别值（空）
+              gt_right: undefined,
+              gt_left: undefined,
+              gt_endo_thick: undefined,
+              gt_endo_type: undefined,
+              gt_r_ovary: '-',
+              gt_l_ovary: '-',
+              gt_remark: undefined,
               llm_right: undefined,
               llm_left: undefined,
               llm_endo_thick: undefined,
@@ -507,7 +466,11 @@ export default defineComponent({
         }
       }
 
-      return Object.values(map).sort((a: any, b: any) => a.record_id.localeCompare(b.record_id))
+      return Object.values(map).sort((a: any, b: any) => {
+        // 先按日期, 再按病历号排序
+        if (a.date !== b.date) return a.date.localeCompare(b.date)
+        return a.record_id.localeCompare(b.record_id)
+      })
     })
 
     function formatOvary(l: number | undefined, w: number | undefined): string {
@@ -576,8 +539,6 @@ export default defineComponent({
     onMounted(() => {
       fetchData()
       fetchTasks()
-      fetchGroundTruths()
-      fetchPatientsInfo()
       loadModels()
     })
 

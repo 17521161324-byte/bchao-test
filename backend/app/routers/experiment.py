@@ -472,11 +472,12 @@ async def list_tasks(
     status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """获取实验任务列表（含患者信息）"""
+    """获取实验任务列表（含患者信息 + ground_truth）"""
     query = (
         select(ExperimentTask)
         .options(
             selectinload(ExperimentTask.patient).selectinload(PatientRecord.date_folder),
+            selectinload(ExperimentTask.patient).selectinload(PatientRecord.result),
             selectinload(ExperimentTask.combination).selectinload(ExperimentCombination.asr_model),
             selectinload(ExperimentTask.combination).selectinload(ExperimentCombination.llm_model),
         )
@@ -489,6 +490,24 @@ async def list_tasks(
 
     output = []
     for t in tasks:
+        # 构建 ground_truth (可能为 null)
+        ground_truth = None
+        if t.patient and t.patient.result:
+            r = t.patient.result
+            ground_truth = {
+                "right_follicles": r.right_follicles,
+                "left_follicles": r.left_follicles,
+                "right_follicle_total": r.right_follicle_total,
+                "left_follicle_total": r.left_follicle_total,
+                "endometrium_thickness": r.endometrium_thickness,
+                "endometrium_type": r.endometrium_type,
+                "right_ovary_length": r.right_ovary_length,
+                "right_ovary_width": r.right_ovary_width,
+                "left_ovary_length": r.left_ovary_length,
+                "left_ovary_width": r.left_ovary_width,
+                "remark": r.remark,
+            }
+
         output.append({
             "id": t.id,
             "batch_id": t.batch_id,
@@ -502,11 +521,13 @@ async def list_tasks(
             "accuracy": t.accuracy,
             "total_duration": t.total_duration,
             "error_type": t.error_type,
-            "created_at": t.created_at,
+            "error_message": t.error_message,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
             "asr_results": t.asr_results,
             "full_transcript": t.full_transcript,
             "structured_result": t.structured_result,
             "evaluation": t.evaluation,
+            "ground_truth": ground_truth,
             "combination_asr_name": t.combination.asr_model.name if t.combination and t.combination.asr_model else "",
             "combination_llm_name": t.combination.llm_model.name if t.combination and t.combination.llm_model else "",
             "combination_prompt_name": t.combination.prompt_name or "",
