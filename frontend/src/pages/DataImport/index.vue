@@ -415,13 +415,38 @@ export default defineComponent({
       asrPartialSegments.value = {}
       try {
         const es = patientApi.runAsrSSE(pid, asrModelId.value)
-        es.addEventListener('progress', () => { /* 可由 complete 获取 */ })
-        es.addEventListener('segment', () => { /* 单段完成 */ })
-        es.addEventListener('complete', async (ev: MessageEvent) => {
+        es.addEventListener('progress', () => { /* total info */ })
+        es.addEventListener('segment', (ev: MessageEvent) => {
+          try {
+            const data = JSON.parse(ev.data)
+            if (data.stage === 'segment') {
+              // 实时拼接完整文本, 给用户进度感知
+              asrPartialSegments.value = {
+                ...asrPartialSegments.value,
+                [data.seg_index]: data.text,
+              }
+              const partialFull = Object.keys(asrPartialSegments.value)
+                .map(Number).sort((a, b) => a - b)
+                .map((idx) => asrPartialSegments.value[idx])
+                .join('\n')
+              currentAsrResult.value = {
+                model_name: asrModels.value.find((m) => m.id === asrModelId.value)?.name || '',
+                model_id: asrModelId.value,
+                full_transcript: partialFull,
+                segments: Object.keys(asrPartialSegments.value)
+                  .map(Number).sort((a, b) => a - b)
+                  .map((idx) => ({ seg_index: idx, text: asrPartialSegments.value[idx] })),
+                streaming: true,
+              }
+            }
+          } catch { /* ignore */ }
+        })
+        es.addEventListener('complete', async () => {
           asrProgress.value = null
           asrRunning.value = false
-          try { await loadCurrentAsrResult() } catch { /* ignore */ }
           es.close()
+          // 从后端刷新正式结果
+          await loadCurrentAsrResult()
         })
         es.addEventListener('error', () => {
           message.error('ASR 失败')

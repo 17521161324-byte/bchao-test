@@ -72,7 +72,7 @@ async def _set_current_llm(db: AsyncSession, patient_id: int, current_id: int):
 # ASR 接口
 # ------------------------------------------------------------------
 
-@router.post("/{patient_id}/asr/stream")
+@router.get("/{patient_id}/asr/stream")
 async def patient_asr_stream(
     patient_id: int,
     asr_model_id: int,
@@ -80,8 +80,13 @@ async def patient_asr_stream(
     db: AsyncSession = Depends(get_db),
 ):
     """患者级 SSE 流式 ASR, 结果持久化到 patient_asr_results"""
-    # 读取 patient
-    patient = await db.get(PatientRecord, patient_id)
+    # 读取 patient (预加载 date_folder)
+    patient_result = await db.execute(
+        select(PatientRecord)
+        .options(selectinload(PatientRecord.date_folder))
+        .where(PatientRecord.id == patient_id)
+    )
+    patient = patient_result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail=f"患者 {patient_id} 不存在")
 
@@ -191,26 +196,6 @@ async def list_patient_asr_results(patient_id: int, db: AsyncSession = Depends(g
     return [_asr_response(r) for r in result.scalars().all()]
 
 
-@router.get("/{patient_id}/llm-results")
-async def list_patient_llm_results(patient_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(PatientLlmResult)
-        .where(PatientLlmResult.patient_id == patient_id)
-        .order_by(PatientLlmResult.created_at.desc())
-    )
-    return [_llm_response(r) for r in result.scalars().all()]
-
-
-@router.get("/{patient_id}/llm-current")
-async def get_patient_llm_current(patient_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(PatientLlmResult)
-        .where(PatientLlmResult.patient_id == patient_id, PatientLlmResult.is_current == True)
-    )
-    record = result.scalar_one_or_none()
-    return _llm_response(record) if record else None
-
-
 @router.get("/{patient_id}/asr-current")
 async def get_patient_asr_current(patient_id: int, db: AsyncSession = Depends(get_db)):
     """返回当前采用的 ASR 结果"""
@@ -251,9 +236,11 @@ def _llm_response(r: PatientLlmResult) -> dict:
         "llm_model_id": r.llm_model_id,
         "model_name": r.llm_model_name or "",  # 前端旧字段
         "full_model_name": r.llm_model_name,
-        "structured_result": r.structured,
-        "summary": r.summary_text,
-        "raw_text": r.raw_output,  # 前端旧字段
+        "structured": r.structured_result,        # 前端旧字段
+        "structured_result": r.structured_result,
+        "summary": r.summary_text,                # 前端旧字段
+        "summary_text": r.summary_text,
+        "raw_text": r.raw_output,                 # 前端旧字段
         "raw_output": r.raw_output,
         "evaluation": r.evaluation,
         "accuracy": r.accuracy,
@@ -386,7 +373,7 @@ async def patient_llm_run(
         await db.commit()
         raise HTTPException(status_code=500, detail=str(e))
 
-    return record
+    return _llm_response(record)
 
 
 @router.get("/{patient_id}/llm-results")
@@ -396,7 +383,7 @@ async def list_patient_llm_results(patient_id: int, db: AsyncSession = Depends(g
         .where(PatientLlmResult.patient_id == patient_id)
         .order_by(PatientLlmResult.created_at.desc())
     )
-    return result.scalars().all()
+    return [_llm_response(r) for r in result.scalars().all()]
 
 
 @router.get("/{patient_id}/llm-current")
@@ -405,7 +392,8 @@ async def get_patient_llm_current(patient_id: int, db: AsyncSession = Depends(ge
         select(PatientLlmResult)
         .where(PatientLlmResult.patient_id == patient_id, PatientLlmResult.is_current == True)
     )
-    return result.scalar_one_or_none()
+    record = result.scalar_one_or_none()
+    return _llm_response(record) if record else None
 
 
 @router.put("/{patient_id}/llm-results/{result_id}/current")

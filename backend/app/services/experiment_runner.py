@@ -5,12 +5,13 @@ import time
 from datetime import datetime
 import uuid
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import PatientRecord, AudioSeg, ModelConfig
+from app.models import PatientRecord, AudioSeg, ModelConfig, PatientAsrResult, PatientLlmResult
 from app.models.experiment import ExperimentTask, ExperimentCombination, BatchStatus, TaskStatus, TaskStage
+from app.config import resolve_hotwords
 from app.services.test_executor import TestExecutor
 from app.services.parser import evaluate_result
 
@@ -73,7 +74,11 @@ class ExperimentRunner:
             "hotwords": combo.hotwords,
         }
 
+        # 解析热词 (使用 resolve_hotwords 保持优先级接口 > 模型配置 > 默认)
+        resolved_hotwords = resolve_hotwords(combo.hotwords, asr_model.params)
+
         llm_config = None
+        llm_model = None
         if combo.llm_model_id:
             llm_model = await db.get(ModelConfig, combo.llm_model_id)
             if llm_model:
@@ -90,32 +95,118 @@ class ExperimentRunner:
             # Determine if ASR needs to run
             run_asr = task.stage == TaskStage.ASR.value or not task.full_transcript
 
+            asr_result_record = None
             if run_asr:
+                # 创建患者级 ASR 记录
+                asr_result_record = PatientAsrResult(
+                    patient_id=task.patient_id,
+                    record_id=patient.record_id,
+                    date=patient.date_folder.date if patient.date_folder else None,
+                    asr_model_id=asr_model.id,
+                    asr_model_name=asr_model.name,
+                    provider=asr_model.provider,
+                    hotwords=resolved_hotwords or [],
+                    status="running",
+                )
+                db.add(asr_result_record)
+                await db.flush()  # 获得 id
+
                 asr_result = await executor.execute_asr(
                     segs=segs,
                     asr_provider=asr_model.provider,
                     asr_config=asr_config,
+                    hotwords=resolved_hotwords,
                 )
+                # 写入患者级 ASR 记录
+                asr_result_record.segments = asr_result["asr_results"]
+                asr_result_record.full_transcript = asr_result["full_transcript"]
+                asr_result_record.status = "success"
+                asr_result_record.duration_seconds = 0  # TODO: track via executor
+
+                # 任务关联到患者 ASR 记录
+                task.asr_result_id = asr_result_record.id
+
+                # 写入快照字段 (保留历史实验可复现)
                 task.asr_results = asr_result["asr_results"]
                 task.full_transcript = asr_result["full_transcript"]
                 task.stage = TaskStage.LLM.value
 
+            # 把最新 ASR 设为当前 (同 patient 其他设 False)
+            if asr_result_record:
+                await db.execute(
+                    update(PatientAsrResult)
+                    .where(
+                        PatientAsrResult.patient_id == task.patient_id,
+                        PatientAsrResult.id != asr_result_record.id,
+                    )
+                    .values(is_current=False)
+                )
+                await db.execute(
+                    update(PatientAsrResult)
+                    .where(PatientAsrResult.id == asr_result_record.id)
+                    .values(is_current=True)
+                )
+
             # Run LLM if configured
-            if llm_config and task.stage == TaskStage.LLM.value:
+            llm_result_record = None
+            if llm_config and task.stage == TaskStage.LLM.value and llm_model:
                 try:
+                    # 创建患者级 LLM 记录
+                    llm_result_record = PatientLlmResult(
+                        patient_id=task.patient_id,
+                        asr_result_id=task.asr_result_id,
+                        llm_model_id=llm_model.id,
+                        llm_model_name=llm_model.name,
+                        prompt_content=combo.prompt_template,
+                        prompt_version="v1.0",
+                        status="running",
+                    )
+                    db.add(llm_result_record)
+                    await db.flush()
+
                     llm_result = await executor.execute_llm(
                         transcript=task.full_transcript,
                         llm_provider=llm_model.provider,
                         llm_config=llm_config,
                         prompt_template=combo.prompt_template,
                     )
+
+                    # 写入患者级 LLM 记录
+                    llm_result_record.structured_result = llm_result["structured_result"]
+                    llm_result_record.summary_text = llm_result["summary_text"]
+                    llm_result_record.raw_output = llm_result["llm_raw_output"]
+                    llm_result_record.status = "success"
+
+                    # 任务关联
+                    task.llm_result_id = llm_result_record.id
+
+                    # 快照字段
                     task.llm_raw_output = llm_result["llm_raw_output"]
                     task.structured_result = llm_result["structured_result"]
                     task.summary_text = llm_result["summary_text"]
-                    task.llm_duration = 0  # Would track actual duration
+                    task.llm_duration = 0
                 except Exception as e:
                     logger.error(f"LLM failed for task {task_id}: {e}")
                     task.llm_raw_output = f"[LLM error: {str(e)}]"
+                    if llm_result_record:
+                        llm_result_record.status = "failed"
+                        llm_result_record.error_message = str(e)
+
+            # 把最新 LLM 设为当前
+            if llm_result_record and llm_result_record.status == "success":
+                await db.execute(
+                    update(PatientLlmResult)
+                    .where(
+                        PatientLlmResult.patient_id == task.patient_id,
+                        PatientLlmResult.id != llm_result_record.id,
+                    )
+                    .values(is_current=False)
+                )
+                await db.execute(
+                    update(PatientLlmResult)
+                    .where(PatientLlmResult.id == llm_result_record.id)
+                    .values(is_current=True)
+                )
 
             # Evaluate if we have structured result
             if task.structured_result:
