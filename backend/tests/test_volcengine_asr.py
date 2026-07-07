@@ -151,71 +151,65 @@ class TestParseServerResponse:
 # ------------------------------------------------------------------
 
 class TestTextAggregation:
-    def test_merge_text_replace_if_longer(self):
-        """候选更长 -> 替换"""
-        merged = VolcengineBigModelASR._merge_text("你好", "你好世界")
-        assert merged == "你好世界"
+    def test_merge_text_full_snapshot_replace(self):
+        """result_type=full: candidate 非空时直接替换, 不拼接"""
+        # 新结果
+        merged = VolcengineBigModelASR._merge_text("", "右侧卵泡一个")
+        assert merged == "右侧卵泡一个"
 
-    def test_merge_text_keep_if_substring(self):
-        """候选是当前子串 -> 保留当前"""
-        merged = VolcengineBigModelASR._merge_text("你好世界", "你好")
-        assert merged == "你好世界"
+        # 中间结果修正 (更长的全量结果)
+        merged = VolcengineBigModelASR._merge_text("右侧卵泡一个", "右侧卵泡一个，左侧卵泡两个")
+        assert merged == "右侧卵泡一个，左侧卵泡两个"
 
-    def test_merge_text_empty_current(self):
-        merged = VolcengineBigModelASR._merge_text("", "你好")
-        assert merged == "你好"
+        # 标点修正场景
+        merged = VolcengineBigModelASR._merge_text("右侧卵泡一个左侧卵泡两个", "右侧卵泡一个，左侧卵泡两个")
+        assert merged == "右侧卵泡一个，左侧卵泡两个"
+        # 不能拼接成重复
+        assert "两个右侧" not in merged
 
-    def test_merge_text_empty_candidate(self):
-        merged = VolcengineBigModelASR._merge_text("你好", "")
-        assert merged == "你好"
+        # candidate 为空时保留原值
+        merged = VolcengineBigModelASR._merge_text("保留的文本", "")
+        assert merged == "保留的文本"
 
-    def test_merge_text_overlap_dedup(self):
-        """最大重叠去重拼接"""
-        merged = VolcengineBigModelASR._merge_text("ABCDEF", "DEFGHI")
-        # 重叠 "DEFG" -> "ABCDEFGHI" 或更短的 "ABCDEF" + "GHI" = "ABCDEFGHI" 均可接受, 但不能是 "ABCDEFGHI" 重复
-        assert "ABCDEF" in merged
-        assert "GHI" in merged
-        # 核心: 不能出现 "DEFG" 重复
-        assert "DEFGDEFG" not in merged
+        merged = VolcengineBigModelASR._merge_text("保留的文本", None)
+        assert merged == "保留的文本"
 
-    def test_extract_text_uses_definite_utterances(self):
-        """definite=true 的 utterances 优先"""
+    def test_extract_text_prioritizes_result_text(self):
+        """result_type=full: 优先使用 result.text, 不优先 definite utterances"""
         result = {
-            "text": "完整文本内容",
+            "text": "来自 result.text 的全量结果",
             "utterances": [
-                {"text": "第一句", "definite": True},
-                {"text": "第二句", "definite": True},
-                {"text": "中间结果", "definite": False},
+                {"text": "只有部分", "definite": True},
+                {"text": "的 utterance", "definite": True},
             ],
         }
         text = VolcengineBigModelASR._extract_text_from_result(result)
-        assert text == "第一句第二句"
+        # result.text 优先
+        assert text == "来自 result.text 的全量结果"
 
-    def test_extract_text_falls_back_to_text(self):
-        """无 definite utterances 时使用 result.text"""
-        result = {
-            "text": "回退文本",
-            "utterances": [{"text": "临时", "definite": False}],
-        }
-        text = VolcengineBigModelASR._extract_text_from_result(result)
-        assert text == "回退文本"
-
-    def test_extract_text_falls_back_to_all_utterances(self):
-        """无 text 且无 definite, 拼接所有 utterances"""
+    def test_extract_text_falls_back_to_utterances_when_no_text(self):
+        """result.text 为空时, 使用 utterances 拼接兜底"""
         result = {
             "text": "",
             "utterances": [
-                {"text": "部分一", "definite": False},
-                {"text": "部分二", "definite": False},
+                {"text": "第一段", "definite": False},
+                {"text": "第二段", "definite": False},
             ],
         }
         text = VolcengineBigModelASR._extract_text_from_result(result)
-        assert text == "部分一部分二"
+        assert text == "第一段第二段"
 
     def test_extract_text_no_utterances(self):
         result = {"text": "纯文本"}
         text = VolcengineBigModelASR._extract_text_from_result(result)
         assert text == "纯文本"
+
+    def test_extract_text_empty_result(self):
+        text = VolcengineBigModelASR._extract_text_from_result({})
+        assert text == ""
+
+        text = VolcengineBigModelASR._extract_text_from_result(None)
+        assert text == ""
 
 
 # ------------------------------------------------------------------
@@ -268,33 +262,15 @@ class TestTranscribe:
         assert "第三段" in result
 
     @pytest.mark.asyncio
-    async def test_utterances_full_update_no_duplicate(self):
-        """核心回归: utterances 全量返回时不应重复, 最终 = '第一句第二句第三句'"""
+    async def test_full_mode_no_duplicate_across_responses(self):
+        """全量模式: 3 次响应逐步修正, 最终必须等于最后一条全量结果, 不能重复"""
         asr = VolcengineBigModelASR(api_key="test_key", frame_size=100, send_interval=0)
 
         ack = build_ack_frame()
-        # 三次响应: 每次 utterances 都是全量 (第一句) -> (第一句, 第二句) -> (第一句, 第二句, 第三句)
-        resp1 = build_full_server_response_frame(
-            text="第一句",
-            utterances=[{"text": "第一句", "definite": True}],
-            flags=0b0001, seq=2,
-        )
-        resp2 = build_full_server_response_frame(
-            text="第一句第二句",
-            utterances=[
-                {"text": "第一句", "definite": True},
-                {"text": "第二句", "definite": True},
-            ],
-            flags=0b0001, seq=3,
-        )
+        resp1 = build_full_server_response_frame(text="右侧卵泡一个", flags=0b0001, seq=2)
+        resp2 = build_full_server_response_frame(text="右侧卵泡一个，左侧卵泡两个", flags=0b0001, seq=3)
         resp3 = build_full_server_response_frame(
-            text="第一句第二句第三句",
-            utterances=[
-                {"text": "第一句", "definite": True},
-                {"text": "第二句", "definite": True},
-                {"text": "第三句", "definite": True},
-            ],
-            flags=0b0011, seq=-4,
+            text="右侧卵泡一个，左侧卵泡两个，内膜6毫米", flags=0b0011, seq=-4
         )
         ws_mock = _make_ws_mock([ack, resp1, resp2, resp3])
 
@@ -307,8 +283,39 @@ class TestTranscribe:
             result = await asr.transcribe(audio_path)
             Path(audio_path).unlink(missing_ok=True)
 
-        # 必须正好等于 "第一句第二句第三句", 不能重复
-        assert result == "第一句第二句第三句", f"got: {result}"
+        # 必须正好等于第 3 条, 不能重复
+        assert result == "右侧卵泡一个，左侧卵泡两个，内膜6毫米", f"got: {result}"
+        # 不应包含重复片段
+        assert "右侧卵泡一个右侧卵泡一个" not in result
+        assert "左侧卵泡两个左侧卵泡两个" not in result
+
+    @pytest.mark.asyncio
+    async def test_full_mode_punctuation_change_no_duplicate(self):
+        """全量模式: 中间结果标点修正后, 最终只能是修正后的一条, 不能拼接"""
+        asr = VolcengineBigModelASR(api_key="test_key", frame_size=100, send_interval=0)
+
+        ack = build_ack_frame()
+        resp1 = build_full_server_response_frame(text="右侧卵泡一个左侧卵泡两个", flags=0b0001, seq=2)
+        resp2 = build_full_server_response_frame(
+            text="右侧卵泡一个，左侧卵泡两个", flags=0b0011, seq=-3
+        )
+        ws_mock = _make_ws_mock([ack, resp1, resp2])
+
+        with patch("websockets.connect", return_value=ws_mock):
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(b"\x00" * 100)
+                audio_path = f.name
+
+            result = await asr.transcribe(audio_path)
+            Path(audio_path).unlink(missing_ok=True)
+
+        # 必须是第 2 条 (带逗号的修正版本), 不能是拼接
+        assert result == "右侧卵泡一个，左侧卵泡两个", f"got: {result}"
+        # 不能包含重复的 "左侧卵泡两个"
+        assert "两个右侧" not in result
+        # 逗号应该存在
+        assert "，" in result
 
     @pytest.mark.asyncio
     async def test_final_flags_exit_immediately(self):
@@ -358,12 +365,12 @@ class TestTranscribe:
 
     @pytest.mark.asyncio
     async def test_utterances_definite_preferred(self):
-        """definite utterances 优先于 result.text"""
+        """result_type=full + result.text 存在时, result.text 优先于 utterances"""
         asr = VolcengineBigModelASR(api_key="test_key", frame_size=100, send_interval=0)
 
         ack = build_ack_frame()
         resp = build_full_server_response_frame(
-            text="短",
+            text="result.text 存在时优先",
             utterances=[{"text": "这是一个很长的完整句子", "definite": True}],
             flags=0b0011, seq=-2,
         )
@@ -378,7 +385,37 @@ class TestTranscribe:
             result = await asr.transcribe(audio_path)
             Path(audio_path).unlink(missing_ok=True)
 
-        assert "这是一个很长的完整句子" in result
+        # result.text 优先 (因为 result_type=full)
+        assert result == "result.text 存在时优先"
+
+    @pytest.mark.asyncio
+    async def test_utterances_fallback_when_result_text_empty(self):
+        """result.text 为空时, 使用 utterances 拼接兜底"""
+        asr = VolcengineBigModelASR(api_key="test_key", frame_size=100, send_interval=0)
+
+        ack = build_ack_frame()
+        resp = build_full_server_response_frame(
+            text="",  # result.text 为空
+            utterances=[
+                {"text": "第一段内容", "definite": False},
+                {"text": "第二段内容", "definite": False},
+            ],
+            flags=0b0011, seq=-2,
+        )
+        ws_mock = _make_ws_mock([ack, resp])
+
+        with patch("websockets.connect", return_value=ws_mock):
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(b"\x00" * 100)
+                audio_path = f.name
+
+            result = await asr.transcribe(audio_path)
+            Path(audio_path).unlink(missing_ok=True)
+
+        # 应回退到 utterances
+        assert "第一段内容" in result
+        assert "第二段内容" in result
 
     @pytest.mark.asyncio
     async def test_no_api_key_still_logs_request_id(self):
@@ -437,11 +474,13 @@ class TestFrameBuilding:
         seq = struct.unpack(">i", frame[4:8])[0]
         assert seq == -5
 
-    def test_client_request_payload_has_bigmodel_and_show_utterances(self):
+    def test_client_request_payload_has_bigmodel_show_utterances_result_type(self):
         asr = VolcengineBigModelASR(api_key="k")
-        payload = json.loads(asr._build_full_client_request_payload().decode("utf-8"))
+        payload = json.loads(asr._build_full_client_request_payload(hotwords=[]).decode("utf-8"))
         assert payload["request"]["model_name"] == "bigmodel"
         assert payload["request"]["show_utterances"] is True
+        # 必须显式设置 result_type=full
+        assert payload["request"]["result_type"] == "full"
 
     def test_error_class_inherits_runtime_error(self):
         """VolcengineASRError 继承 RuntimeError, 可被 except RuntimeError 捕获"""

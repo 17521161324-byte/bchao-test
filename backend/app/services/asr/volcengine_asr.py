@@ -104,6 +104,7 @@ class VolcengineBigModelASR:
         """
         request_params = {
             "model_name": "bigmodel",
+            "result_type": "full",  # 每次返回全量识别结果, 避免增量拼接
             "enable_itn": True,
             "enable_punc": True,
             "enable_ddc": False,
@@ -236,58 +237,34 @@ class VolcengineBigModelASR:
 
     @staticmethod
     def _merge_text(current: str, candidate: str) -> str:
-        """智能合并两条候选文本
+        """全量快照式合并 (result_type=full 专用)
 
-        规则:
-        - 候选比当前长或相等, 视为全量更新, 直接替换
-        - 候选是当前子串, 保留当前 (更完整)
-        - 当前是候选子串, 替换为候选
-        - 互不为子串, 找最大重叠后缀/前缀去重拼接
+        火山豆包 result_type=full 时, 每次响应都是全量识别结果, 直接替换即可。
+        不做重叠检测和拼接, 以避免重复文本。
+        - candidate 非空: 直接以 candidate 作为当前 full_text
+        - candidate 为空: 保留 current
         """
-        if not candidate:
-            return current
-        if not current:
+        if candidate:
             return candidate
-
-        # 一方是另一方子串, 取更长者
-        if candidate in current:
-            return current
-        if current in candidate:
-            return candidate
-
-        # 互不为子串: 找最大重叠后缀/前缀, 拼接去重
-        overlap = 0
-        max_overlap = min(len(current), len(candidate))
-        for i in range(1, max_overlap + 1):
-            if current[-i:] == candidate[:i]:
-                overlap = i
-        return current + candidate[overlap:]
+        return current
 
     @staticmethod
     def _extract_text_from_result(result: dict) -> str:
-        """从单条响应 result 提取候选文本 (返回最优单串)
+        """从单条响应 result 提取候选文本
 
-        优先级:
-        1. utterances 中 definite=true 的句子拼接
-        2. result.text
-        3. 所有 utterances text 拼接 (兜底)
+        result_type=full 下优先使用 result.text (全量)。
+        只有 result.text 为空时, 才用 utterances 拼接兜底。
         """
         if not result:
             return ""
 
-        utterances = result.get("utterances") or []
-
-        # 最高优先: definite=true 的 utterances
-        definite_texts = [u.get("text", "") for u in utterances if u.get("definite") and u.get("text")]
-        if definite_texts:
-            return "".join(definite_texts)
-
-        # 其次: result.text
+        # 最高优先: result.text (全量识别结果)
         text = result.get("text", "")
         if text:
             return text
 
         # 兜底: 所有 utterances 文本拼接
+        utterances = result.get("utterances") or []
         all_texts = [u.get("text", "") for u in utterances if u.get("text")]
         return "".join(all_texts)
 
@@ -354,13 +331,17 @@ class VolcengineBigModelASR:
                     )
 
                     if msg_type == MessageType.FULL_SERVER_RESPONSE:
-                        # 聚合: 每轮响应独立生成 candidate, 与 full_text 合并
+                        # 聚合: result_type=full 下, 每次响应都是全量, 直接替换
                         payload = parsed.get("payload")
+                        final_text = None
                         if isinstance(payload, dict):
                             result = payload.get("result") or {}
                             candidate = self._extract_text_from_result(result)
                             if candidate:
-                                full_text = self._merge_text(full_text, candidate)
+                                full_text = candidate  # full snapshot, 直接替换
+                            # 记录最终响应的文本 (优先作为返回值)
+                            if flags == 0b0011:
+                                final_text = result.get("text") or None
 
                         # 最终响应判断: flags == 0b0011
                         if flags == 0b0011:
@@ -368,6 +349,9 @@ class VolcengineBigModelASR:
                                 f"[Volcengine] 收到最终响应 (flags=0b0011), "
                                 f"text_len={len(full_text)}, request_id={request_id}"
                             )
+                            # 最终响应有 result.text 时, 直接作为返回值
+                            if final_text:
+                                full_text = final_text
                             final_received.set()
                             return full_text
 
