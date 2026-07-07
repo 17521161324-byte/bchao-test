@@ -31,6 +31,7 @@ from app.models import (
     PatientAsrResult, PatientLlmResult,
 )
 from app.services.asr import create_asr
+from app.services.test_executor import TestExecutor
 
 router = APIRouter()
 
