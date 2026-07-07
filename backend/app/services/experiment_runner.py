@@ -2,6 +2,7 @@
 实验单任务执行器
 """
 import time
+from datetime import datetime
 import uuid
 from loguru import logger
 from sqlalchemy import select
@@ -63,9 +64,6 @@ class ExperimentRunner:
             for s in sorted(patient.segs, key=lambda x: x.seg_index)
         ]
 
-        if not segs:
-            raise ValueError(f"Patient {task.record_id} has no audio segments")
-
         executor = TestExecutor()
         asr_config = {
             "endpoint": asr_model.endpoint,
@@ -87,6 +85,8 @@ class ExperimentRunner:
                 }
 
         try:
+            if not segs:
+                raise ValueError(f"Patient {task.patient_id} has no audio segments")
             # Determine if ASR needs to run
             run_asr = task.stage == TaskStage.ASR.value or not task.full_transcript
 
@@ -144,7 +144,7 @@ class ExperimentRunner:
 
             task.status = TaskStatus.SUCCESS.value
             task.stage = TaskStage.LLM.value
-            task.completed_at = time.time()
+            task.completed_at = datetime.utcnow()
 
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}")

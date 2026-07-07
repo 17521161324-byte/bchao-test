@@ -92,8 +92,9 @@ class ExperimentWorker:
 
         # Execute outside DB session (long operation)
         try:
-            runner = ExperimentRunner()
-            await runner.run(db, task_id)
+            async with AsyncSessionLocal() as run_db:
+                runner = ExperimentRunner()
+                await runner.run(run_db, task_id)
 
             # Update batch counters
             async with AsyncSessionLocal() as db:
