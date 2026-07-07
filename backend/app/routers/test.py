@@ -3,6 +3,7 @@
 """
 import asyncio
 import json
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -489,7 +490,6 @@ async def list_llm_history(
     query = (
         select(PatientLlmResult, PatientRecord)
         .join(PatientRecord, PatientLlmResult.patient_id == PatientRecord.id)
-        .options(selectinload(PatientLlmResult.asr_result))
         .order_by(PatientLlmResult.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -516,7 +516,7 @@ async def list_llm_history(
             "exam_record_id": patient.id,
             "record_id": patient.record_id,
             "date": patient.date_folder.date if patient.date_folder else None,
-            "asr_model_name": llm.asr_result.asr_model_name if llm.asr_result else None,
+            "asr_model_name": None,
             "llm_model_name": llm.llm_model_name,
             "prompt_version": llm.prompt_version,
             "prompt_len": len(llm.prompt_content) if llm.prompt_content else 0,
@@ -634,6 +634,3 @@ async def export_llm_history(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=llm_history_{timestamp}.xlsx"},
     )
-
-
-from typing import Optional
