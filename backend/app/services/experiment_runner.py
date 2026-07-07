@@ -42,18 +42,22 @@ class ExperimentRunner:
         if not combo:
             raise ValueError(f"Combination {task.combination_id} not found")
 
-        # Load patient with segs and result
+        # Load patient with segs / result / date_folder
         patient_result = await db.execute(
             select(PatientRecord)
             .options(
                 selectinload(PatientRecord.segs),
                 selectinload(PatientRecord.result),
+                selectinload(PatientRecord.date_folder),
             )
             .where(PatientRecord.id == task.patient_id)
         )
         patient = patient_result.scalar_one_or_none()
         if not patient:
             raise ValueError(f"Patient {task.patient_id} not found")
+
+        # 提前取出 date_str, 避免后续隐式懒加载
+        date_str = patient.date_folder.date if patient.date_folder else None
 
         # Load ASR model
         asr_model = await db.get(ModelConfig, combo.asr_model_id)
@@ -101,7 +105,7 @@ class ExperimentRunner:
                 asr_result_record = PatientAsrResult(
                     patient_id=task.patient_id,
                     record_id=patient.record_id,
-                    date=patient.date_folder.date if patient.date_folder else None,
+                    date=date_str,
                     asr_model_id=asr_model.id,
                     asr_model_name=asr_model.name,
                     provider=asr_model.provider,

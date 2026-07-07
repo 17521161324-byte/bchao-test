@@ -30,7 +30,7 @@ from app.models import (
     PatientRecord, AudioSeg, ModelConfig,
     PatientAsrResult, PatientLlmResult,
 )
-from app.services.test_executor import TestExecutor
+from app.services.asr import create_asr
 
 router = APIRouter()
 
@@ -125,30 +125,28 @@ async def patient_asr_stream(
     await db.commit()
     await db.refresh(record)
 
-    executor = TestExecutor()
+    # 使用 create_asr 工厂 (与实验链路一致)
+    asr = create_asr(
+        asr_model.provider,
+        **{
+            "endpoint": asr_model.endpoint,
+            "api_key": asr_model.api_key,
+            "api_secret": asr_model.api_secret,
+            "secret_key": asr_model.secret_key,
+            "model_name": asr_model.model_name,
+        },
+    )
 
     async def event_generator():
         start = time.time()
         asr_results = []
         try:
-            # 开始
             yield f"event: progress\ndata: {json.dumps({'stage': 'progress', 'total': len(segs), 'started': True}, ensure_ascii=False)}\n\n"
 
             for seg in segs:
                 yield f"event: progress\ndata: {json.dumps({'stage': 'segment_start', 'seg_index': seg['seg_index'], 'total': len(segs)}, ensure_ascii=False)}\n\n"
 
-                text = await executor._transcribe_one(
-                    seg=seg,
-                    asr_provider=asr_model.provider,
-                    asr_config={
-                        "endpoint": asr_model.endpoint,
-                        "api_key": asr_model.api_key,
-                        "api_secret": asr_model.api_secret,
-                        "secret_key": asr_model.secret_key,
-                        "model_name": asr_model.model_name,
-                    },
-                    hotwords=resolved_hotwords,
-                )
+                text = await asr.transcribe(seg["file_path"], hotwords=resolved_hotwords)
                 asr_results.append({"seg_index": seg["seg_index"], "text": text, "duration": seg["duration"]})
 
                 yield f"event: segment\ndata: {json.dumps({'stage': 'segment', 'seg_index': seg['seg_index'], 'text': text, 'duration': seg['duration']}, ensure_ascii=False)}\n\n"
