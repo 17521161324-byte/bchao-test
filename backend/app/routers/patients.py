@@ -154,15 +154,24 @@ async def patient_asr_stream(
             full_transcript = "\n".join(r["text"] for r in asr_results)
             duration = round(time.time() - start, 2)
 
-            # 成功: 更新记录
+            # 成功: 更新记录 + 设为当前 (在 yield complete 前完成, 让前端 refresh 能读到)
             record.segments = asr_results
             record.full_transcript = full_transcript
             record.duration_seconds = duration
             record.status = "success"
+            record.is_current = True
             await db.commit()
 
-            # 设为当前 (事务关闭后,避免悬挂)
-            await _set_current_asr(db, patient_id, record.id)
+            # 同 patient 其他 ASR 设为 not current
+            await db.execute(
+                update(PatientAsrResult)
+                .where(
+                    PatientAsrResult.patient_id == patient_id,
+                    PatientAsrResult.id != record.id,
+                )
+                .values(is_current=False)
+            )
+            await db.commit()
 
             yield f"event: complete\ndata: {json.dumps({'stage': 'complete', 'result_id': record.id, **_asr_response(record)}, ensure_ascii=False)}\n\n"
 
