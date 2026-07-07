@@ -55,6 +55,7 @@ class VolcengineBigModelASR:
     - 聚合: 每轮响应独立生成 utterances_candidate, 用 _merge_text 合并
     - 并发: sender/receiver 异步协作, 最终响应/错误后互相通知退出
     - 错误: ERROR_RESPONSE 抛出 VolcengineASRError, 不返回空字符串
+    - 热词: 支持传入 hotwords 列表, 写入 request.context 作为 JSON 字符串
     """
 
     # 16k / 16bit / mono: 1 秒 = 32000 bytes
@@ -95,8 +96,29 @@ class VolcengineBigModelASR:
         byte3 = 0x00
         return struct.pack("BBBB", byte0, byte1, byte2, byte3)
 
-    def _build_full_client_request_payload(self) -> bytes:
-        """构建 full client request 的 JSON payload"""
+    def _build_full_client_request_payload(self, hotwords: list[str] | None = None) -> bytes:
+        """构建 full client request 的 JSON payload
+
+        如有 hotwords, 写入 request.context 作为 JSON 字符串:
+        context = json.dumps({"hotwords": [{"word": w} for w in hotwords]})
+        """
+        request_params = {
+            "model_name": "bigmodel",
+            "enable_itn": True,
+            "enable_punc": True,
+            "enable_ddc": False,
+            "show_utterances": self._show_utterances,
+        }
+        # 只有存在热词时才注入 context 字段
+        if hotwords:
+            cleaned = [w.strip() for w in hotwords if w and w.strip()]
+            if cleaned:
+                context_str = json.dumps(
+                    {"hotwords": [{"word": w} for w in cleaned]},
+                    ensure_ascii=False,
+                )
+                request_params["context"] = context_str
+
         payload = {
             "user": {"uid": "bchao-test"},
             "audio": {
@@ -105,13 +127,7 @@ class VolcengineBigModelASR:
                 "bits": 16,
                 "channel": 1,
             },
-            "request": {
-                "model_name": "bigmodel",
-                "enable_itn": True,
-                "enable_punc": True,
-                "enable_ddc": False,
-                "show_utterances": self._show_utterances,
-            },
+            "request": request_params,
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
@@ -284,7 +300,7 @@ class VolcengineBigModelASR:
 
         流程:
         1. 建立 WebSocket 连接
-        2. 发送 full client request (配置参数)
+        2. 发送 full client request (含 hotwords context)
         3. 启动 receiver task 边收边聚合
         4. sender task 按 frame_size 分帧发送音频
         5. 收到 flags==0b0011 最终响应后, receiver 通知 sender 退出
@@ -306,7 +322,8 @@ class VolcengineBigModelASR:
             f"[Volcengine] 开始转写: request_id={request_id}, "
             f"audio_size={len(audio_data)} bytes, "
             f"frame_size={self._frame_size}, "
-            f"interval={self._send_interval}s"
+            f"interval={self._send_interval}s, "
+            f"hotwords_count={len(hotwords) if hotwords else 0}"
         )
 
         # 跨 task 状态
@@ -380,8 +397,8 @@ class VolcengineBigModelASR:
         async def sender(ws):
             """分帧发送音频, 收到 final_received 后提前退出"""
             try:
-                # 发送 full client request
-                client_payload = self._build_full_client_request_payload()
+                # 发送 full client request (含 hotwords context)
+                client_payload = self._build_full_client_request_payload(hotwords=hotwords)
                 client_header = self._build_header(MessageType.FULL_CLIENT_REQUEST)
                 client_frame = client_header + struct.pack(">I", len(client_payload)) + client_payload
                 await ws.send(client_frame)

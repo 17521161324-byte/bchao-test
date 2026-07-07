@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from loguru import logger
 
+from app.config import resolve_hotwords
 from app.database import get_db
 from app.models import PatientRecord, AudioSeg, ModelConfig, TestRun, BUltraResult
 from app.schemas import TestStartRequest, TestResultOut, EvaluationUpdate
@@ -78,9 +79,13 @@ async def run_asr_only(
         "model_name": asr_model.model_name,
     })
 
+    # 按优先级解析热词: 接口 > 模型配置 > 默认
+    parsed_hotwords = hotwords.split(",") if hotwords else None
+    resolved_hotwords = resolve_hotwords(parsed_hotwords, asr_model.params)
+
     asr_results = []
     for seg in segs:
-        text = await asr.transcribe(seg["file_path"], hotwords=hotwords.split(",") if hotwords else None)
+        text = await asr.transcribe(seg["file_path"], hotwords=resolved_hotwords)
         asr_results.append({
             "seg_index": seg["seg_index"],
             "text": text,
@@ -147,26 +152,26 @@ async def run_asr_stream(
         "model_name": asr_model.model_name,
     })
 
+    # 解析热词优先级: 接口 > 模型配置 > 默认
+    parsed_hotwords = hotwords.split(",") if hotwords else None
+    resolved_hotwords = resolve_hotwords(parsed_hotwords, asr_model.params)
+
     async def event_generator():
         asr_results = []
         total = len(segs)
         try:
             for seg in segs:
-                # 推送 progress
                 yield f"event: progress\ndata: {json.dumps({'stage': 'progress', 'seg_index': seg['seg_index'], 'total': total}, ensure_ascii=False)}\n\n"
 
-                # 转写
-                text = await asr.transcribe(seg["file_path"], hotwords=hotwords.split(",") if hotwords else None)
+                text = await asr.transcribe(seg["file_path"], hotwords=resolved_hotwords)
                 asr_results.append({
                     "seg_index": seg["seg_index"],
                     "text": text,
                     "duration": seg["duration"],
                 })
 
-                # 推送 segment
                 yield f"event: segment\ndata: {json.dumps({'stage': 'segment', 'seg_index': seg['seg_index'], 'text': text, 'duration': seg['duration']}, ensure_ascii=False)}\n\n"
 
-            # 全部完成
             full_transcript = "\n".join(r["text"] for r in asr_results)
             yield f"event: complete\ndata: {json.dumps({'stage': 'complete', 'segments': asr_results, 'full_transcript': full_transcript}, ensure_ascii=False)}\n\n"
         except Exception as e:

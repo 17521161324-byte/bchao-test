@@ -25,6 +25,10 @@ import pytest
 # 让 backend 目录可被 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.config import (
+    DEFAULT_ASR_HOTWORDS,
+    resolve_hotwords,
+)
 from app.services.asr.volcengine_asr import (
     MessageType,
     VolcengineASRError,
@@ -442,3 +446,81 @@ class TestFrameBuilding:
     def test_error_class_inherits_runtime_error(self):
         """VolcengineASRError 继承 RuntimeError, 可被 except RuntimeError 捕获"""
         assert issubclass(VolcengineASRError, RuntimeError)
+
+
+# ------------------------------------------------------------------
+# 测试: 热词注入
+# ------------------------------------------------------------------
+
+class TestHotwords:
+    def test_resolve_hotwords_default(self):
+        """未传 hotwords 时使用 DEFAULT_ASR_HOTWORDS"""
+        from app.config import DEFAULT_ASR_HOTWORDS
+        result = resolve_hotwords(None, None)
+        assert result is not None
+        assert "卵泡" in result
+        assert "子宫内膜" in result
+        assert result == DEFAULT_ASR_HOTWORDS
+
+    def test_resolve_hotwords_interface_overrides(self):
+        """接口传入 hotwords 优先于默认"""
+        result = resolve_hotwords(["自定义词1", "自定义词2"], None)
+        assert result == ["自定义词1", "自定义词2"]
+
+    def test_resolve_hotwords_model_params_second_priority(self):
+        """模型配置 params.hotwords 第二优先级"""
+        result = resolve_hotwords(None, {"hotwords": ["模型词1", "模型词2"]})
+        assert result == ["模型词1", "模型词2"]
+
+    def test_resolve_hotwords_interface_overrides_model_params(self):
+        """接口传入覆盖模型配置"""
+        result = resolve_hotwords(["接口词"], {"hotwords": ["模型词"]})
+        assert result == ["接口词"]
+
+    def test_resolve_hotwords_empty_strings_ignored(self):
+        """空字符串热词被过滤"""
+        result = resolve_hotwords(["", "  ", "有效词"], None)
+        assert result == ["有效词"]
+
+    def test_resolve_hotwords_empty_list(self):
+        """空列表返回默认"""
+        result = resolve_hotwords([], None)
+        assert result is not None
+        assert len(result) > 0
+
+    def test_volcengine_payload_includes_context_with_hotwords(self):
+        """豆包 payload 中 request.context 是 JSON 字符串, 包含 hotwords"""
+        asr = VolcengineBigModelASR(api_key="test_key")
+        payload_bytes = asr._build_full_client_request_payload(hotwords=["卵泡", "子宫内膜"])
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        # request.context 必须是 JSON 字符串
+        assert "context" in payload["request"]
+        context_str = payload["request"]["context"]
+        # context 本身能被 JSON 解析
+        context = json.loads(context_str)
+        assert "hotwords" in context
+        assert len(context["hotwords"]) == 2
+        assert context["hotwords"][0] == {"word": "卵泡"}
+        assert context["hotwords"][1] == {"word": "子宫内膜"}
+
+    def test_volcengine_payload_no_context_without_hotwords(self):
+        """无 hotwords 时不传 context"""
+        asr = VolcengineBigModelASR(api_key="test_key")
+        payload_bytes = asr._build_full_client_request_payload(hotwords=None)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        assert "context" not in payload["request"]
+
+    def test_volcengine_payload_no_context_empty_hotwords(self):
+        """空 hotwords 列表时不传 context"""
+        asr = VolcengineBigModelASR(api_key="test_key")
+        payload_bytes = asr._build_full_client_request_payload(hotwords=[])
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        assert "context" not in payload["request"]
+
+    def test_volcengine_default_hotwords_constant_exists(self):
+        """DEFAULT_ASR_HOTWORDS 常量可用且非空"""
+        from app.config import DEFAULT_ASR_HOTWORDS
+        assert isinstance(DEFAULT_ASR_HOTWORDS, list)
+        assert len(DEFAULT_ASR_HOTWORDS) > 0
+        assert "卵泡" in DEFAULT_ASR_HOTWORDS
+        assert "毫米" in DEFAULT_ASR_HOTWORDS
