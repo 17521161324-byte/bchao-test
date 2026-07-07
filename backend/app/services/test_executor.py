@@ -137,8 +137,10 @@ class TestExecutor:
                 "message": "LLM 正在提取结构化信息...",
             })
         llm = create_llm(llm_provider, **llm_config)
-        prompt = prompt_template.format(transcript=transcript)
-        response = await llm.extract(transcript, prompt)
+        # 不要使用 prompt_template.format(transcript=transcript)
+        # 因为提示词模板里包含 JSON 示例花括号,会被当成格式占位符解析 (KeyError)
+        # OpenAILLM.extract 内部已经用 replace("{transcript}", transcript) 安全替换
+        response = await llm.extract(transcript, prompt_template)
         return {
             "llm_raw_output": response.raw_text,
             "structured_result": response.structured,

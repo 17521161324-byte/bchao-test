@@ -390,6 +390,10 @@ export default defineComponent({
         asrModels.value = asr as unknown as any[]
         llmModels.value = llm as unknown as any[]
         if (asr.length > 0) asrModelId.value = asr[0].id
+        // 设置默认 LLM (优先取 is_default,否则取第一个)
+        if (llm.length > 0) {
+          llmModelId.value = llm.find((m: any) => m.is_default)?.id || llm[0].id
+        }
       } catch (e) { console.error(e) }
     }
 
@@ -514,7 +518,15 @@ export default defineComponent({
     }
 
     async function runLlm() {
-      if (!selectedRecord.value || !currentAsrResult.value) return
+      if (!selectedRecord.value) return
+      if (!currentAsrResult.value) {
+        message.error('请先完成 ASR 转写')
+        return
+      }
+      if (!llmModelId.value) {
+        message.error('请选择 LLM 模型')
+        return
+      }
       const pid = selectedRecord.value.id
       llmRunning.value = true
       try {
