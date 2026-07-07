@@ -61,21 +61,18 @@
 
         <!-- ASR + LLM 并行双列布局 -->
         <a-row :gutter="16" style="margin-bottom: 16px">
-          <!-- ============ 左列：ASR ============ -->
+          <!-- ============ 左列：ASR (多模型) ============ -->
           <a-col :span="12">
             <a-card size="small" style="margin-bottom: 16px; height: 100%">
               <template #title>
                 <span>语音转写 (ASR)</span>
-                <a-tag v-if="asrResult" color="blue" style="margin-left: 8px">{{ asrResult.model_name }}</a-tag>
+                <a-tag v-if="selectedAsrResult" color="blue" style="margin-left: 8px">{{ selectedAsrResult.model_name }}</a-tag>
               </template>
               <template #extra>
                 <a-space :size="4">
-                  <a-select v-model:value="asrModelId" style="width: 150px" size="small" placeholder="选择ASR模型">
-                    <a-select-option v-for="m in asrModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
-                  </a-select>
                   <a-button type="primary" size="small" @click="runAsr" :loading="asrRunning">
                     <template #icon><ScanOutlined /></template>
-                    {{ asrRunning ? '转写中...' : (asrResult ? '重新识别' : '开始识别') }}
+                    {{ asrRunning ? '转写中...' : (currentAsrStatus === 'success' ? '重新识别' : '开始识别') }}
                   </a-button>
                   <span v-if="asrProgress" style="font-size: 12px; color: #666; margin-left: 8px">
                     处理中 {{ asrProgress.seg_index }} / {{ asrProgress.total }}
@@ -83,13 +80,31 @@
                 </a-space>
               </template>
 
+              <!-- ASR 模型选择 -->
+              <div style="margin-bottom: 12px">
+                <span style="font-size: 12px; color: #666; margin-right: 8px">模型:</span>
+                <a-checkable-tag
+                  v-for="m in asrModels"
+                  :key="m.id"
+                  :checked="asrModelId === m.id"
+                  @click="asrModelId = m.id"
+                  style="cursor: pointer; margin-right: 4px"
+                  :color="getAsrModelStatusColor(m.id)"
+                >
+                  {{ m.name }}
+                </a-checkable-tag>
+              </div>
+
               <!-- 播放器 -->
               <AudioPlayer v-if="selectedRecord.segs?.length" :segs="selectedRecord.segs" style="margin-bottom: 12px" />
 
               <!-- ASR 结果 -->
-              <div v-if="asrResult" style="max-height: 360px; overflow-y: auto">
+              <div v-if="selectedAsrResult" style="max-height: 360px; overflow-y: auto">
+                <div v-if="selectedAsrResult.status === 'failed'" style="color: #ff4d4f; margin-bottom: 8px; font-size: 12px">
+                  转写失败: {{ selectedAsrResult.error_message || '未知错误' }}
+                </div>
                 <div style="font-size: 13px; color: #666; margin-bottom: 4px">转写结果：</div>
-                <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 14px; line-height: 1.8; white-space: pre-wrap">{{ asrResult.full_transcript || '(无内容)' }}</div>
+                <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 14px; line-height: 1.8; white-space: pre-wrap">{{ selectedAsrResult.full_transcript || '(无内容)' }}</div>
               </div>
               <a-empty v-else description="暂无转写结果" style="padding: 20px 0" />
             </a-card>
@@ -100,6 +115,7 @@
             <a-card size="small" style="margin-bottom: 16px; height: 100%">
               <template #title>
                 <span>LLM 结构化提取</span>
+                <a-tag v-if="selectedAsrResult" color="blue" style="margin-left: 8px">ASR: {{ selectedAsrResult.model_name }}</a-tag>
                 <a-tag v-if="llmResult" color="purple" style="margin-left: 8px">{{ llmResult.model_name }}</a-tag>
               </template>
               <template #extra>
@@ -107,7 +123,7 @@
                   <a-select v-model:value="llmModelId" style="width: 150px" size="small" placeholder="选择LLM模型" allow-clear>
                     <a-select-option v-for="m in llmModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
                   </a-select>
-                  <a-button type="primary" size="small" @click="runLlm" :loading="llmRunning" :disabled="!asrResult">
+                  <a-button type="primary" size="small" @click="runLlm" :loading="llmRunning" :disabled="!selectedAsrResult">
                     <template #icon><RobotOutlined /></template>
                     {{ llmRunning ? '提取中...' : '开始提取' }}
                   </a-button>
@@ -374,89 +390,143 @@ export default defineComponent({
       return follicles.map((f) => `${f.size}×${f.count}`).join('  ')
     }
 
-    // --- ASR (持久化到后端) ---
-    const asrModels = ref<any[]>([])
-    const asrModelId = ref<number | undefined>(undefined)
+    // --- ASR (持久化到后端, 多模型管理) ---
+    const asrModels = ref<any[]>([])          // 所有 active ASR 模型
+    const asrModelId = ref<number | undefined>(undefined)  // 当前选中的 ASR 模型
     const asrRunning = ref(false)
-    // 当前检查记录的 ASR 持久化结果 (从后端加载)
-    const currentAsrResult = ref<any>(null)
-    const asrHistory = ref<any[]>([])
     const asrProgress = ref<{ seg_index: number; total: number } | null>(null)
     const asrPartialSegments = ref<Record<number, string>>({})
+    // 当前检查记录的所有 ASR 结果 (按模型分组)
+    const asrResultsAll = ref<any[]>([])
+    // 当前选中的 ASR 结果 (用于展示 + LLM 输入)
+    const selectedAsrResult = ref<any>(null)
+
+    // 计算属性: 按 asr_model_id 分组, 每个模型取最新 success (或最新记录)
+    const asrResultByModelId = computed(() => {
+      const map: Record<number, any> = {}
+      for (const r of asrResultsAll.value) {
+        const mid = r.asr_model_id
+        if (!map[mid]) {
+          map[mid] = r
+        } else {
+          // 优先 success, 其次 created_at 更新
+          const existing = map[mid]
+          if (r.status === 'success' && existing.status !== 'success') {
+            map[mid] = r
+          } else if (r.status === existing.status) {
+            // 同状态取更新的
+            if (new Date(r.created_at) > new Date(existing.created_at)) {
+              map[mid] = r
+            }
+          }
+        }
+      }
+      return map
+    })
+
+    // 计算属性: 当前选中模型的转写状态
+    const currentAsrStatus = computed(() => {
+      if (!asrModelId.value) return 'idle'
+      const r = asrResultByModelId.value[asrModelId.value]
+      if (!r) return 'idle'
+      return r.status  // success / running / failed
+    })
 
     async function loadModels() {
       try {
         const [asr, llm] = await Promise.all([modelApi.list('asr'), modelApi.list('llm')])
-        asrModels.value = asr as unknown as any[]
-        llmModels.value = llm as unknown as any[]
-        if (asr.length > 0) asrModelId.value = asr[0].id
-        // 设置默认 LLM (优先取 is_default,否则取第一个)
+        // 只显示 active 模型
+        asrModels.value = (asr as any[]).filter((m: any) => m.status === 'active')
+        llmModels.value = (llm as any[]).filter((m: any) => m.status === 'active')
         if (llm.length > 0) {
           llmModelId.value = llm.find((m: any) => m.is_default)?.id || llm[0].id
+        }
+        // ASR 默认选中第一个 (后续根据当前结果调整)
+        if (asrModels.value.length > 0 && !asrModelId.value) {
+          asrModelId.value = asrModels.value[0].id
         }
       } catch (e) { console.error(e) }
     }
 
-    // 加载当前检查记录的 ASR 结果
-    async function loadCurrentAsrResult() {
+    // 加载当前检查记录的所有 ASR 结果
+    async function loadAsrResults() {
       if (!selectedRecord.value) return
-      const pid = selectedRecord.value.id
+      const examRecordId = selectedRecord.value.id  // exam_record_id = patient_records.id
       try {
-        const res = await patientApi.getAsrCurrent(pid)
-        currentAsrResult.value = res || null
-      } catch { currentAsrResult.value = null }
-      try {
-        const h = await patientApi.listAsrResults(pid)
-        asrHistory.value = h || []
-      } catch { asrHistory.value = [] }
+        const h = await patientApi.listAsrResults(examRecordId)
+        asrResultsAll.value = h || []
+      } catch { asrResultsAll.value = [] }
+
+      // 自动选择最佳模型
+      const map = asrResultByModelId.value
+      // 优先 is_current + success
+      let bestMid: number | undefined
+      for (const mid of Object.keys(map)) {
+        const r = map[mid]
+        if (r.is_current && r.status === 'success') {
+          bestMid = Number(mid)
+          break
+        }
+      }
+      // 其次第一个 success
+      if (!bestMid) {
+        for (const mid of Object.keys(map)) {
+          if (map[mid].status === 'success') {
+            bestMid = Number(mid)
+            break
+          }
+        }
+      }
+      // 其次保持当前选择 (如果仍在 active 列表)
+      if (!bestMid && asrModelId.value && asrModels.value.find(m => m.id === asrModelId.value)) {
+        bestMid = asrModelId.value
+      }
+      // 否则第一个 active 模型
+      if (!bestMid && asrModels.value.length > 0) {
+        bestMid = asrModels.value[0].id
+      }
+      if (bestMid) asrModelId.value = bestMid
+
+      // 更新当前展示结果
+      updateSelectedAsrResult()
+    }
+
+    // 根据当前选中模型更新展示结果
+    function updateSelectedAsrResult() {
+      if (!asrModelId.value) {
+        selectedAsrResult.value = null
+        return
+      }
+      const r = asrResultByModelId.value[asrModelId.value]
+      selectedAsrResult.value = r || null
     }
 
     async function runAsr() {
       if (!asrModelId.value || !selectedRecord.value) return
-      const pid = selectedRecord.value.id
+      const examRecordId = selectedRecord.value.id
       asrRunning.value = true
       asrProgress.value = null
       asrPartialSegments.value = {}
       try {
-        const es = patientApi.runAsrSSE(pid, asrModelId.value)
+        const es = patientApi.runAsrSSE(examRecordId, asrModelId.value)
         es.addEventListener('progress', () => { /* total info */ })
-        es.addEventListener('segment', (ev: MessageEvent) => {
-          try {
-            const data = JSON.parse(ev.data)
-            if (data.stage === 'segment') {
-              // 实时拼接完整文本, 给用户进度感知
-              asrPartialSegments.value = {
-                ...asrPartialSegments.value,
-                [data.seg_index]: data.text,
-              }
-              const partialFull = Object.keys(asrPartialSegments.value)
-                .map(Number).sort((a, b) => a - b)
-                .map((idx) => asrPartialSegments.value[idx])
-                .join('\n')
-              currentAsrResult.value = {
-                model_name: asrModels.value.find((m) => m.id === asrModelId.value)?.name || '',
-                model_id: asrModelId.value,
-                full_transcript: partialFull,
-                segments: Object.keys(asrPartialSegments.value)
-                  .map(Number).sort((a, b) => a - b)
-                  .map((idx) => ({ seg_index: idx, text: asrPartialSegments.value[idx] })),
-                streaming: true,
-              }
-            }
-          } catch { /* ignore */ }
+        es.addEventListener('segment', () => {
+          // 实时预览由 loadAsrResults 刷新
         })
         es.addEventListener('complete', async () => {
           asrProgress.value = null
           asrRunning.value = false
           es.close()
           // 从后端刷新正式结果
-          await loadCurrentAsrResult()
+          await loadAsrResults()
         })
         es.addEventListener('error', () => {
           message.error('ASR 失败')
           asrProgress.value = null
           asrRunning.value = false
           es.close()
+          // 刷新以显示失败状态
+          loadAsrResults()
         })
       } catch (e) {
         message.error('ASR 启动失败')
@@ -465,7 +535,7 @@ export default defineComponent({
       }
     }
 
-    // --- LLM (持久化到后端) ---
+    // --- LLM (持久化到后端, 基于当前选中的 ASR 结果) ---
     const llmModels = ref<any[]>([])
     const llmModelId = ref<number | undefined>(undefined)
     const llmRunning = ref(false)
@@ -506,20 +576,20 @@ export default defineComponent({
 
     async function loadCurrentLlmResult() {
       if (!selectedRecord.value) return
-      const pid = selectedRecord.value.id
+      const examRecordId = selectedRecord.value.id
       try {
-        const res = await patientApi.getLlmCurrent(pid)
+        const res = await patientApi.getLlmCurrent(examRecordId)
         currentLlmResult.value = res || null
       } catch { currentLlmResult.value = null }
       try {
-        const h = await patientApi.listLlmResults(pid)
+        const h = await patientApi.listLlmResults(examRecordId)
         llmHistory.value = h || []
       } catch { llmHistory.value = [] }
     }
 
     async function runLlm() {
       if (!selectedRecord.value) return
-      if (!currentAsrResult.value) {
+      if (!selectedAsrResult.value) {
         message.error('请先完成该检查记录的 ASR 转写')
         return
       }
@@ -527,12 +597,12 @@ export default defineComponent({
         message.error('请选择 LLM 模型')
         return
       }
-      const pid = selectedRecord.value.id
+      const examRecordId = selectedRecord.value.id
       llmRunning.value = true
       try {
-        const res = await patientApi.runLlm(pid, {
+        const res = await patientApi.runLlm(examRecordId, {
           llm_model_id: llmModelId.value!,
-          asr_result_id: currentAsrResult.value?.id,
+          asr_result_id: selectedAsrResult.value?.id,
           prompt_content: llmPrompt.value,
         })
         await loadCurrentLlmResult()
@@ -542,6 +612,16 @@ export default defineComponent({
       } finally {
         llmRunning.value = false
       }
+    }
+
+    // 获取 ASR 模型状态颜色
+    function getAsrModelStatusColor(modelId: number): string {
+      const r = asrResultByModelId.value[modelId]
+      if (!r) return 'default'
+      if (r.status === 'success') return 'blue'
+      if (r.status === 'running') return 'orange'
+      if (r.status === 'failed') return 'red'
+      return 'default'
     }
 
     // ========== 提示词模版 ==========
@@ -663,16 +743,22 @@ export default defineComponent({
       return JSON.stringify(display, null, 2)
     }
 
-    // 监听 drawer 中检查记录切换, 自动加载持久化结果
+    // 监听 drawer 中检查记录切换, 自动加载持久化结果 + 自动选中最佳模型
     watch(selectedRecord, async (rec) => {
-      currentAsrResult.value = null
+      selectedAsrResult.value = null
       currentLlmResult.value = null
-      asrHistory.value = []
+      asrResultsAll.value = []
       llmHistory.value = []
+      llmModelId.value = undefined
       if (rec && drawerOpen.value) {
-        await loadCurrentAsrResult()
+        await loadAsrResults()
         await loadCurrentLlmResult()
       }
+    })
+
+    // 监听 ASR 模型切换, 更新展示结果
+    watch(asrModelId, () => {
+      updateSelectedAsrResult()
     })
 
     onMounted(() => {
@@ -684,14 +770,16 @@ export default defineComponent({
 
     return {
       searchText, drawerOpen, selectedRecord, batches, selectedBatch, loadingTree,
-      allRecords, filteredRecords, asrModels, asrModelId, asrRunning, asrResult: currentAsrResult, asrProgress, runAsr,
+      allRecords, filteredRecords,
+      asrModels, asrModelId, asrRunning, asrProgress, runAsr,
+      asrResultByModelId, currentAsrStatus, selectedAsrResult,
       llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined,
       promptTemplates, selectedTemplateId, showTemplateModal, templateTab,
       templateLoading, templateSaving, templateForm,
       onTemplateChange, loadTemplateForEdit, resetTemplateForm, saveTemplate, deleteTemplate,
-      asrHistory, llmHistory,
+      asrResultsAll: asrResultsAll, llmHistory,
     }
   },
 })
