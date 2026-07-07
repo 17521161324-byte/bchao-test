@@ -88,14 +88,14 @@ export function startTestSSE(data: {
 
 // ========== 提示词模版 ==========
 export const promptTemplateApi = {
-  list: () => client.get('/prompt-template'),
-  get: (id: number) => client.get(`/prompt-template/${id}`),
+  list: () => client.get('/prompt-templates'),
+  get: (id: number) => client.get(`/prompt-templates/${id}`),
   create: (data: { name: string; content: string; is_default?: boolean }) =>
-    client.post('/prompt-template', data),
+    client.post('/prompt-templates', data),
   update: (id: number, data: { name?: string; content?: string; is_default?: boolean }) =>
-    client.put(`/prompt-template/${id}`, data),
-  delete: (id: number) => client.delete(`/prompt-template/${id}`),
-  initDefaults: () => client.post('/prompt-template/init-defaults'),
+    client.put(`/prompt-templates/${id}`, data),
+  delete: (id: number) => client.delete(`/prompt-templates/${id}`),
+  initDefaults: () => client.post('/prompt-templates/init-defaults'),
 }
 
 export default client
