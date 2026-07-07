@@ -142,39 +142,64 @@
               </template>
 
               <!-- LLM 结果 -->
-              <div v-if="llmResult" style="max-height: 320px; overflow-y: auto">
-                <!-- 准确率 -->
-                <div style="margin-bottom: 12px; text-align: right">
-                  <span style="font-size: 12px; color: #666">准确率：</span>
-                  <span style="font-size: 16px; font-weight: bold; color: #1677ff">{{ llmResult.accuracy != null ? (llmResult.accuracy * 100).toFixed(0) + '%' : '-' }}</span>
+              <div v-if="llmResult" style="max-height: 600px; overflow-y: auto">
+                <!-- A. 顶部: 准确率 + 模型信息 -->
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px">
+                  <a-space>
+                    <a-tag color="purple">{{ llmResult.model_name }}</a-tag>
+                    <a-tag v-if="selectedAsrResult" color="blue">ASR: {{ selectedAsrResult.model_name }}</a-tag>
+                  </a-space>
+                  <span style="font-size: 12px; color: #666">
+                    准确率: <span style="font-size: 16px; font-weight: bold; color: #1677ff">{{ llmResult.accuracy != null ? (llmResult.accuracy * 100).toFixed(0) + '%' : '-' }}</span>
+                  </span>
                 </div>
 
-                <!-- 其他字段描述 -->
-                <a-descriptions :column="2" bordered size="small">
-                  <a-descriptions-item label="内膜厚度">
-                    <span :style="{ color: compareField('endometrium_thickness', true) ? '#52c41a' : (compareField('endometrium_thickness', false) ? '#ff4d4f' : 'inherit') }">
-                      {{ llmResult.structured?.endometrium_thickness != null ? llmResult.structured.endometrium_thickness + ' mm' : '-' }}
-                    </span>
-                  </a-descriptions-item>
-                  <a-descriptions-item label="内膜类型">
-                    <span :style="{ color: compareField('endometrium_type', true) ? '#52c41a' : (compareField('endometrium_type', false) ? '#ff4d4f' : 'inherit') }">
-                      {{ llmResult.structured?.endometrium_type || '-' }}
-                    </span>
-                  </a-descriptions-item>
-                  <a-descriptions-item label="右卵巢">
-                    {{ llmResult.structured?.right_ovary_length && llmResult.structured?.right_ovary_width ? `${llmResult.structured.right_ovary_length} × ${llmResult.structured.right_ovary_width} mm` : '-' }}
-                  </a-descriptions-item>
-                  <a-descriptions-item label="左卵巢">
-                    {{ llmResult.structured?.left_ovary_length && llmResult.structured?.left_ovary_width ? `${llmResult.structured.left_ovary_length} × ${llmResult.structured.left_ovary_width} mm` : '-' }}
-                  </a-descriptions-item>
-                </a-descriptions>
+                <!-- B. LLM 转写/总结内容 -->
+                <a-card size="small" style="margin-bottom: 12px">
+                  <template #title><span style="font-size: 12px">LLM 转写/总结</span></template>
+                  <div v-if="llmDisplayText" class="llm-summary-box">{{ llmDisplayText }}</div>
+                  <a-empty v-else description="暂无 LLM 总结内容" style="padding: 12px 0" />
+                </a-card>
 
-                <!-- LLM 原始返回 JSON -->
-                <a-collapse style="margin-top: 12px">
-                  <a-collapse-panel key="raw" header="查看 LLM 原始返回">
-                    <pre style="background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto">{{ formatRawJson(llmResult) }}</pre>
-                  </a-collapse-panel>
-                </a-collapse>
+                <!-- C. LLM 提取结果 -->
+                <a-card size="small" title="LLM 提取结果">
+                  <a-descriptions :column="2" bordered size="small">
+                    <a-descriptions-item label="右侧卵泡总数">
+                      {{ structured.value?.right_follicle_total ?? '-' }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="左侧卵泡总数">
+                      {{ structured.value?.left_follicle_total ?? '-' }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="右侧卵泡" :span="2">
+                      {{ formatFollicles(structured.value?.right_follicles) }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="左侧卵泡" :span="2">
+                      {{ formatFollicles(structured.value?.left_follicles) }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="内膜厚度">
+                      {{ structured.value?.endometrium_thickness != null ? structured.value.endometrium_thickness + ' mm' : '-' }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="内膜类型">
+                      {{ structured.value?.endometrium_type || '-' }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="右卵巢">
+                      {{ structured.value?.right_ovary_length && structured.value?.right_ovary_width ? `${structured.value.right_ovary_length} × ${structured.value.right_ovary_width} mm` : '-' }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="左卵巢">
+                      {{ structured.value?.left_ovary_length && structured.value?.left_ovary_width ? `${structured.value.left_ovary_length} × ${structured.value.left_ovary_width} mm` : '-' }}
+                    </a-descriptions-item>
+                    <a-descriptions-item label="备注" :span="2">
+                      {{ structured.value?.remark || '-' }}
+                    </a-descriptions-item>
+                  </a-descriptions>
+
+                  <!-- 原始 JSON -->
+                  <a-collapse style="margin-top: 8px">
+                    <a-collapse-panel key="raw" header="查看 LLM 原始返回">
+                      <pre style="background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto">{{ formatRawJson(llmResult) }}</pre>
+                    </a-collapse-panel>
+                  </a-collapse>
+                </a-card>
               </div>
               <a-empty v-else description="请先完成 ASR 转写" style="padding: 20px 0" />
             </a-card>
@@ -660,6 +685,22 @@ export default defineComponent({
     // Markdown 预览
     const templatePreviewHtml = computed(() => md.render(templateForm.content || ''))
 
+    // LLM 结构化结果兼容
+    const structured = computed(() => currentLlmResult.value?.structured || currentLlmResult.value?.structured_result || {})
+
+    // LLM 转写/总结内容
+    const llmDisplayText = computed(() => {
+      if (!currentLlmResult.value) return ''
+      return (
+        currentLlmResult.value.summary_text ||
+        currentLlmResult.value.summary ||
+        currentLlmResult.value.structured?.summary ||
+        currentLlmResult.value.raw_text ||
+        currentLlmResult.value.raw_output ||
+        ''
+      )
+    })
+
     // Markdown 默认模版
     const DEFAULT_TEMPLATE_CONTENT = `# 角色
 
@@ -866,6 +907,7 @@ export default defineComponent({
       asrModels, asrModelId, asrRunning, asrProgress, runAsr,
       asrResultByModelId, currentAsrStatus, selectedAsrResult,
       llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
+      structured, llmDisplayText,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles, getAsrModelStatusColor,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
       promptTemplates, selectedTemplateId, showTemplateModal, templateTab,
@@ -899,4 +941,15 @@ export default defineComponent({
 .markdown-preview code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; background: rgba(175,184,193,0.2); padding: 2px 4px; border-radius: 4px; }
 .markdown-preview pre code { background: transparent; padding: 0; }
 .markdown-preview blockquote { border-left: 4px solid #ddd; margin: 8px 0; padding: 4px 12px; color: #666; }
+.llm-summary-box {
+  background: #f5f5f5;
+  padding: 12px;
+  border-radius: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #333;
+}
 </style>
