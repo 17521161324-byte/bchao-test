@@ -18,12 +18,13 @@ PUT  /api/patients/{patient_id}/llm-results/{result_id}/current
 """
 import asyncio
 import json
+import io
 import time
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -471,11 +472,13 @@ async def export_patient_llm_results(
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
     from sqlalchemy import select
+    from app.models import DateFolder
 
     # 读取该检查记录的所有 LLM 结果 (按时间正序)
     result = await db.execute(
-        select(PatientLlmResult, PatientAsrResult)
-        .outerjoin(PatientAsrResult, PatientLlmResult.asr_result_id == PatientAsrResult.id)
+        select(PatientLlmResult, PatientRecord, DateFolder)
+        .outerjoin(PatientRecord, PatientLlmResult.patient_id == PatientRecord.id)
+        .outerjoin(DateFolder, PatientRecord.date_folder_id == DateFolder.id)
         .where(PatientLlmResult.patient_id == patient_id)
         .order_by(PatientLlmResult.created_at.asc())
     )
@@ -484,10 +487,10 @@ async def export_patient_llm_results(
     if not rows:
         raise HTTPException(status_code=404, detail="无 LLM 结果")
 
-    # 获取病历号
-    patient = await db.get(PatientRecord, patient_id)
+    patient = rows[0][1] if rows else None
+    date_folder = rows[0][2] if rows else None
     record_id = patient.record_id if patient else f"exam_{patient_id}"
-    date_str = patient.date_folder.date if patient and patient.date_folder else ""
+    date_str = date_folder.date if date_folder else ""
 
     wb = Workbook()
     ws = wb.active
@@ -518,7 +521,7 @@ async def export_patient_llm_results(
         cell.alignment = Alignment(horizontal="center")
         cell.border = thin_border
 
-    for row_idx, (llm, asr) in enumerate(rows, 2):
+    for row_idx, (llm, patient, date_folder) in enumerate(rows, 2):
         structured = llm.structured_result or {}
         right_follicles = structured.get("right_follicles") or []
         left_follicles = structured.get("left_follicles") or []
@@ -529,7 +532,7 @@ async def export_patient_llm_results(
             llm.id,
             llm.created_at.strftime("%Y-%m-%d %H:%M:%S") if llm.created_at else "",
             llm.asr_result_id,
-            asr.asr_model_name if asr else "",
+            "",
             llm.llm_model_name,
             llm.prompt_version,
             len(llm.prompt_content) if llm.prompt_content else 0,
@@ -563,10 +566,12 @@ async def export_patient_llm_results(
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    filename = f"LLM历史_{record_id}_{date_str}.xlsx"
+    # ASCII-only filename to avoid latin-1 encoding error
+    safe_record = record_id.encode('ascii', 'ignore').decode()
+    filename = f"LLM_history_{safe_record}_{date_str}.xlsx"
 
-    return StreamingResponse(
-        buf,
+    return Response(
+        content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )

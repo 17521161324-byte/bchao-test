@@ -17,6 +17,7 @@ import gzip
 import json
 import struct
 import sys
+import wave
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 
@@ -481,6 +482,32 @@ class TestFrameBuilding:
         assert payload["request"]["show_utterances"] is True
         # 必须显式设置 result_type=full
         assert payload["request"]["result_type"] == "full"
+        # 流式分包发送的是 PCM 帧, 不能把 wav 容器文件切片后仍声明为 wav
+        assert payload["audio"]["format"] == "pcm"
+        assert payload["audio"]["codec"] == "raw"
+
+    def test_load_wav_extracts_pcm_frames_not_container_bytes(self, tmp_path):
+        """WAV 输入必须抽取 PCM 帧，避免把 wav header 混入流式音频包。"""
+        wav_path = tmp_path / "sample.wav"
+        pcm = b"\x01\x02" * 160  # 160 frames, 16-bit mono
+        with wave.open(str(wav_path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(pcm)
+
+        audio_data, meta = VolcengineBigModelASR._load_audio_payload(str(wav_path))
+
+        assert audio_data == pcm
+        assert not audio_data.startswith(b"RIFF")
+        assert meta == {
+            "format": "pcm",
+            "codec": "raw",
+            "rate": 16000,
+            "bits": 16,
+            "channel": 1,
+            "language": "zh-CN",
+        }
 
     def test_error_class_inherits_runtime_error(self):
         """VolcengineASRError 继承 RuntimeError, 可被 except RuntimeError 捕获"""

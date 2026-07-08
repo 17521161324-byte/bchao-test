@@ -28,6 +28,7 @@ import json
 import gzip
 import struct
 import asyncio
+import wave
 from enum import IntEnum
 from typing import Optional
 from loguru import logger
@@ -96,7 +97,11 @@ class VolcengineBigModelASR:
         byte3 = 0x00
         return struct.pack("BBBB", byte0, byte1, byte2, byte3)
 
-    def _build_full_client_request_payload(self, hotwords: list[str] | None = None) -> bytes:
+    def _build_full_client_request_payload(
+        self,
+        hotwords: list[str] | None = None,
+        audio_meta: dict | None = None,
+    ) -> bytes:
         """构建 full client request 的 JSON payload
 
         如有 hotwords, 写入 request.context 作为 JSON 字符串:
@@ -120,17 +125,69 @@ class VolcengineBigModelASR:
                 )
                 request_params["context"] = context_str
 
+        audio = {
+            "format": "pcm",
+            "codec": "raw",
+            "rate": 16000,
+            "bits": 16,
+            "channel": 1,
+            "language": "zh-CN",
+        }
+        if audio_meta:
+            audio.update(audio_meta)
+
         payload = {
             "user": {"uid": "bchao-test"},
-            "audio": {
-                "format": "wav",
-                "rate": 16000,
-                "bits": 16,
-                "channel": 1,
-            },
+            "audio": audio,
             "request": request_params,
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    @staticmethod
+    def _load_audio_payload(audio_path: str) -> tuple[bytes, dict]:
+        """读取音频并返回可流式分包的 payload 与 audio 元信息。
+
+        豆包 WebSocket 的 audio-only payload 是每包 100~200ms 的音频数据。
+        如果直接把 wav 容器文件按字节切片, 只有第一包带 wav header, 后续包不是合法
+        wav 片段, 容易导致只识别到少量文本。这里对 wav 文件先抽取 PCM 帧,
+        并在请求中声明 format=pcm/codec=raw。
+        """
+        try:
+            with wave.open(audio_path, "rb") as wav:
+                channels = wav.getnchannels()
+                sample_width = wav.getsampwidth()
+                rate = wav.getframerate()
+                frames = wav.readframes(wav.getnframes())
+        except wave.Error:
+            # 单元测试或极少数非 wav 输入兜底: 按 16k/16bit/mono PCM 处理。
+            with open(audio_path, "rb") as f:
+                frames = f.read()
+            logger.warning(f"[Volcengine] 音频不是标准 WAV, 按 raw PCM 兜底发送: {audio_path}")
+            return frames, {
+                "format": "pcm",
+                "codec": "raw",
+                "rate": 16000,
+                "bits": 16,
+                "channel": 1,
+                "language": "zh-CN",
+            }
+
+        bits = sample_width * 8
+        if bits != 16:
+            raise ValueError(f"豆包 ASR 仅支持 16bit PCM/WAV, 当前为 {bits}bit: {audio_path}")
+        if rate != 16000:
+            raise ValueError(f"豆包 ASR 当前配置仅支持 16000Hz, 当前为 {rate}Hz: {audio_path}")
+        if channels not in (1, 2):
+            raise ValueError(f"豆包 ASR 仅支持 mono/stereo, 当前声道数={channels}: {audio_path}")
+
+        return frames, {
+            "format": "pcm",
+            "codec": "raw",
+            "rate": rate,
+            "bits": bits,
+            "channel": channels,
+            "language": "zh-CN",
+        }
 
     def _build_audio_payload(self, audio_bytes: bytes, seq: int = 1) -> bytes:
         """构建中间音频帧 (正序 sequence)"""
@@ -285,8 +342,7 @@ class VolcengineBigModelASR:
         """
         import websockets
 
-        with open(audio_path, "rb") as f:
-            audio_data = f.read()
+        audio_data, audio_meta = self._load_audio_payload(audio_path)
 
         request_id = f"req-{id(audio_data) % 100000}"
         headers = {
@@ -297,7 +353,8 @@ class VolcengineBigModelASR:
 
         logger.info(
             f"[Volcengine] 开始转写: request_id={request_id}, "
-            f"audio_size={len(audio_data)} bytes, "
+            f"audio_payload_size={len(audio_data)} bytes, "
+            f"audio_meta={audio_meta}, "
             f"frame_size={self._frame_size}, "
             f"interval={self._send_interval}s, "
             f"hotwords_count={len(hotwords) if hotwords else 0}"
@@ -382,7 +439,10 @@ class VolcengineBigModelASR:
             """分帧发送音频, 收到 final_received 后提前退出"""
             try:
                 # 发送 full client request (含 hotwords context)
-                client_payload = self._build_full_client_request_payload(hotwords=hotwords)
+                client_payload = self._build_full_client_request_payload(
+                    hotwords=hotwords,
+                    audio_meta=audio_meta,
+                )
                 client_header = self._build_header(MessageType.FULL_CLIENT_REQUEST)
                 client_frame = client_header + struct.pack(">I", len(client_payload)) + client_payload
                 await ws.send(client_frame)
