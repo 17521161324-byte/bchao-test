@@ -460,3 +460,113 @@ async def set_patient_llm_current(
         raise HTTPException(status_code=404, detail="记录不存在")
     await _set_current_llm(db, patient_id, result_id)
     return {"ok": True}
+
+
+@router.get("/{patient_id}/llm-results/export")
+async def export_patient_llm_results(
+    patient_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """导出当前检查记录(患者)的所有 LLM 历史为 Excel"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from sqlalchemy import select
+
+    # 读取该检查记录的所有 LLM 结果 (按时间正序)
+    result = await db.execute(
+        select(PatientLlmResult, PatientAsrResult)
+        .outerjoin(PatientAsrResult, PatientLlmResult.asr_result_id == PatientAsrResult.id)
+        .where(PatientLlmResult.patient_id == patient_id)
+        .order_by(PatientLlmResult.created_at.asc())
+    )
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="无 LLM 结果")
+
+    # 获取病历号
+    patient = await db.get(PatientRecord, patient_id)
+    record_id = patient.record_id if patient else f"exam_{patient_id}"
+    date_str = patient.date_folder.date if patient and patient.date_folder else ""
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "LLM历史"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1890FF", end_color="1890FF", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    headers = [
+        "检查记录ID", "病历号", "检查日期", "LLM结果ID", "执行时间",
+        "ASR结果ID", "ASR模型", "LLM模型", "prompt_version", "prompt_len",
+        "状态", "准确率", "summary_text",
+        "right_follicle_total", "left_follicle_total",
+        "right_follicles", "left_follicles",
+        "endometrium_thickness", "endometrium_type",
+        "right_ovary_length", "right_ovary_width",
+        "left_ovary_length", "left_ovary_width",
+        "remark", "uncertain_text", "raw_output",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = thin_border
+
+    for row_idx, (llm, asr) in enumerate(rows, 2):
+        structured = llm.structured_result or {}
+        right_follicles = structured.get("right_follicles") or []
+        left_follicles = structured.get("left_follicles") or []
+        row_data = [
+            patient_id,
+            record_id,
+            date_str,
+            llm.id,
+            llm.created_at.strftime("%Y-%m-%d %H:%M:%S") if llm.created_at else "",
+            llm.asr_result_id,
+            asr.asr_model_name if asr else "",
+            llm.llm_model_name,
+            llm.prompt_version,
+            len(llm.prompt_content) if llm.prompt_content else 0,
+            llm.status,
+            llm.accuracy,
+            llm.summary_text or "",
+            structured.get("right_follicle_total", ""),
+            structured.get("left_follicle_total", ""),
+            json.dumps(right_follicles, ensure_ascii=False),
+            json.dumps(left_follicles, ensure_ascii=False),
+            structured.get("endometrium_thickness", ""),
+            structured.get("endometrium_type", ""),
+            structured.get("right_ovary_length", ""),
+            structured.get("right_ovary_width", ""),
+            structured.get("left_ovary_length", ""),
+            structured.get("left_ovary_width", ""),
+            structured.get("remark", ""),
+            structured.get("uncertain_text", ""),
+            llm.raw_output or "",
+        ]
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    col_widths = [12, 12, 12, 10, 18, 10, 15, 15, 12, 10, 8, 8, 40, 12, 12, 30, 30, 12, 12, 12, 12, 12, 12, 30, 30, 60]
+    for idx, w in enumerate(col_widths, 1):
+        col_letter = chr(64 + idx) if idx <= 26 else "A" + chr(64 + idx - 26)
+        ws.column_dimensions[col_letter].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"LLM历史_{record_id}_{date_str}.xlsx"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )

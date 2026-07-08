@@ -141,25 +141,92 @@
                 </a-space>
               </template>
 
-              <!-- LLM 结果 -->
-              <div v-if="llmResult">
-                <!-- A. 顶部: 模型信息 + 准确率 -->
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px">
-                  <a-space>
-                    <a-tag color="purple">{{ llmResult.model_name }}</a-tag>
-                    <a-tag v-if="selectedAsrResult" color="blue">ASR: {{ selectedAsrResult.model_name }}</a-tag>
-                  </a-space>
-                  <a-button size="small" type="link" @click="showLlmDetailModal = true">查看完整 LLM 数据</a-button>
-                </div>
+              <!-- LLM 结果 (含历史记录 Tab) -->
+              <a-tabs v-model:activeKey="llmTab" size="small">
+                <a-tab-pane key="current" tab="当前结果">
+                  <div v-if="llmResult" style="padding-top: 12px">
+                    <!-- A. 顶部: 模型 + 导出 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px">
+                      <a-space>
+                        <a-tag color="purple">{{ llmResult.model_name }}</a-tag>
+                        <a-tag v-if="selectedAsrResult" color="blue">ASR: {{ selectedAsrResult.model_name }}</a-tag>
+                        <a-tag v-if="llmResult.accuracy != null" :color="llmResult.accuracy >= 0.8 ? 'green' : 'orange'">
+                          {{ (llmResult.accuracy * 100).toFixed(0) }}%
+                        </a-tag>
+                      </a-space>
+                      <a-space>
+                        <a-button size="small" @click="exportCurrentLlmHistory">导出Excel</a-button>
+                        <a-button size="small" type="link" @click="showLlmDetailModal = true">完整数据</a-button>
+                      </a-space>
+                    </div>
 
-                <!-- B. LLM 转写/总结内容 -->
-                <a-card size="small">
-                  <template #title><span style="font-size: 12px">LLM 转写/总结</span></template>
-                  <div v-if="llmDisplayText" class="llm-summary-box">{{ llmDisplayText }}</div>
-                  <a-empty v-else description="暂无 LLM 总结内容" style="padding: 12px 0" />
-                </a-card>
-              </div>
-              <a-empty v-else description="请先完成 ASR 转写" style="padding: 20px 0" />
+                    <!-- B. LLM 转写/总结内容 -->
+                    <a-card size="small" style="margin-bottom: 12px">
+                      <template #title><span style="font-size: 12px">LLM 转写/总结</span></template>
+                      <div v-if="llmDisplayText" class="llm-summary-box">{{ llmDisplayText }}</div>
+                      <a-empty v-else description="暂无 LLM 总结内容" style="padding: 12px 0" />
+                    </a-card>
+
+                    <!-- C. LLM 提取结果结构化字段 -->
+                    <a-card size="small" title="来源:LLM结构化结果">
+                      <a-descriptions :column="2" bordered size="small">
+                        <a-descriptions-item label="右卵泡总数">{{ structured.value?.right_follicle_total ?? '-' }}</a-descriptions-item>
+                        <a-descriptions-item label="左卵泡总数">{{ structured.value?.left_follicle_total ?? '-' }}</a-descriptions-item>
+                        <a-descriptions-item label="右卵泡" :span="2">{{ formatFollicles(structured.value?.right_follicles) }}</a-descriptions-item>
+                        <a-descriptions-item label="左卵泡" :span="2">{{ formatFollicles(structured.value?.left_follicles) }}</a-descriptions-item>
+                        <a-descriptions-item label="内膜厚度">{{ structured.value?.endometrium_thickness != null ? structured.value.endometrium_thickness + ' mm' : '-' }}</a-descriptions-item>
+                        <a-descriptions-item label="内膜类型">{{ structured.value?.endometrium_type || '-' }}</a-descriptions-item>
+                        <a-descriptions-item label="右卵巢">{{ structured.value?.right_ovary_length && structured.value?.right_ovary_width ? `${structured.value.right_ovary_length} × ${structured.value.right_ovary_width} mm` : '-' }}</a-descriptions-item>
+                        <a-descriptions-item label="左卵巢">{{ structured.value?.left_ovary_length && structured.value?.left_ovary_width ? `${structured.value.left_ovary_length} × ${structured.value.left_ovary_width} mm` : '-' }}</a-descriptions-item>
+                        <a-descriptions-item label="备注" :span="2">{{ structured.value?.remark || '-' }}</a-descriptions-item>
+                      </a-descriptions>
+                    </a-card>
+                  </div>
+                  <a-empty v-else description="请先完成 ASR 转写并提取 LLM" style="padding: 20px 0" />
+                </a-tab-pane>
+
+                <a-tab-pane key="history" :tab="`历史记录 (${llmHistory.length})`">
+                  <div style="padding-top: 12px">
+                    <a-table
+                      :data-source="llmHistory"
+                      :loading="false"
+                      size="small"
+                      row-key="id"
+                      :pagination="{ pageSize: 10 }"
+                    >
+                      <a-table-column title="ID" data-index="id" :width="60" />
+                      <a-table-column title="执行时间" data-index="created_at" :width="150">
+                        <template #default="{ record }">{{ record.created_at }}</template>
+                      </a-table-column>
+                      <a-table-column title="ASR模型" :width="120">
+                        <template #default="{ record }">{{ record.asr_model_name || '-' }}</template>
+                      </a-table-column>
+                      <a-table-column title="LLM模型" data-index="llm_model_name" :width="120" />
+                      <a-table-column title="提示词" :width="100">
+                        <template #default="{ record }">{{ record.prompt_len || 0 }}字</template>
+                      </a-table-column>
+                      <a-table-column title="状态" :width="80">
+                        <template #default="{ record }">
+                          <a-tag :color="record.status === 'success' ? 'green' : record.status === 'failed' ? 'red' : 'blue'" size="small">{{ record.status }}</a-tag>
+                        </template>
+                      </a-table-column>
+                      <a-table-column title="准确率" :width="80">
+                        <template #default="{ record }">{{ record.accuracy != null ? (record.accuracy * 100).toFixed(0) + '%' : '-' }}</template>
+                      </a-table-column>
+                      <a-table-column title="操作" :width="160">
+                        <template #default="{ record }">
+                          <a-space>
+                            <a-button size="small" @click="viewLlmHistory(record)">查看</a-button>
+                            <a-button size="small" :type="record.is_current ? 'primary' : 'default'" @click="setLlmAsCurrent(record.id)">
+                              {{ record.is_current ? '当前' : '设为当前' }}
+                            </a-button>
+                          </a-space>
+                        </template>
+                      </a-table-column>
+                    </a-table>
+                  </div>
+                </a-tab-pane>
+              </a-tabs>
             </a-card>
           </a-col>
         </a-row>
@@ -588,38 +655,8 @@ export default defineComponent({
     const llmRunning = ref(false)
     const currentLlmResult = ref<any>(null)
     const llmHistory = ref<any[]>([])
-    const llmPrompt = ref(`你是一名辅助生殖超声检查专家。请从以下 B 超检查的语音转写文本中提取关键信息，并以 JSON 格式返回。
-
-## 需要提取的字段
-
-- right_follicle_total: 右侧卵泡总数（整数）
-- left_follicle_total: 左侧卵泡总数（整数）
-- endometrium_thickness: 内膜厚度（mm，数值）
-- endometrium_type: 内膜类型（A/B/C/A-B 等）
-- right_ovary_length: 右卵巢长度（mm）
-- right_ovary_width: 右卵巢宽度（mm）
-- left_ovary_length: 左卵巢长度（mm）
-- left_ovary_width: 左卵巢宽度（mm）
-- summary: 自然语言总结
-
-## 转写文本
-
-{transcript}
-
-## 返回格式
-
-请只返回 JSON，不要有其他内容：
-{
-  "right_follicle_total": 0,
-  "left_follicle_total": 0,
-  "endometrium_thickness": 0,
-  "endometrium_type": "",
-  "right_ovary_length": 0,
-  "right_ovary_width": 0,
-  "left_ovary_length": 0,
-  "left_ovary_width": 0,
-  "summary": ""
-}`)
+    const llmTab = ref<'current' | 'history'>('current')
+    const llmPrompt = ref(`默认提示词`)
 
     async function loadCurrentLlmResult() {
       if (!selectedRecord.value) return
@@ -674,6 +711,32 @@ export default defineComponent({
       if (r.status === 'running') return 'orange'
       if (r.status === 'failed') return 'red'
       return 'default'
+    }
+
+    // LLM 历史操作
+    function viewLlmHistory(record: any) {
+      currentLlmResult.value = record
+      llmTab.value = 'current'
+      message.info(`已查看第 ${record.id} 条 LLM 结果`, 1.5)
+    }
+
+    async function setLlmAsCurrent(resultId: number) {
+      if (!selectedRecord.value) return
+      const examRecordId = selectedRecord.value.id
+      try {
+        await patientApi.setLlmCurrent(examRecordId, resultId)
+        message.success('已设为当前')
+        await loadCurrentLlmResult()  // 同时刷新 current + history
+      } catch (e: any) {
+        message.error(`设置失败: ${e?.response?.data?.detail || e?.message || ''}`)
+      }
+    }
+
+    function exportCurrentLlmHistory() {
+      if (!selectedRecord.value) return
+      const url = patientApi.exportLlmResults(selectedRecord.value.id)
+      window.open(url, '_blank')
+      message.success('正在导出...', 1.5)
     }
 
     // ========== 提示词模版 ==========
@@ -949,9 +1012,9 @@ export default defineComponent({
       structured, llmDisplayText,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles, getAsrModelStatusColor,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
-      promptTemplates, selectedTemplateId, showTemplateModal, showLlmDetailModal, templateTab,
+      promptTemplates, selectedTemplateId, showTemplateModal, showLlmDetailModal, templateTab, llmTab,
       templateLoading, templateSaving, templateForm, templatePreviewHtml,
-      onTemplateChange, selectTemplate, createNewTemplate, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
+      onTemplateChange, selectTemplate, createNewTemplate, viewLlmHistory, setLlmAsCurrent, exportCurrentLlmHistory, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
       asrResultsAll, llmHistory,
     }
   },

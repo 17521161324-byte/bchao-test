@@ -197,6 +197,7 @@ export const patientApi = {
   getLlmCurrent: (patientId: number) => client.get(`/patients/${patientId}/llm-current`),
   setLlmCurrent: (patientId: number, resultId: number) =>
     client.put(`/patients/${patientId}/llm-results/${resultId}/current`),
+  exportLlmResults: (patientId: number) => `${API_BASE}/patients/${patientId}/llm-results/export`,
 }
 
 export default client
