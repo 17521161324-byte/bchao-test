@@ -281,6 +281,11 @@ def _llm_response(r: PatientLlmResult) -> dict:
         "llm_model_id": r.llm_model_id,
         "model_name": r.llm_model_name or "",  # 前端旧字段
         "full_model_name": r.llm_model_name,
+        "prompt_template_id": r.prompt_template_id,
+        "prompt_template_name": r.prompt_template_name,
+        "prompt_version": r.prompt_version,
+        "prompt_content": r.prompt_content,
+        "prompt_len": len(r.prompt_content) if r.prompt_content else 0,
         "structured": r.structured_result,        # 前端旧字段
         "structured_result": r.structured_result,
         "summary": r.summary_text,                # 前端旧字段
@@ -325,6 +330,16 @@ async def patient_llm_run(
     asr_result_id = body.get("asr_result_id")  # 可选, 默认当前
     prompt_content = body.get("prompt_content")
     prompt_template_id = body.get("prompt_template_id")  # 可选
+
+    # 如果没有传入 prompt_content,尝试从模板加载
+    if not prompt_content and prompt_template_id:
+        from app.models import PromptTemplate
+        tmpl = await db.get(PromptTemplate, prompt_template_id)
+        if tmpl:
+            prompt_content = tmpl.content
+            # 也保存模板ID用于后续记录
+            if not prompt_template_id:
+                prompt_template_id = tmpl.id
 
     patient = await db.get(PatientRecord, patient_id)
     if not patient:
@@ -636,77 +651,6 @@ async def export_patient_llm_results(
         ws.column_dimensions[col_letter].width = w
 
     ws.freeze_panes = "A2"
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "LLM历史"
-
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1890FF", end_color="1890FF", fill_type="solid")
-    thin_border = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin"),
-    )
-
-    headers = [
-        "检查记录ID", "病历号", "检查日期", "LLM结果ID", "执行时间",
-        "ASR结果ID", "ASR模型", "LLM模型", "prompt_version", "prompt_len",
-        "状态", "准确率", "summary_text",
-        "right_follicle_total", "left_follicle_total",
-        "right_follicles", "left_follicles",
-        "endometrium_thickness", "endometrium_type",
-        "right_ovary_length", "right_ovary_width",
-        "left_ovary_length", "left_ovary_width",
-        "remark", "uncertain_text", "raw_output",
-    ]
-    for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=h)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center")
-        cell.border = thin_border
-
-    for row_idx, (llm, patient, date_folder) in enumerate(rows, 2):
-        structured = llm.structured_result or {}
-        right_follicles = structured.get("right_follicles") or []
-        left_follicles = structured.get("left_follicles") or []
-        row_data = [
-            patient_id,
-            record_id,
-            date_str,
-            llm.id,
-            llm.created_at.strftime("%Y-%m-%d %H:%M:%S") if llm.created_at else "",
-            llm.asr_result_id,
-            "",
-            llm.llm_model_name,
-            llm.prompt_version,
-            len(llm.prompt_content) if llm.prompt_content else 0,
-            llm.status,
-            llm.accuracy,
-            llm.summary_text or "",
-            structured.get("right_follicle_total", ""),
-            structured.get("left_follicle_total", ""),
-            json.dumps(right_follicles, ensure_ascii=False),
-            json.dumps(left_follicles, ensure_ascii=False),
-            structured.get("endometrium_thickness", ""),
-            structured.get("endometrium_type", ""),
-            structured.get("right_ovary_length", ""),
-            structured.get("right_ovary_width", ""),
-            structured.get("left_ovary_length", ""),
-            structured.get("left_ovary_width", ""),
-            structured.get("remark", ""),
-            structured.get("uncertain_text", ""),
-            llm.raw_output or "",
-        ]
-        for col_idx, val in enumerate(row_data, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=val)
-            cell.border = thin_border
-            cell.alignment = Alignment(vertical="top", wrap_text=True)
-
-    col_widths = [12, 12, 12, 10, 18, 10, 15, 15, 12, 10, 8, 8, 40, 12, 12, 30, 30, 12, 12, 12, 12, 12, 12, 30, 30, 60]
-    for idx, w in enumerate(col_widths, 1):
-        col_letter = chr(64 + idx) if idx <= 26 else "A" + chr(64 + idx - 26)
-        ws.column_dimensions[col_letter].width = w
 
     buf = io.BytesIO()
     wb.save(buf)

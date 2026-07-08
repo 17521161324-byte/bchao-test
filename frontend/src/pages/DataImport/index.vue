@@ -730,6 +730,7 @@ export default defineComponent({
           llm_model_id: llmModelId.value!,
           asr_result_id: selectedAsrResult.value?.id,
           prompt_content: llmPrompt.value,
+          prompt_template_id: selectedTemplateId.value,
         })
         await loadCurrentLlmResult()
         message.success('LLM 提取成功')
@@ -1070,7 +1071,7 @@ export default defineComponent({
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles, getAsrModelStatusColor,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
       promptTemplates, selectedTemplateId, showTemplateModal, showLlmDetailModal, templateTab, llmTab,
-      templateLoading, templateSaving, templateForm, templatePreviewHtml,
+      templateLoading, templateSaving, templateForm, templatePreviewHtml, showClearConfirm, clearing,
       onTemplateChange, selectTemplate, createNewTemplate, viewLlmHistory, setLlmAsCurrent, exportCurrentLlmHistory, confirmClearLlmHistory, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
       asrResultsAll, llmHistory,
     }

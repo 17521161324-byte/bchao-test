@@ -192,6 +192,7 @@ export const patientApi = {
     llm_model_id: number
     asr_result_id?: number
     prompt_content?: string
+    prompt_template_id?: number
   }) => client.post(`/patients/${patientId}/llm/run`, data, { timeout: 300000 }),
   listLlmResults: (patientId: number) => client.get(`/patients/${patientId}/llm-results`),
   getLlmCurrent: (patientId: number) => client.get(`/patients/${patientId}/llm-current`),
