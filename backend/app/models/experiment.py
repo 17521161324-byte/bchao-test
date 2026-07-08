@@ -121,6 +121,12 @@ class ExperimentTask(Base):
     asr_result_id = Column(Integer, ForeignKey("patient_asr_results.id"), nullable=True)
     llm_result_id = Column(Integer, ForeignKey("patient_llm_results.id"), nullable=True)
 
+    # 快照字段 (新增,用于实验详情展示)
+    asr_source = Column(String(20), nullable=True)  # reused / generated / failed / missing
+    asr_model_name = Column(String(100), nullable=True)
+    llm_model_name = Column(String(100), nullable=True)
+    prompt_template_name = Column(String(100), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

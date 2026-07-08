@@ -273,11 +273,19 @@ def _asr_response(r: PatientAsrResult) -> dict:
 
 
 def _llm_response(r: PatientLlmResult) -> dict:
+    asr_model_name = ""
+    if r.asr_result is not None:
+        # 已 preload
+        asr_model_name = r.asr_result.asr_model_name or ""
+    elif r.asr_result_id:
+        # 懒加载回退 (在 async 上下文中需要 spawn)
+        pass
     return {
         "id": r.id,
         "exam_record_id": r.patient_id,  # patient_id 实际是 exam_record_id
         "patient_id": r.patient_id,      # 保留兼容
         "asr_result_id": r.asr_result_id,
+        "asr_model_name": asr_model_name,
         "llm_model_id": r.llm_model_id,
         "model_name": r.llm_model_name or "",  # 前端旧字段
         "full_model_name": r.llm_model_name,
@@ -387,6 +395,9 @@ async def patient_llm_run(
         prompt_content=prompt_content,
         status="running",
     )
+    # 显式设置 asr_result 关系,避免后续 _llm_response 访问时触发懒加载
+    if asr_record:
+        record.asr_result = asr_record
     db.add(record)
     await db.commit()
     await db.refresh(record)
@@ -460,6 +471,7 @@ async def patient_llm_run(
 async def list_patient_llm_results(patient_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(PatientLlmResult)
+        .options(selectinload(PatientLlmResult.asr_result))
         .where(PatientLlmResult.patient_id == patient_id)
         .order_by(PatientLlmResult.created_at.desc())
     )
@@ -470,6 +482,7 @@ async def list_patient_llm_results(patient_id: int, db: AsyncSession = Depends(g
 async def get_patient_llm_current(patient_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(PatientLlmResult)
+        .options(selectinload(PatientLlmResult.asr_result))
         .where(PatientLlmResult.patient_id == patient_id, PatientLlmResult.is_current == True)
     )
     record = result.scalar_one_or_none()

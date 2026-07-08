@@ -32,7 +32,13 @@ router = APIRouter()
 async def list_experiments(db: AsyncSession = Depends(get_db)):
     """获取实验批次列表"""
     result = await db.execute(
-        select(ExperimentBatch).order_by(ExperimentBatch.created_at.desc())
+        select(ExperimentBatch)
+        .options(
+            selectinload(ExperimentBatch.combinations).selectinload(ExperimentCombination.asr_model),
+            selectinload(ExperimentBatch.combinations).selectinload(ExperimentCombination.llm_model),
+            selectinload(ExperimentBatch.tasks),
+        )
+        .order_by(ExperimentBatch.created_at.desc())
     )
     batches = result.scalars().all()
 
@@ -82,10 +88,11 @@ async def list_experiments(db: AsyncSession = Depends(get_db)):
             "created_at": b.created_at.isoformat() if b.created_at else None,
             "updated_at": b.updated_at.isoformat() if b.updated_at else None,
             "patient_count": len(pids) if isinstance(pids, list) else 0,
+            "combination_count": len(b.combinations) if b.combinations else 0,
             "field_accuracy": {},
-            "asr_models": [],
-            "llm_models": [],
-            "prompt_templates": [],
+            "asr_models": sorted(set(c.asr_model.name for c in b.combinations if c.asr_model)),
+            "llm_models": sorted(set(c.llm_model.name for c in b.combinations if c.llm_model)),
+            "prompt_templates": sorted(set(c.prompt_name for c in b.combinations if c.prompt_name)),
         })
     return output
 
@@ -524,11 +531,23 @@ async def list_tasks(
             "error_type": t.error_type,
             "error_message": t.error_message,
             "created_at": t.created_at.isoformat() if t.created_at else None,
+            # ASR 快照字段
+            "asr_result_id": t.asr_result_id,
+            "asr_source": t.asr_source,
+            "asr_model_name": t.asr_model_name,
             "asr_results": t.asr_results,
             "full_transcript": t.full_transcript,
+            # LLM 快照字段
+            "llm_result_id": t.llm_result_id,
+            "llm_model_name": t.llm_model_name,
+            "prompt_template_name": t.prompt_template_name,
+            "llm_raw_output": t.llm_raw_output,
             "structured_result": t.structured_result,
+            "summary_text": t.summary_text,
+            # 评估
             "evaluation": t.evaluation,
             "ground_truth": ground_truth,
+            # 组合信息
             "combination_asr_name": t.combination.asr_model.name if t.combination and t.combination.asr_model else "",
             "combination_llm_name": t.combination.llm_model.name if t.combination and t.combination.llm_model else "",
             "combination_prompt_name": t.combination.prompt_name or "",

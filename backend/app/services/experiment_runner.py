@@ -23,6 +23,12 @@ class ExperimentRunner:
         """
         执行单个实验任务。
 
+        核心逻辑:
+        1. ASR 阶段: 优先复用 patient_asr_results 中同一 patient+model 的成功结果
+        2. LLM 阶段: 使用快照 full_transcript 调用 LLM
+        3. 评估阶段: 与 BUltraResult 真实值对比
+        4. 任务快照: 保存 asr_source/asr_model_name/llm_model_name/prompt_template_name
+
         Returns:
             dict with execution result summary
         """
@@ -96,63 +102,102 @@ class ExperimentRunner:
         try:
             if not segs:
                 raise ValueError(f"Patient {task.patient_id} has no audio segments")
-            # Determine if ASR needs to run
+
+            # ============================================================
+            # 阶段 1: ASR (优先复用已有成功结果)
+            # ============================================================
             run_asr = task.stage == TaskStage.ASR.value or not task.full_transcript
-
             asr_result_record = None
-            if run_asr:
-                # 创建患者级 ASR 记录
-                asr_result_record = PatientAsrResult(
-                    patient_id=task.patient_id,
-                    record_id=patient.record_id,
-                    date=date_str,
-                    asr_model_id=asr_model.id,
-                    asr_model_name=asr_model.name,
-                    provider=asr_model.provider,
-                    hotwords=resolved_hotwords or [],
-                    status="running",
-                )
-                db.add(asr_result_record)
-                await db.flush()  # 获得 id
+            asr_source = None  # reused / generated / failed
 
-                asr_result = await executor.execute_asr(
-                    segs=segs,
-                    asr_provider=asr_model.provider,
-                    asr_config=asr_config,
-                    hotwords=resolved_hotwords,
+            if run_asr:
+                # 查询同一 patient + asr_model 的已有成功记录
+                existing_asr = await db.execute(
+                    select(PatientAsrResult)
+                    .where(
+                        PatientAsrResult.patient_id == task.patient_id,
+                        PatientAsrResult.asr_model_id == asr_model.id,
+                        PatientAsrResult.status == "success",
+                    )
+                    .order_by(PatientAsrResult.created_at.desc())
+                    .limit(1)
                 )
-                # 写入患者级 ASR 记录
-                asr_result_record.segments = asr_result["asr_results"]
-                asr_result_record.full_transcript = asr_result["full_transcript"]
-                asr_result_record.status = "success"
-                asr_result_record.duration_seconds = 0  # TODO: track via executor
+                existing_asr_record = existing_asr.scalar_one_or_none()
+
+                if existing_asr_record and existing_asr_record.full_transcript:
+                    # 复用已有成功 ASR
+                    asr_result_record = existing_asr_record
+                    asr_source = "reused"
+                    logger.info(
+                        f"Task {task_id}: 复用 ASR result {existing_asr_record.id} "
+                        f"(model={asr_model.name}, patient={task.patient_id})"
+                    )
+                else:
+                    # 没有成功 ASR, 需要调用
+                    new_asr_record = PatientAsrResult(
+                        patient_id=task.patient_id,
+                        record_id=patient.record_id,
+                        date=date_str,
+                        asr_model_id=asr_model.id,
+                        asr_model_name=asr_model.name,
+                        provider=asr_model.provider,
+                        hotwords=resolved_hotwords or [],
+                        status="running",
+                    )
+                    db.add(new_asr_record)
+                    await db.flush()  # 获得 id
+
+                    try:
+                        asr_result = await executor.execute_asr(
+                            segs=segs,
+                            asr_provider=asr_model.provider,
+                            asr_config=asr_config,
+                            hotwords=resolved_hotwords,
+                        )
+                        new_asr_record.segments = asr_result["asr_results"]
+                        new_asr_record.full_transcript = asr_result["full_transcript"]
+                        new_asr_record.status = "success"
+                        new_asr_record.duration_seconds = 0
+                        asr_result_record = new_asr_record
+                        asr_source = "generated"
+                    except Exception as e:
+                        logger.error(f"Task {task_id} ASR 调用失败: {e}")
+                        new_asr_record.status = "failed"
+                        new_asr_record.error_message = str(e)
+                        asr_source = "failed"
+                        raise  # 向上传递, 任务标记为 failed
 
                 # 任务关联到患者 ASR 记录
                 task.asr_result_id = asr_result_record.id
-
                 # 写入快照字段 (保留历史实验可复现)
-                task.asr_results = asr_result["asr_results"]
-                task.full_transcript = asr_result["full_transcript"]
+                task.asr_results = asr_result_record.segments or []
+                task.full_transcript = asr_result_record.full_transcript or ""
+                task.asr_model_name = asr_model.name
+                task.asr_source = asr_source
                 task.stage = TaskStage.LLM.value
 
-            # 把最新 ASR 设为当前 (同 patient 其他设 False)
-            if asr_result_record:
-                await db.execute(
-                    update(PatientAsrResult)
-                    .where(
-                        PatientAsrResult.patient_id == task.patient_id,
-                        PatientAsrResult.id != asr_result_record.id,
+                # 把最新 ASR 设为当前 (同 patient 其他设 False)
+                if asr_result_record.status == "success":
+                    await db.execute(
+                        update(PatientAsrResult)
+                        .where(
+                            PatientAsrResult.patient_id == task.patient_id,
+                            PatientAsrResult.id != asr_result_record.id,
+                        )
+                        .values(is_current=False)
                     )
-                    .values(is_current=False)
-                )
-                await db.execute(
-                    update(PatientAsrResult)
-                    .where(PatientAsrResult.id == asr_result_record.id)
-                    .values(is_current=True)
-                )
+                    await db.execute(
+                        update(PatientAsrResult)
+                        .where(PatientAsrResult.id == asr_result_record.id)
+                        .values(is_current=True)
+                    )
 
-            # Run LLM if configured
+            # ============================================================
+            # 阶段 2: LLM 结构化提取
+            # ============================================================
             llm_result_record = None
+            llm_failed = False
+
             if llm_config and task.stage == TaskStage.LLM.value and llm_model:
                 try:
                     # 创建患者级 LLM 记录
@@ -161,6 +206,7 @@ class ExperimentRunner:
                         asr_result_id=task.asr_result_id,
                         llm_model_id=llm_model.id,
                         llm_model_name=llm_model.name,
+                        prompt_template_name=combo.prompt_name or None,
                         prompt_content=combo.prompt_template,
                         prompt_version="v1.0",
                         status="running",
@@ -175,7 +221,6 @@ class ExperimentRunner:
                         prompt_template=combo.prompt_template,
                     )
 
-                    # 写入患者级 LLM 记录
                     llm_result_record.structured_result = llm_result["structured_result"]
                     llm_result_record.summary_text = llm_result["summary_text"]
                     llm_result_record.raw_output = llm_result["llm_raw_output"]
@@ -188,13 +233,17 @@ class ExperimentRunner:
                     task.llm_raw_output = llm_result["llm_raw_output"]
                     task.structured_result = llm_result["structured_result"]
                     task.summary_text = llm_result["summary_text"]
+                    task.llm_model_name = llm_model.name
+                    task.prompt_template_name = combo.prompt_name or ""
                     task.llm_duration = 0
+
                 except Exception as e:
-                    logger.error(f"LLM failed for task {task_id}: {e}")
+                    logger.error(f"Task {task_id} LLM 失败: {e}")
                     task.llm_raw_output = f"[LLM error: {str(e)}]"
                     if llm_result_record:
                         llm_result_record.status = "failed"
                         llm_result_record.error_message = str(e)
+                    llm_failed = True
 
             # 把最新 LLM 设为当前
             if llm_result_record and llm_result_record.status == "success":
@@ -212,7 +261,9 @@ class ExperimentRunner:
                     .values(is_current=True)
                 )
 
-            # Evaluate if we have structured result
+            # ============================================================
+            # 阶段 3: 评估
+            # ============================================================
             if task.structured_result:
                 from app.models import BUltraResult
                 gt_result = await db.execute(
@@ -237,8 +288,27 @@ class ExperimentRunner:
                     task.evaluation = evaluation
                     task.accuracy = evaluation.get("accuracy")
 
-            task.status = TaskStatus.SUCCESS.value
-            task.stage = TaskStage.LLM.value
+            # ============================================================
+            # 任务状态判定
+            # ============================================================
+            # LLM 失败 → 任务失败
+            if llm_failed:
+                task.status = TaskStatus.FAILED.value
+                task.error_type = "llm_failed"
+                task.error_message = task.llm_raw_output or "LLM 调用失败"
+            # 没有配置 LLM (纯 ASR)
+            elif not llm_config:
+                task.status = TaskStatus.SUCCESS.value
+                task.stage = TaskStage.ASR.value  # 只完成 ASR
+            # 有 LLM 但 structured_result 为空
+            elif llm_config and not task.structured_result:
+                task.status = TaskStatus.FAILED.value
+                task.error_type = "empty_structured_result"
+                task.error_message = "LLM 未返回可用结构化结果"
+            else:
+                task.status = TaskStatus.SUCCESS.value
+                task.stage = TaskStage.LLM.value
+
             task.completed_at = datetime.utcnow()
 
         except Exception as e:

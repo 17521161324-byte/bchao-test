@@ -46,7 +46,7 @@
     </a-card>
 
     <!-- 详情抽屉 -->
-    <a-drawer :open="drawerOpen" title="检查详情" placement="right" width="1200px" @close="closeDrawer">
+    <a-drawer :open="drawerOpen" title="检查详情" placement="right" width="90vw" @close="closeDrawer">
       <template v-if="selectedRecord">
         <!-- 顶部描述区域 -->
         <a-descriptions :column="4" bordered size="small" style="margin-bottom: 16px">
@@ -87,11 +87,11 @@
                   v-for="m in asrModels"
                   :key="m.id"
                   :checked="asrModelId === m.id"
-                  @click="asrModelId = m.id"
+                  @click="selectAsrModel(m)"
                   style="cursor: pointer; margin-right: 4px"
                   :color="getAsrModelStatusColor(m.id)"
                 >
-                  {{ m.name }}
+                  {{ m.name }} · {{ getAsrModelStatusText(m.id) }}
                 </a-checkable-tag>
               </div>
 
@@ -167,20 +167,6 @@
                       <a-empty v-else description="暂无 LLM 总结内容" style="padding: 12px 0" />
                     </a-card>
 
-                    <!-- C. LLM 提取结果结构化字段 -->
-                    <a-card size="small" title="来源:LLM结构化结果">
-                      <a-descriptions :column="2" bordered size="small">
-                        <a-descriptions-item label="右卵泡总数">{{ structured.value?.right_follicle_total ?? '-' }}</a-descriptions-item>
-                        <a-descriptions-item label="左卵泡总数">{{ structured.value?.left_follicle_total ?? '-' }}</a-descriptions-item>
-                        <a-descriptions-item label="右卵泡" :span="2">{{ formatFollicles(structured.value?.right_follicles) }}</a-descriptions-item>
-                        <a-descriptions-item label="左卵泡" :span="2">{{ formatFollicles(structured.value?.left_follicles) }}</a-descriptions-item>
-                        <a-descriptions-item label="内膜厚度">{{ structured.value?.endometrium_thickness != null ? structured.value.endometrium_thickness + ' mm' : '-' }}</a-descriptions-item>
-                        <a-descriptions-item label="内膜类型">{{ structured.value?.endometrium_type || '-' }}</a-descriptions-item>
-                        <a-descriptions-item label="右卵巢">{{ structured.value?.right_ovary_length && structured.value?.right_ovary_width ? `${structured.value.right_ovary_length} × ${structured.value.right_ovary_width} mm` : '-' }}</a-descriptions-item>
-                        <a-descriptions-item label="左卵巢">{{ structured.value?.left_ovary_length && structured.value?.left_ovary_width ? `${structured.value.left_ovary_length} × ${structured.value.left_ovary_width} mm` : '-' }}</a-descriptions-item>
-                        <a-descriptions-item label="备注" :span="2">{{ structured.value?.remark || '-' }}</a-descriptions-item>
-                      </a-descriptions>
-                    </a-card>
                   </div>
                   <a-empty v-else description="请先完成 ASR 转写并提取 LLM" style="padding: 20px 0" />
                 </a-tab-pane>
@@ -211,34 +197,45 @@
                       size="small"
                       row-key="id"
                       :pagination="{ pageSize: 10 }"
+                      :scroll="{ x: 800 }"
                     >
-                      <a-table-column title="ID" data-index="id" :width="60" />
-                      <a-table-column title="执行时间" data-index="created_at" :width="150">
-                        <template #default="{ record }">{{ record.created_at }}</template>
+                      <a-table-column title="时间" :width="95">
+                        <template #default="{ record }">{{ formatShortDateTime(record.created_at) }}</template>
                       </a-table-column>
                       <a-table-column title="ASR模型" :width="120">
-                        <template #default="{ record }">{{ record.asr_model_name || '-' }}</template>
-                      </a-table-column>
-                      <a-table-column title="LLM模型" data-index="llm_model_name" :width="120" />
-                      <a-table-column title="提示词" :width="100">
-                        <template #default="{ record }">{{ record.prompt_len || 0 }}字</template>
-                      </a-table-column>
-                      <a-table-column title="状态" :width="80">
                         <template #default="{ record }">
-                          <a-tag :color="record.status === 'success' ? 'green' : record.status === 'failed' ? 'red' : 'blue'" size="small">{{ record.status }}</a-tag>
+                          <a-tooltip :title="record.asr_model_name || '-'">
+                            <span class="table-ellipsis">{{ record.asr_model_name || '-' }}</span>
+                          </a-tooltip>
                         </template>
                       </a-table-column>
-                      <a-table-column title="准确率" :width="80">
+                      <a-table-column title="LLM模型" :width="120">
+                        <template #default="{ record }">
+                          <a-tooltip :title="record.model_name || record.llm_model_name || '-'">
+                            <span class="table-ellipsis">{{ record.model_name || record.llm_model_name || '-' }}</span>
+                          </a-tooltip>
+                        </template>
+                      </a-table-column>
+                      <a-table-column title="提示词模板" :width="160">
+                        <template #default="{ record }">
+                          <a-tooltip :title="record.prompt_template_name || '未记录'">
+                            <span class="table-ellipsis">{{ record.prompt_template_name || '-' }}</span>
+                          </a-tooltip>
+                        </template>
+                      </a-table-column>
+                      <a-table-column title="状态" :width="60" align="center">
+                        <template #default="{ record }">
+                          <CheckCircleOutlined v-if="record.status === 'success'" style="color: #52c41a" />
+                          <CloseCircleOutlined v-else-if="record.status === 'failed'" style="color: #ff4d4f" />
+                          <Spin v-else size="small" />
+                        </template>
+                      </a-table-column>
+                      <a-table-column title="准确率" :width="70" align="center">
                         <template #default="{ record }">{{ record.accuracy != null ? (record.accuracy * 100).toFixed(0) + '%' : '-' }}</template>
                       </a-table-column>
-                      <a-table-column title="操作" :width="160">
+                      <a-table-column title="查看" :width="70" align="center">
                         <template #default="{ record }">
-                          <a-space>
-                            <a-button size="small" @click="viewLlmHistory(record)">查看</a-button>
-                            <a-button size="small" :type="record.is_current ? 'primary' : 'default'" @click="setLlmAsCurrent(record.id)">
-                              {{ record.is_current ? '当前' : '设为当前' }}
-                            </a-button>
-                          </a-space>
+                          <a-button size="small" type="link" @click="viewLlmHistory(record)"><EyeOutlined /></a-button>
                         </template>
                       </a-table-column>
                     </a-table>
@@ -472,9 +469,9 @@
       title="确认清空历史"
       ok-text="确认清空"
       cancel-text="取消"
-      ok-button-props="{ danger: true }"
+      :ok-button-props="{ danger: true }"
       :confirm-loading="clearing"
-      @confirm="confirmClearLlmHistory"
+      @ok="confirmClearLlmHistory"
       @cancel="showClearConfirm = false"
     >
       <p style="color: #ff4d4f; font-weight: 600">⚠ 此操作不可恢复!</p>
@@ -536,6 +533,20 @@ export default defineComponent({
       if (!d || d.length !== 8) return d
       return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`
     }
+    function formatShortDateTime(dt: string): string {
+      if (!dt) return '-'
+      // 处理 ISO 格式: 2026-07-08T14:32:15.123456 → 07-08 14:32
+      const match = dt.match(/^\d{4}-(\d{2})-(\d{2})[T ](\d{2}:\d{2})/)
+      if (match) return `${match[1]}-${match[2]} ${match[3]}`
+      // 处理空格分隔: 2026-07-08 14:32:15 → 07-08 14:32
+      const parts = dt.split(/[T ]/)
+      if (parts.length >= 2) {
+        const d = parts[0].split('-')
+        const t = parts[1].split(':')
+        if (d.length === 3 && t.length >= 2) return `${d[1]}-${d[2]} ${t[0]}:${t[1]}`
+      }
+      return dt
+    }
     function formatFollicles(follicles: BUltraResult['right_follicles'] | BUltraResult['left_follicles']): string {
       if (!follicles || !Array.isArray(follicles) || follicles.length === 0) return '-'
       return follicles.map((f) => `${f.size}×${f.count}`).join('  ')
@@ -552,25 +563,40 @@ export default defineComponent({
     // 当前选中的 ASR 结果 (用于展示 + LLM 输入)
     const selectedAsrResult = ref<any>(null)
 
-    // 计算属性: 按 asr_model_id 分组, 每个模型取最新 success (或最新记录)
+    // 辅助: 从同一模型多条历史中选择最优记录
+    function pickBestAsrResult(oldResult: any | undefined, newResult: any) {
+      if (!oldResult) return newResult
+
+      const rank = (r: any) => {
+        if (r.status === 'success' && r.full_transcript) return 3
+        if (r.status === 'success') return 2
+        if (r.status === 'running') return 1
+        if (r.status === 'failed') return 0
+        return -1
+      }
+
+      const oldRank = rank(oldResult)
+      const newRank = rank(newResult)
+
+      if (newRank > oldRank) return newResult
+      if (newRank < oldRank) return oldResult
+
+      // 同 rank, 优先 is_current
+      if (newResult.is_current && !oldResult.is_current) return newResult
+      if (oldResult.is_current && !newResult.is_current) return oldResult
+
+      // 同 rank, 同 is_current, 取 created_at 更新者
+      const oldTime = oldResult.created_at ? new Date(oldResult.created_at).getTime() : 0
+      const newTime = newResult.created_at ? new Date(newResult.created_at).getTime() : 0
+      return newTime >= oldTime ? newResult : oldResult
+    }
+
+    // 计算属性: 按 asr_model_id 分组, 每个模型选最优结果
     const asrResultByModelId = computed(() => {
       const map: Record<number, any> = {}
       for (const r of asrResultsAll.value) {
-        const mid = r.asr_model_id
-        if (!map[mid]) {
-          map[mid] = r
-        } else {
-          // 优先 success, 其次 created_at 更新
-          const existing = map[mid]
-          if (r.status === 'success' && existing.status !== 'success') {
-            map[mid] = r
-          } else if (r.status === existing.status) {
-            // 同状态取更新的
-            if (new Date(r.created_at) > new Date(existing.created_at)) {
-              map[mid] = r
-            }
-          }
-        }
+        const modelId = r.asr_model_id
+        map[modelId] = pickBestAsrResult(map[modelId], r)
       }
       return map
     })
@@ -749,6 +775,24 @@ export default defineComponent({
       if (r.status === 'running') return 'orange'
       if (r.status === 'failed') return 'red'
       return 'default'
+    }
+
+    // 获取 ASR 模型状态文案
+    function getAsrModelStatusText(modelId: number): string {
+      const r = asrResultByModelId.value[modelId]
+      if (!r) return '未转写'
+      if (r.status === 'success') return '已完成'
+      if (r.status === 'running') return '转写中'
+      if (r.status === 'failed') return '失败'
+      return '未知'
+    }
+
+    // 点击 ASR 模型标签切换展示
+    function selectAsrModel(model: any) {
+      asrModelId.value = model.id
+      const r = asrResultByModelId.value[model.id]
+      // 无论 success/failed/running,都应展示记录;只有无结果时才置空
+      selectedAsrResult.value = r || null
     }
 
     // LLM 历史操作
@@ -1068,7 +1112,7 @@ export default defineComponent({
       asrResultByModelId, currentAsrStatus, selectedAsrResult,
       llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
       structured, llmDisplayText,
-      selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatFollicles, getAsrModelStatusColor,
+      selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatShortDateTime, formatFollicles, getAsrModelStatusColor, getAsrModelStatusText, selectAsrModel,
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
       promptTemplates, selectedTemplateId, showTemplateModal, showLlmDetailModal, templateTab, llmTab,
       templateLoading, templateSaving, templateForm, templatePreviewHtml, showClearConfirm, clearing,
@@ -1111,5 +1155,13 @@ export default defineComponent({
   font-size: 13px;
   line-height: 1.7;
   color: #333;
+}
+.table-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 </style>
