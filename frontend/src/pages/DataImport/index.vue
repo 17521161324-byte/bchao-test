@@ -187,6 +187,24 @@
 
                 <a-tab-pane key="history" :tab="`历史记录 (${llmHistory.length})`">
                   <div style="padding-top: 12px">
+                    <a-space style="margin-bottom: 12px">
+                      <a-button
+                        size="small"
+                        :disabled="!llmHistory.length"
+                        @click="exportCurrentLlmHistory"
+                      >
+                        <template #icon><RobotOutlined /></template>
+                        导出 Excel
+                      </a-button>
+                      <a-button
+                        size="small"
+                        danger
+                        :disabled="!llmHistory.length"
+                        @click="showClearConfirm = true"
+                      >
+                        清空历史
+                      </a-button>
+                    </a-space>
                     <a-table
                       :data-source="llmHistory"
                       :loading="false"
@@ -446,6 +464,25 @@
           <pre style="background: #f5f5f5; padding: 12px; border-radius: 4px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto">{{ JSON.stringify(currentLlmResult.evaluation, null, 2) }}</pre>
         </a-card>
       </div>
+    </a-modal>
+
+    <!-- 清空历史确认弹窗 -->
+    <a-modal
+      v-model:open="showClearConfirm"
+      title="确认清空历史"
+      ok-text="确认清空"
+      cancel-text="取消"
+      ok-button-props="{ danger: true }"
+      :confirm-loading="clearing"
+      @confirm="confirmClearLlmHistory"
+      @cancel="showClearConfirm = false"
+    >
+      <p style="color: #ff4d4f; font-weight: 600">⚠ 此操作不可恢复!</p>
+      <p>确认清空当前检查记录的全部 LLM 历史记录吗?</p>
+      <p style="color: #666; font-size: 12px">
+        病历号: {{ selectedRecord?.record_id || '-' }} |
+        当前历史数: {{ llmHistory.length }} 条
+      </p>
     </a-modal>
   </div>
 </template>
@@ -739,11 +776,31 @@ export default defineComponent({
       message.success('正在导出...', 1.5)
     }
 
+    // 清空当前检查记录的 LLM 历史
+    async function confirmClearLlmHistory() {
+      if (!selectedRecord.value) return
+      clearing.value = true
+      try {
+        const res = await patientApi.clearLlmResults(selectedRecord.value.id)
+        message.success(`已清空 ${res?.deleted || 0} 条 LLM 历史`)
+        currentLlmResult.value = null
+        llmHistory.value = []
+        llmTab.value = 'current'
+      } catch (e: any) {
+        message.error(`清空失败: ${e?.response?.data?.detail || e?.message || ''}`)
+      } finally {
+        clearing.value = false
+        showClearConfirm.value = false
+      }
+    }
+
     // ========== 提示词模版 ==========
     const promptTemplates = ref<any[]>([])
     const selectedTemplateId = ref<number | undefined>(undefined)
     const showTemplateModal = ref(false)
     const showLlmDetailModal = ref(false)
+    const showClearConfirm = ref(false)
+    const clearing = ref(false)
     const templateTab = ref<'edit' | 'preview'>('edit')
     const templateLoading = ref(false)
     const templateSaving = ref(false)
@@ -1014,7 +1071,7 @@ export default defineComponent({
       ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
       promptTemplates, selectedTemplateId, showTemplateModal, showLlmDetailModal, templateTab, llmTab,
       templateLoading, templateSaving, templateForm, templatePreviewHtml,
-      onTemplateChange, selectTemplate, createNewTemplate, viewLlmHistory, setLlmAsCurrent, exportCurrentLlmHistory, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
+      onTemplateChange, selectTemplate, createNewTemplate, viewLlmHistory, setLlmAsCurrent, exportCurrentLlmHistory, confirmClearLlmHistory, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
       asrResultsAll, llmHistory,
     }
   },

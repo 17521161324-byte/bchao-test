@@ -324,6 +324,7 @@ async def patient_llm_run(
     llm_model_id = body.get("llm_model_id")
     asr_result_id = body.get("asr_result_id")  # 可选, 默认当前
     prompt_content = body.get("prompt_content")
+    prompt_template_id = body.get("prompt_template_id")  # 可选
 
     patient = await db.get(PatientRecord, patient_id)
     if not patient:
@@ -352,12 +353,22 @@ async def patient_llm_run(
     if not llm_model:
         raise HTTPException(status_code=404, detail="LLM 模型不存在")
 
+    # 尝试获取提示词模板信息
+    prompt_template_name = None
+    if prompt_template_id:
+        from app.models import PromptTemplate
+        tmpl = await db.get(PromptTemplate, prompt_template_id)
+        if tmpl:
+            prompt_template_name = tmpl.name
+
     # 创建 running 记录
     record = PatientLlmResult(
         patient_id=patient_id,
         asr_result_id=asr_record.id if asr_record else None,
         llm_model_id=llm_model_id,
         llm_model_name=llm_model.name,
+        prompt_template_id=prompt_template_id,
+        prompt_template_name=prompt_template_name,
         prompt_content=prompt_content,
         status="running",
     )
@@ -463,21 +474,40 @@ async def set_patient_llm_current(
     return {"ok": True}
 
 
+@router.delete("/{patient_id}/llm-results")
+async def clear_patient_llm_results(
+    patient_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """清空当前检查记录的全部 LLM 历史记录"""
+    from sqlalchemy import delete
+
+    patient = await db.get(PatientRecord, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail=f"检查记录 {patient_id} 不存在")
+
+    result = await db.execute(
+        delete(PatientLlmResult).where(PatientLlmResult.patient_id == patient_id)
+    )
+    deleted = result.rowcount
+    await db.commit()
+    return {"ok": True, "deleted": deleted}
+
+
 @router.get("/{patient_id}/llm-results/export")
 async def export_patient_llm_results(
     patient_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """导出当前检查记录(患者)的所有 LLM 历史为 Excel"""
+    """导出当前检查记录的全部 LLM 历史 + ASR + 真实B超 + 提示词模板 为 Excel"""
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
     from sqlalchemy import select
-    from app.models import DateFolder
+    from app.models import DateFolder, BUltraResult, PromptTemplate, PatientAsrResult
 
-    # 读取该检查记录的所有 LLM 结果 (按时间正序)
     result = await db.execute(
         select(PatientLlmResult, PatientRecord, DateFolder)
-        .outerjoin(PatientRecord, PatientLlmResult.patient_id == PatientRecord.id)
+        .join(PatientRecord, PatientLlmResult.patient_id == PatientRecord.id)
         .outerjoin(DateFolder, PatientRecord.date_folder_id == DateFolder.id)
         .where(PatientLlmResult.patient_id == patient_id)
         .order_by(PatientLlmResult.created_at.asc())
@@ -491,6 +521,121 @@ async def export_patient_llm_results(
     date_folder = rows[0][2] if rows else None
     record_id = patient.record_id if patient else f"exam_{patient_id}"
     date_str = date_folder.date if date_folder else ""
+
+    # 获取关联数据
+    gt_result = await db.execute(
+        select(BUltraResult).where(BUltraResult.patient_id == patient_id)
+    )
+    gt = gt_result.scalar_one_or_none()
+
+    asr_result = await db.execute(
+        select(PatientAsrResult).where(PatientAsrResult.patient_id == patient_id)
+    )
+    asr_map = {a.id: a for a in asr_result.scalars().all()}
+
+    tmpl_result = await db.execute(select(PromptTemplate))
+    tmpl_map = {t.id: t for t in tmpl_result.scalars().all()}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "LLM历史"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1890FF", end_color="1890FF", fill_type="solid")
+    header_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    headers = [
+        "LLM结果ID", "检查记录ID", "病历号", "检查日期", "执行时间", "状态", "准确率",
+        "ASR结果ID", "ASR模型名称", "ASR转写来源", "LLM模型名称",
+        "提示词模板ID", "提示词模板名称", "提示词长度",
+        "提示词内容", "ASR原始转写", "实际送入LLM的ASR文本",
+        "LLM_右侧卵泡总数", "LLM_右侧卵泡明细", "LLM_左侧卵泡总数", "LLM_左侧卵泡明细",
+        "LLM_内膜厚度", "LLM_内膜类型",
+        "LLM_右卵巢长", "LLM_右卵巢宽", "LLM_左卵巢长", "LLM_左卵巢宽",
+        "LLM_备注", "LLM_总结", "LLM_不确定内容", "LLM_原始返回",
+        "真实_右侧卵泡总数", "真实_右侧卵泡明细", "真实_左侧卵泡总数", "真实_左侧卵泡明细",
+        "真实_内膜厚度", "真实_内膜类型",
+        "真实_右卵巢长", "真实_右卵巢宽", "真实_左卵巢长", "真实_左卵巢宽",
+        "真实_备注",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_wrap
+        cell.border = thin_border
+
+    def follicles_to_str(follicles):
+        if not follicles or not isinstance(follicles, list):
+            return "-"
+        return "; ".join(f"{f.get('size', '?')}x{f.get('count', '?')}" for f in follicles)
+
+    # 真实 B 超
+    gt_right_total = gt.right_follicle_total if gt else ""
+    gt_left_total = gt.left_follicle_total if gt else ""
+    gt_endo_thick = gt.endometrium_thickness if gt else ""
+    gt_endo_type = gt.endometrium_type if gt else ""
+    gt_r_ovary_l = gt.right_ovary_length if gt else ""
+    gt_r_ovary_w = gt.right_ovary_width if gt else ""
+    gt_l_ovary_l = gt.left_ovary_length if gt else ""
+    gt_l_ovary_w = gt.left_ovary_width if gt else ""
+    gt_remark = gt.remark if gt else ""
+
+    for row_idx, (llm, _patient, _df) in enumerate(rows, 2):
+        structured = llm.structured_result or {}
+        right_follicles = structured.get("right_follicles") or []
+        left_follicles = structured.get("left_follicles") or []
+
+        asr = asr_map.get(llm.asr_result_id) if llm.asr_result_id else None
+        asr_model_name = asr.asr_model_name if asr else ""
+        asr_transcript = asr.full_transcript if asr else ""
+
+        tmpl_id = llm.prompt_template_id
+        tmpl_name = llm.prompt_template_name or ""
+        if not tmpl_name and tmpl_id and tmpl_id in tmpl_map:
+            tmpl_name = tmpl_map[tmpl_id].name or ""
+
+        row_data = [
+            llm.id, patient_id, record_id, date_str,
+            llm.created_at.strftime("%Y-%m-%d %H:%M:%S") if llm.created_at else "",
+            llm.status, llm.accuracy,
+            llm.asr_result_id, asr_model_name, "original", llm.llm_model_name,
+            tmpl_id or "", tmpl_name or "未记录模板名称",
+            len(llm.prompt_content) if llm.prompt_content else 0,
+            llm.prompt_content or "", asr_transcript, asr_transcript,
+            structured.get("right_follicle_total", ""), follicles_to_str(right_follicles),
+            structured.get("left_follicle_total", ""), follicles_to_str(left_follicles),
+            structured.get("endometrium_thickness", ""), structured.get("endometrium_type", ""),
+            structured.get("right_ovary_length", ""), structured.get("right_ovary_width", ""),
+            structured.get("left_ovary_length", ""), structured.get("left_ovary_width", ""),
+            structured.get("remark", ""), llm.summary_text or "",
+            structured.get("uncertain_text", ""), llm.raw_output or "",
+            gt_right_total, follicles_to_str(gt.right_follicles if gt else []),
+            gt_left_total, follicles_to_str(gt.left_follicles if gt else []),
+            gt_endo_thick, gt_endo_type,
+            gt_r_ovary_l, gt_r_ovary_w, gt_l_ovary_l, gt_l_ovary_w, gt_remark,
+        ]
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    col_widths = [
+        10, 12, 12, 10, 18, 8, 8,
+        10, 15, 12, 15, 12, 15, 10, 50, 50, 50,
+        12, 25, 12, 25, 10, 10, 10, 10, 10, 10,
+        30, 40, 30, 50,
+        12, 25, 12, 25, 10, 10, 10, 10, 10, 10, 30,
+    ]
+    for idx, w in enumerate(col_widths, 1):
+        col_letter = chr(64 + idx) if idx <= 26 else "A" + chr(64 + idx - 26)
+        ws.column_dimensions[col_letter].width = w
+
+    ws.freeze_panes = "A2"
 
     wb = Workbook()
     ws = wb.active

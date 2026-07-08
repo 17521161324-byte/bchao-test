@@ -49,6 +49,8 @@ class PatientLlmResult(Base):
     asr_result_id = Column(Integer, ForeignKey("patient_asr_results.id"), nullable=True)
     llm_model_id = Column(Integer, ForeignKey("model_configs.id"))
     llm_model_name = Column(String(100))              # 冗余快照
+    prompt_template_id = Column(Integer, ForeignKey("prompt_templates.id"), nullable=True)
+    prompt_template_name = Column(String(100))        # 冗余快照
     prompt_version = Column(String(50), default="v1.0")
     prompt_content = Column(Text, default="")          # 冗余快照
     structured_result = Column(JSON, nullable=True)
