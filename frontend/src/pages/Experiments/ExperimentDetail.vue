@@ -1,50 +1,25 @@
 <template>
   <div class="page-container">
+    <!-- 顶部信息 + 控制按钮 -->
     <div class="page-header">
       <h2>实验详情 - {{ batch?.name || '' }}</h2>
       <a-space>
         <router-link to="/experiments"><a-button><ArrowLeftOutlined />返回列表</a-button></router-link>
-        <a-button @click="fetchData"><ReloadOutlined />刷新</a-button>
+        <a-button @click="refreshAll"><ReloadOutlined />刷新</a-button>
       </a-space>
     </div>
 
-    <!-- 实验关联信息 -->
+    <!-- 概览卡片 -->
     <a-card size="small" style="margin-bottom: 16px" v-if="batch">
-      <a-descriptions :column="4" bordered size="small">
-        <a-descriptions-item label="实验名称">{{ batch.name }}</a-descriptions-item>
-        <a-descriptions-item label="状态">
-          <a-tag :color="batch.status === 'completed' ? 'green' : batch.status === 'running' ? 'blue' : 'default'">
-            {{ batch.status }}
-          </a-tag>
-        </a-descriptions-item>
-        <a-descriptions-item label="患者数">{{ (batch.selected_patient_ids || []).length }}人</a-descriptions-item>
-        <a-descriptions-item label="总任务">{{ batch.total_tasks }}</a-descriptions-item>
-        <a-descriptions-item label="ASR模型" :span="2">
-          {{ batch.combinations?.map((c: any) => get_model_name(c.asr_model_id)).filter(Boolean).join(', ') || '-' }}
-        </a-descriptions-item>
-        <a-descriptions-item label="LLM模型" :span="2">
-          {{ batch.combinations?.map((c: any) => get_model_name(c.llm_model_id)).filter(Boolean).join(', ') || '-' }}
-        </a-descriptions-item>
-        <a-descriptions-item label="提示词模板" :span="4">
-          {{ batch.combinations?.map((c: any) => c.prompt_name).filter(Boolean).join(', ') || '-' }}
-        </a-descriptions-item>
-      </a-descriptions>
-    </a-card>
-
-    <!-- 进度条 -->
-    <a-card v-if="batch && (batch.status === 'running' || batch.status === 'partial')" style="margin-bottom: 16px">
-      <a-row :gutter="16" align="middle">
-        <a-col :span="6"><a-statistic title="总任务" :value="progress?.total || 0" /></a-col>
-        <a-col :span="6"><a-statistic title="成功" :value="progress?.success || 0" :value-style="{ color: '#52c41a' }" /></a-col>
-        <a-col :span="6"><a-statistic title="失败" :value="progress?.failed || 0" :value-style="{ color: '#ff4d4f' }" /></a-col>
-        <a-col :span="6"><a-statistic title="进行中" :value="progress?.running || 0" :value-style="{ color: '#1890ff' }" /></a-col>
+      <a-row :gutter="16">
+        <a-col :span="3">状态: <a-tag :color="statusColor">{{ batch.status }}</a-tag></a-col>
+        <a-col :span="3">患者数: {{ batch.patient_count || (selectedPatientIds.length) }}人</a-col>
+        <a-col :span="3">组合数: {{ (batch.combinations || []).length }}</a-col>
+        <a-col :span="3">总任务: {{ batch.total_tasks }}</a-col>
+        <a-col :span="3">成功: <span style="color:#52c41a">{{ progress?.success || 0 }}</span></a-col>
+        <a-col :span="3">失败: <span style="color:#ff4d4f">{{ progress?.failed || 0 }}</span></a-col>
+        <a-col :span="3">进行中: <span style="color:#1890ff">{{ progress?.running || 0 }}</span></a-col>
       </a-row>
-      <a-progress
-        :percent="progress ? Math.round(((progress.success + progress.failed) / Math.max(progress.total, 1)) * 100) : 0"
-        :status="batch.status === 'running' ? 'active' : 'normal'"
-        :format="() => `${progress ? progress.success + progress.failed : 0}/${progress?.total || 0}`"
-        style="margin-top: 12px"
-      />
     </a-card>
 
     <!-- 控制按钮 -->
@@ -52,214 +27,221 @@
       <a-button type="primary" @click="handleStart" :disabled="batch?.status === 'running' || !batch?.combinations?.length">开始实验</a-button>
       <a-button @click="handlePause" v-if="batch?.status === 'running'">暂停</a-button>
       <a-button @click="handleResume" v-if="batch?.status === 'paused'">继续</a-button>
-      <a-button @click="handleRetryFailed" v-if="batch?.failure_count > 0">重试失败</a-button>
+      <a-button @click="handleRetryFailed" v-if="(batch?.failure_count || 0) > 0">重试失败</a-button>
     </a-space>
 
-    <!-- 实验组合管理 -->
-    <a-card size="small" style="margin-bottom: 16px">
-      <template #title>
-        <a-space>
-          <span>实验组合 ({{ batch?.combinations?.length || 0 }})</span>
-          <a-button size="small" type="primary" @click="showComboModal">+ 添加组合</a-button>
-        </a-space>
-      </template>
-      <a-row :gutter="8" v-if="batch?.combinations?.length">
-        <a-col v-for="combo in batch.combinations" :key="combo.id" :span="8">
-          <a-tag color="blue" style="margin-bottom: 4px">
-            {{ get_model_name(combo.asr_model_id) }}{{ combo.llm_model_id ? ' + ' + get_model_name(combo.llm_model_id) : '' }}
-            <span v-if="combo.prompt_name"> | 模板:{{ combo.prompt_name }}</span>
-          </a-tag>
-        </a-col>
-      </a-row>
-      <a-empty v-else description="暂无组合，请点击上方按钮添加" style="padding: 12px 0" />
-    </a-card>
+    <!-- 主 Tab -->
+    <a-tabs v-model:activeKey="activeTab" type="card">
+      <!-- 概览 Tab -->
+      <a-tab-pane key="overview" tab="概览">
+        <a-row :gutter="16" style="margin-bottom: 16px">
+          <a-col :span="6"><a-statistic title="总任务" :value="metrics?.total_tasks || 0" /></a-col>
+          <a-col :span="6"><a-statistic title="成功" :value="metrics?.success_count || 0" :value-style="{ color: '#52c41a' }" /></a-col>
+          <a-col :span="6"><a-statistic title="失败" :value="metrics?.failure_count || 0" :value-style="{ color: '#ff4d4f' }" /></a-col>
+          <a-col :span="6"><a-statistic title="平均准确率" :value="((metrics?.field_accuracy?.endometrium_thickness || 0) * 100).toFixed(0)" suffix="%" /></a-col>
+        </a-row>
+        <a-row :gutter="16" style="margin-bottom: 16px">
+          <a-col :span="6"><a-statistic title="ASR复用数" :value="batch?.asr_reuse_count || 0" /></a-col>
+          <a-col :span="6"><a-statistic title="ASR新生成数" :value="batch?.asr_generated_count || 0" /></a-col>
+          <a-col :span="6"><a-statistic title="ASR失败数" :value="batch?.asr_failed_count || 0" /></a-col>
+          <a-col :span="6"><a-statistic title="ASR复用率" :value="((batch?.asr_reuse_rate || 0) * 100).toFixed(0)" suffix="%" /></a-col>
+        </a-row>
+        <a-card title="字段准确率" size="small">
+          <a-descriptions :column="3" bordered size="small" v-if="metrics">
+            <a-descriptions-item label="内膜厚度">{{ ((metrics.field_accuracy?.endometrium_thickness || 0) * 100).toFixed(0) }}%</a-descriptions-item>
+            <a-descriptions-item label="内膜类型">{{ ((metrics.field_accuracy?.endometrium_type || 0) * 100).toFixed(0) }}%</a-descriptions-item>
+            <a-descriptions-item label="卵巢">{{ ((metrics.field_accuracy?.ovary_size || 0) * 100).toFixed(0) }}%</a-descriptions-item>
+            <a-descriptions-item label="卵泡">{{ ((metrics.field_accuracy?.follicle || 0) * 100).toFixed(0) }}%</a-descriptions-item>
+            <a-descriptions-item label="备注">{{ ((metrics.field_accuracy?.remark || 0) * 100).toFixed(0) }}%</a-descriptions-item>
+          </a-descriptions>
+        </a-card>
+      </a-tab-pane>
 
-    <!-- 筛选 -->
-    <a-card size="small" style="margin-bottom: 16px">
-      <a-space>
-        <span>显示：</span>
-        <a-radio-group v-model:value="filter" button-style="solid" size="small">
-          <a-radio-button value="all">全部</a-radio-button>
-          <a-radio-button value="with_result">有LLM结果</a-radio-button>
-          <a-radio-button value="mismatch">有差异</a-radio-button>
-        </a-radio-group>
-      </a-space>
-    </a-card>
+      <!-- 任务明细 Tab -->
+      <a-tab-pane key="tasks" :tab="`任务明细 (${tasks.length})`">
+        <a-table
+          :data-source="tasks"
+          :loading="loading"
+          size="small"
+          row-key="id"
+          :scroll="{ x: 1200 }"
+          :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
+        >
+          <a-table-column title="病历号" data-index="record_id" :width="100" />
+          <a-table-column title="日期" data-index="date" :width="100" />
+          <a-table-column title="ASR模型" :width="120">
+            <template #default="{ record }">{{ record.asr_model_name || record.combination_asr_name || '-' }}</template>
+          </a-table-column>
+          <a-table-column title="ASR来源" :width="90">
+            <template #default="{ record }">
+              <a-tag v-if="record.asr_source === 'reused'" color="blue">复用</a-tag>
+              <a-tag v-else-if="record.asr_source === 'generated'" color="green">新生成</a-tag>
+              <a-tag v-else-if="record.asr_source === 'failed'" color="red">失败</a-tag>
+              <a-tag v-else color="default">-</a-tag>
+            </template>
+          </a-table-column>
+          <a-table-column title="LLM模型" :width="120">
+            <template #default="{ record }">{{ record.llm_model_name || record.combination_llm_name || '-' }}</template>
+          </a-table-column>
+          <a-table-column title="提示词模板" :width="140">
+            <template #default="{ record }">{{ record.prompt_template_name || record.combination_prompt_name || '-' }}</template>
+          </a-table-column>
+          <a-table-column title="状态" :width="80">
+            <template #default="{ record }">
+              <a-tag :color="record.status === 'success' ? 'green' : record.status === 'failed' ? 'red' : record.status === 'running' ? 'blue' : 'default'">
+                {{ record.status }}
+              </a-tag>
+            </template>
+          </a-table-column>
+          <a-table-column title="准确率" :width="80">
+            <template #default="{ record }">{{ record.accuracy != null ? (record.accuracy * 100).toFixed(0) + '%' : '-' }}</template>
+          </a-table-column>
+          <a-table-column title="错误" :width="120">
+            <template #default="{ record }">
+              <a-tooltip v-if="record.error_message" :title="record.error_message">
+                <span style="color: #ff4d4f">{{ record.error_type || '错误' }}</span>
+              </a-tooltip>
+              <span v-else>-</span>
+            </template>
+          </a-table-column>
+          <a-table-column title="操作" :width="80" fixed="right">
+            <template #default="{ record }"><a-button size="small" type="link" @click="openTaskDetail(record)">查看</a-button></template>
+          </a-table-column>
+        </a-table>
+      </a-tab-pane>
 
-    <!-- 患者结果对比表格 -->
-    <a-card title="患者结果对比" v-if="batch && batch.selected_patient_ids && batch.selected_patient_ids.length > 0">
-      <a-table
-        v-if="filteredTasks.length > 0"
-        :data-source="filteredTasks"
-        :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
-        size="small"
-        :row-key="(row: any) => row.task ? `${row.task.id}-${row.task.patient_id}` : `pending-${row.record_id}-${row.date}`"
-        :scroll="{ x: 1800 }"
-      >
-        <a-table-column title="病历号" data-index="record_id" :width="100" fixed="left" />
-        <a-table-column title="日期" data-index="date" :width="100" />
-        <a-table-column title="状态" :width="100">
-          <template #default="{ record }">
-            <a-tag :color="record.status === 'success' ? 'green' : record.status === 'failed' ? 'red' : record.status === 'running' ? 'blue' : 'default'">
-              {{ record.status }}
-            </a-tag>
-            <a-tooltip v-if="record.error_message" :title="record.error_message">
-              <span style="color: #ff4d4f; margin-left: 4px">⚠</span>
-            </a-tooltip>
-          </template>
-        </a-table-column>
+      <!-- 组合对比 Tab -->
+      <a-tab-pane key="combinations" tab="组合对比">
+        <a-table
+          :data-source="combinationMetrics"
+          size="small"
+          row-key="combination_id"
+          :scroll="{ x: 1400 }"
+          :pagination="{ pageSize: 20 }"
+        >
+          <a-table-column title="组合ID" data-index="combination_id" :width="80" />
+          <a-table-column title="ASR模型" data-index="asr_model_name" :width="120" />
+          <a-table-column title="LLM模型" data-index="llm_model_name" :width="120" />
+          <a-table-column title="提示词模板" data-index="prompt_template_name" :width="140" />
+          <a-table-column title="总任务" data-index="total" :width="70" />
+          <a-table-column title="成功" data-index="success" :width="60" />
+          <a-table-column title="失败" data-index="failure" :width="60" />
+          <a-table-column title="成功率" :width="80">
+            <template #default="{ record }">{{ (record.success_rate * 100).toFixed(0) }}%</template>
+          </a-table-column>
+          <a-table-column title="平均准确率" :width="90">
+            <template #default="{ record }">{{ (record.avg_accuracy * 100).toFixed(0) }}%</template>
+          </a-table-column>
+          <a-table-column title="ASR复用率" :width="90">
+            <template #default="{ record }">{{ (record.asr_reuse_rate * 100).toFixed(0) }}%</template>
+          </a-table-column>
+        </a-table>
+      </a-tab-pane>
 
-        <!-- ASR 转写结果 -->
-        <a-table-column title="ASR转写" :width="200">
-          <template #default="{ record }">
-            <div style="max-height: 60px; overflow-y: auto; font-size: 12px; white-space: pre-wrap">
-              {{ record.full_transcript || '-' }}
-            </div>
-          </template>
-        </a-table-column>
-
-        <!-- 右侧卵泡 -->
-        <a-table-column title="右卵泡" :width="120">
-          <template #default="{ record }">
-            <div style="cursor:pointer" @click="openFieldModal(record.task, 'right_follicle_total')">
+      <!-- 患者对比 Tab -->
+      <a-tab-pane key="patients" tab="患者对比">
+        <a-table
+          :data-source="patientComparison"
+          size="small"
+          :scroll="{ x: 1800 }"
+          row-key="key"
+          :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
+        >
+          <a-table-column title="病历号" data-index="record_id" :width="100" fixed="left" />
+          <a-table-column title="日期" data-index="date" :width="100" />
+          <a-table-column title="ASR模型" :width="120">
+            <template #default="{ record }">{{ record.asr_model_name || '-' }}</template>
+          </a-table-column>
+          <a-table-column title="LLM模型" :width="120">
+            <template #default="{ record }">{{ record.llm_model_name || '-' }}</template>
+          </a-table-column>
+          <a-table-column title="右卵泡" :width="120">
+            <template #default="{ record }">
               <div>金标: {{ record.gt_right ?? '-' }}</div>
-              <div :style="{ color: record.gt_right !== record.llm_right ? '#ff4d4f' : '#52c41a' }">
-                LLM: {{ record.llm_right ?? '-' }}
-              </div>
-            </div>
-          </template>
-        </a-table-column>
-
-        <!-- 左侧卵泡 -->
-        <a-table-column title="左卵泡" :width="120">
-          <template #default="{ record }">
-            <div style="cursor:pointer" @click="openFieldModal(record.task, 'left_follicle_total')">
+              <div :style="{ color: record.gt_right !== record.llm_right ? '#ff4d4f' : '#52c41a' }">LLM: {{ record.llm_right ?? '-' }}</div>
+            </template>
+          </a-table-column>
+          <a-table-column title="左卵泡" :width="120">
+            <template #default="{ record }">
               <div>金标: {{ record.gt_left ?? '-' }}</div>
-              <div :style="{ color: record.gt_left !== record.llm_left ? '#ff4d4f' : '#52c41a' }">
-                LLM: {{ record.llm_left ?? '-' }}
-              </div>
-            </div>
-          </template>
-        </a-table-column>
-
-        <!-- 内膜厚度 -->
-        <a-table-column title="内膜厚度" :width="100">
-          <template #default="{ record }">
-            <div style="cursor:pointer" @click="openFieldModal(record.task, 'endometrium_thickness')">
+              <div :style="{ color: record.gt_left !== record.llm_left ? '#ff4d4f' : '#52c41a' }">LLM: {{ record.llm_left ?? '-' }}</div>
+            </template>
+          </a-table-column>
+          <a-table-column title="内膜厚度" :width="100">
+            <template #default="{ record }">
               <div>金标: {{ record.gt_endo_thick ?? '-' }}</div>
-              <div :style="{ color: record.gt_endo_thick !== record.llm_endo_thick ? '#ff4d4f' : '#52c41a' }">
-                LLM: {{ record.llm_endo_thick ?? '-' }}
-              </div>
-            </div>
-          </template>
-        </a-table-column>
-
-        <!-- 内膜类型 -->
-        <a-table-column title="内膜类型" :width="80">
-          <template #default="{ record }">
-            <div style="cursor:pointer" @click="openFieldModal(record.task, 'endometrium_type')">
+              <div :style="{ color: record.gt_endo_thick !== record.llm_endo_thick ? '#ff4d4f' : '#52c41a' }">LLM: {{ record.llm_endo_thick ?? '-' }}</div>
+            </template>
+          </a-table-column>
+          <a-table-column title="内膜类型" :width="80">
+            <template #default="{ record }">
               <div>金标: {{ record.gt_endo_type ?? '-' }}</div>
-              <div :style="{ color: record.gt_endo_type !== record.llm_endo_type ? '#ff4d4f' : '#52c41a' }">
-                LLM: {{ record.llm_endo_type ?? '-' }}
-              </div>
-            </div>
-          </template>
-        </a-table-column>
-
-        <!-- 右卵巢 -->
-        <a-table-column title="右卵巢" :width="100">
-          <template #default="{ record }">
-            <div style="cursor:pointer" @click="openFieldModal(record.task, 'right_ovary_length')">
+              <div :style="{ color: record.gt_endo_type !== record.llm_endo_type ? '#ff4d4f' : '#52c41a' }">LLM: {{ record.llm_endo_type ?? '-' }}</div>
+            </template>
+          </a-table-column>
+          <a-table-column title="右卵巢" :width="100">
+            <template #default="{ record }">
               <div>金标: {{ record.gt_r_ovary }}</div>
-              <div :style="{ color: record.gt_r_ovary !== record.llm_r_ovary ? '#ff4d4f' : '#52c41a' }">
-                LLM: {{ record.llm_r_ovary }}
-              </div>
-            </div>
-          </template>
-        </a-table-column>
-
-        <!-- 左卵巢 -->
-        <a-table-column title="左卵巢" :width="100">
-          <template #default="{ record }">
-            <div style="cursor:pointer" @click="openFieldModal(record.task, 'left_ovary_length')">
+              <div :style="{ color: record.gt_r_ovary !== record.llm_r_ovary ? '#ff4d4f' : '#52c41a' }">LLM: {{ record.llm_r_ovary }}</div>
+            </template>
+          </a-table-column>
+          <a-table-column title="左卵巢" :width="100">
+            <template #default="{ record }">
               <div>金标: {{ record.gt_l_ovary }}</div>
-              <div :style="{ color: record.gt_l_ovary !== record.llm_l_ovary ? '#ff4d4f' : '#52c41a' }">
-                LLM: {{ record.llm_l_ovary }}
-              </div>
-            </div>
-          </template>
-        </a-table-column>
+              <div :style="{ color: record.gt_l_ovary !== record.llm_l_ovary ? '#ff4d4f' : '#52c41a' }">LLM: {{ record.llm_l_ovary }}</div>
+            </template>
+          </a-table-column>
+        </a-table>
+      </a-tab-pane>
+    </a-tabs>
 
-        <!-- 备注 -->
-        <a-table-column title="备注" :width="120">
-          <template #default="{ record }">
-            <div style="cursor:pointer" @click="openFieldModal(record.task, 'remark')">
-              <div>金标: {{ record.gt_remark || '-' }}</div>
-              <div :style="{ color: record.gt_remark !== record.llm_remark ? '#ff4d4f' : '#52c41a' }">
-                LLM: {{ record.llm_remark || '-' }}
-              </div>
-            </div>
-          </template>
-        </a-table-column>
-
-        <a-table-column title="耗时" :width="80">
-          <template #default="{ record }">{{ record.total_duration?.toFixed(1) || '-' }}s</template>
-        </a-table-column>
-      </a-table>
-      <a-empty v-if="filteredTasks.length === 0" description="暂无患者数据" style="padding: 20px 0" />
-    </a-card>
-
-    <!-- 添加组合弹窗 -->
+    <!-- 任务详情弹窗 -->
     <a-modal
-      v-model:open="comboModalOpen"
-      title="添加实验组合"
-      :confirm-loading="comboCreating"
-      @ok="handleAddCombo"
-      :width="600"
+      v-model:open="taskDetailVisible"
+      :title="`任务详情 - ${selectedTask?.record_id || ''}`"
+      width="900px"
+      :footer="null"
     >
-      <a-form layout="vertical" size="small">
-        <a-form-item label="ASR 模型" required>
-          <a-select v-model:value="comboForm.asr_model_id" placeholder="选择 ASR 模型" show-search>
-            <a-select-option v-for="m in asrModels" :key="m.id" :value="m.id">
-              {{ m.name }} ({{ m.provider }})
-            </a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item label="LLM 模型">
-          <a-select v-model:value="comboForm.llm_model_id" placeholder="不使用 LLM" allow-clear show-search>
-            <a-select-option v-for="m in llmModels" :key="m.id" :value="m.id">
-              {{ m.name }} ({{ m.provider }})
-            </a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item label="提示词模板">
-          <a-select
-            v-model:value="comboForm.prompt_name"
-            placeholder="选择模板（可选）"
-            allow-clear
-            show-search
-            @change="onPromptTemplateChange"
-          >
-            <a-select-option v-for="t in promptTemplates" :key="t.name" :value="t.name">
-              {{ t.name }}
-            </a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item label="提示词内容">
-          <a-textarea
-            v-model:value="comboForm.prompt_template"
-            :rows="6"
-            placeholder="含 {transcript} 占位符的模板（可选）"
-          />
-        </a-form-item>
-        <a-form-item label="热词（每行一个）">
-          <a-textarea v-model:value="hotwordsRaw" :rows="3" placeholder="术后&#10;监测&#10;..." />
-        </a-form-item>
-      </a-form>
-    </a-modal>
+      <template v-if="selectedTask">
+        <a-descriptions :column="2" bordered size="small" style="margin-bottom: 12px">
+          <a-descriptions-item label="病历号">{{ selectedTask.record_id }}</a-descriptions-item>
+          <a-descriptions-item label="日期">{{ selectedTask.date }}</a-descriptions-item>
+          <a-descriptions-item label="ASR模型">{{ selectedTask.asr_model_name || selectedTask.combination_asr_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="ASR来源">
+            <a-tag v-if="selectedTask.asr_source === 'reused'" color="blue">复用</a-tag>
+            <a-tag v-else-if="selectedTask.asr_source === 'generated'" color="green">新生成</a-tag>
+            <a-tag v-else-if="selectedTask.asr_source === 'failed'" color="red">失败</a-tag>
+            <a-tag v-else color="default">-</a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="LLM模型">{{ selectedTask.llm_model_name || selectedTask.combination_llm_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="提示词模板">{{ selectedTask.prompt_template_name || selectedTask.combination_prompt_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="状态">
+            <a-tag :color="selectedTask.status === 'success' ? 'green' : selectedTask.status === 'failed' ? 'red' : 'blue'">{{ selectedTask.status }}</a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="准确率">{{ selectedTask.accuracy != null ? (selectedTask.accuracy * 100).toFixed(0) + '%' : '-' }}</a-descriptions-item>
+          <a-descriptions-item label="错误类型">{{ selectedTask.error_type || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="错误信息" :span="2">{{ selectedTask.error_message || '-' }}</a-descriptions-item>
+        </a-descriptions>
 
-    <!-- 字段对比弹窗 -->
-    <FieldCompareModal :modal="fieldModal" @close="closeFieldModal" />
+        <a-tabs v-model:activeKey="taskDetailTab" size="small">
+          <a-tab-pane key="asr" tab="ASR转写">
+            <div class="text-box">{{ selectedTask.full_transcript || '(无)' }}</div>
+          </a-tab-pane>
+          <a-tab-pane key="llm" tab="LLM输出">
+            <pre class="code-box">{{ selectedTask.llm_raw_output || '(无)' }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="structured" tab="结构化结果">
+            <pre class="code-box">{{ JSON.stringify(selectedTask.structured_result, null, 2) || '(无)' }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="ground" tab="真实B超">
+            <pre class="code-box">{{ JSON.stringify(selectedTask.ground_truth, null, 2) || '(无)' }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="eval" tab="评估对比">
+            <pre class="code-box">{{ JSON.stringify(selectedTask.evaluation, null, 2) || '(无)' }}</pre>
+          </a-tab-pane>
+        </a-tabs>
+      </template>
+    </a-modal>
   </div>
 </template>
 
@@ -269,96 +251,103 @@ import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { experimentApi } from '@/api/experiment'
-import { audioApi, modelApi } from '@/api/client'
-import { promptApi } from '@/api/prompt'
-import { useFieldCompare } from '@/composables/useFieldCompare'
-import FieldCompareModal from '@/components/FieldCompareModal/index.vue'
+import type { ExperimentBatch, ExperimentTaskSummary } from '@/types/experiment'
 
 export default defineComponent({
   name: 'ExperimentDetail',
-  components: { FieldCompareModal },
   setup() {
     const route = useRoute()
     const batchId = computed(() => Number(route.params.id))
-    const batch = ref<any>(null)
-    const tasks = ref<any[]>([])
+    const batch = ref<ExperimentBatch | null>(null)
+    const tasks = ref<ExperimentTaskSummary[]>([])
     const filter = ref('all')
-    const modelsMap = ref<Record<number, string>>({})
+    const loading = ref(false)
     const progress = ref<any>(null)
+    const activeTab = ref('overview')
 
-    // 字段对比
-    const { fieldModal, openFieldModal, closeFieldModal } = useFieldCompare()
+    // 任务详情弹窗
+    const taskDetailVisible = ref(false)
+    const selectedTask = ref<ExperimentTaskSummary | null>(null)
+    const taskDetailTab = ref('asr')
 
-    // 组合配置
-    const asrModels = ref<any[]>([])
-    const llmModels = ref<any[]>([])
-    const promptTemplates = ref<any[]>([])
-    const comboModalOpen = ref(false)
-    const comboCreating = ref(false)
-    const hotwordsRaw = ref('')
-    const comboForm = reactive({
-      asr_model_id: null as number | null,
-      llm_model_id: null as number | null,
-      prompt_name: '',
-      prompt_template: '',
+    const selectedPatientIds = computed(() => batch.value?.selected_patient_ids || [])
+
+    const metrics = computed(() => batch.value?.metrics || null)
+
+    const statusColor = computed(() => {
+      const s = batch.value?.status
+      if (s === 'completed') return 'green'
+      if (s === 'running') return 'blue'
+      if (s === 'failed') return 'red'
+      return 'default'
     })
 
-    function get_model_name(id: number): string {
-      return modelsMap.value[id] || `#${id}`
-    }
-
-    async function loadModels() {
-      try {
-        const [asr, llm] = await Promise.all([modelApi.list('asr'), modelApi.list('llm')])
-        const map: Record<number, string> = {}
-        for (const m of [...asr, ...llm]) map[m.id] = m.name
-        modelsMap.value = map
-        asrModels.value = asr
-        llmModels.value = llm
-      } catch { /* ignore */ }
-    }
-
-    async function loadPromptTemplates() {
-      try {
-        const res = await promptApi.list()
-        promptTemplates.value = res.data || []
-      } catch { /* ignore */ }
-    }
-
-    function onPromptTemplateChange(name: string) {
-      const tmpl = promptTemplates.value.find((t: any) => t.name === name)
-      if (tmpl) comboForm.prompt_template = tmpl.content
-    }
-
-    function showComboModal() {
-      comboForm.asr_model_id = null
-      comboForm.llm_model_id = null
-      comboForm.prompt_name = ''
-      comboForm.prompt_template = ''
-      hotwordsRaw.value = ''
-      loadModels()
-      loadPromptTemplates()
-      comboModalOpen.value = true
-    }
-
-    async function handleAddCombo() {
-      if (!comboForm.asr_model_id) {
-        message.error('请选择 ASR 模型')
-        return
+    // 按组合聚合指标
+    const combinationMetrics = computed(() => {
+      const map: Record<number, any> = {}
+      for (const t of tasks.value) {
+        const cid = t.combination_id
+        if (!map[cid]) {
+          map[cid] = {
+            combination_id: cid,
+            asr_model_name: t.asr_model_name || t.combination_asr_name || '-',
+            llm_model_name: t.llm_model_name || t.combination_llm_name || '-',
+            prompt_template_name: t.prompt_template_name || t.combination_prompt_name || '-',
+            total: 0, success: 0, failure: 0,
+            accuracy_sum: 0, accuracy_count: 0,
+            asr_reuse: 0, asr_generated: 0, asr_failed: 0,
+          }
+        }
+        const m = map[cid]
+        m.total++
+        if (t.status === 'success') { m.success++; m.accuracy_sum += (t.accuracy || 0); m.accuracy_count++ }
+        else if (t.status === 'failed') { m.failure++ }
+        if (t.asr_source === 'reused') m.asr_reuse++
+        else if (t.asr_source === 'generated') m.asr_generated++
+        else if (t.asr_source === 'failed') m.asr_failed++
       }
-      comboCreating.value = true
+      return Object.values(map).map((m: any) => ({
+        ...m,
+        success_rate: m.total > 0 ? m.success / m.total : 0,
+        avg_accuracy: m.accuracy_count > 0 ? m.accuracy_sum / m.accuracy_count : 0,
+        asr_reuse_rate: m.total > 0 ? m.asr_reuse / m.total : 0,
+      }))
+    })
+
+    // 患者对比 (按 exam_record_id + combination_id 唯一)
+    const patientComparison = computed(() => {
+      return tasks.value.map((t) => ({
+        key: `${t.patient_id}-${t.combination_id}`,
+        record_id: t.record_id,
+        date: t.date || '',
+        asr_model_name: t.asr_model_name || t.combination_asr_name || '-',
+        llm_model_name: t.llm_model_name || t.combination_llm_name || '-',
+        gt_right: t.ground_truth?.right_follicle_total,
+        gt_left: t.ground_truth?.left_follicle_total,
+        gt_endo_thick: t.ground_truth?.endometrium_thickness,
+        gt_endo_type: t.ground_truth?.endometrium_type,
+        gt_r_ovary: t.ground_truth?.right_ovary_length && t.ground_truth?.right_ovary_width
+          ? `${t.ground_truth.right_ovary_length}×${t.ground_truth.right_ovary_width}` : '-',
+        gt_l_ovary: t.ground_truth?.left_ovary_length && t.ground_truth?.left_ovary_width
+          ? `${t.ground_truth.left_ovary_length}×${t.ground_truth.left_ovary_width}` : '-',
+        llm_right: t.structured_result?.right_follicle_total,
+        llm_left: t.structured_result?.left_follicle_total,
+        llm_endo_thick: t.structured_result?.endometrium_thickness,
+        llm_endo_type: t.structured_result?.endometrium_type,
+        llm_r_ovary: t.structured_result?.right_ovary_length && t.structured_result?.right_ovary_width
+          ? `${t.structured_result.right_ovary_length}×${t.structured_result.right_ovary_width}` : '-',
+        llm_l_ovary: t.structured_result?.left_ovary_length && t.structured_result?.left_ovary_width
+          ? `${t.structured_result.left_ovary_length}×${t.structured_result.left_ovary_width}` : '-',
+      }))
+    })
+
+    async function fetchData() {
       try {
-        await experimentApi.addCombination(batchId.value, {
-          ...comboForm,
-          hotwords: hotwordsRaw.value.split('\n').map((s: string) => s.trim()).filter(Boolean),
-        })
-        message.success('已添加组合')
-        comboModalOpen.value = false
-        fetchData()
+        const res = await experimentApi.get(batchId.value)
+        batch.value = res.data || res
+        fetchProgress()
       } catch {
-        message.error('添加失败')
-      } finally {
-        comboCreating.value = false
+        message.error('加载失败')
       }
     }
 
@@ -369,17 +358,6 @@ export default defineComponent({
       } catch { /* ignore */ }
     }
 
-    async function fetchData() {
-      try {
-        const res = await experimentApi.get(batchId.value)
-        // 确保 batch.value 是数据对象，而不是响应对象
-        batch.value = res.data || res
-        fetchProgress()
-      } catch {
-        message.error('加载失败')
-      }
-    }
-
     async function fetchTasks() {
       try {
         const res = await experimentApi.tasks(batchId.value)
@@ -387,170 +365,55 @@ export default defineComponent({
       } catch { /* ignore */ }
     }
 
-    // fetchGroundTruths / fetchPatientsInfo 已不需要 (后端 /{batch_id}/tasks 已返回 ground_truth)
-
-    const comparisonData = computed(() => {
-      const map: Record<string, any> = {}
-
-      // 遍历任务, 以 patient_id-combination_id 为 key 避免跨日期覆盖
-      for (const task of tasks.value) {
-        const key = `${task.patient_id}-${task.combination_id}`
-        // 优先使用后端返回的 ground_truth (按 exam_record_id 精确关联)
-        const gt = task.ground_truth || null
-        const llm = task.structured_result || {}
-        map[key] = {
-          id: task.id,
-          task,
-          exam_record_id: task.patient_id, // patient_id 实际是 exam_record_id
-          patient_id: task.patient_id,
-          record_id: task.record_id,
-          date: task.date || '',
-          status: task.status,
-          error_type: task.error_type,
-          error_message: task.error_message,
-          total_duration: task.total_duration,
-          full_transcript: task.full_transcript,
-          hasTask: true,
-          // 真实值 (来自 ground_truth)
-          gt_right: gt ? gt.right_follicle_total : undefined,
-          gt_left: gt ? gt.left_follicle_total : undefined,
-          gt_endo_thick: gt ? gt.endometrium_thickness : undefined,
-          gt_endo_type: gt ? gt.endometrium_type : undefined,
-          gt_r_ovary: gt ? formatOvary(gt.right_ovary_length, gt.right_ovary_width) : '-',
-          gt_l_ovary: gt ? formatOvary(gt.left_ovary_length, gt.left_ovary_width) : '-',
-          gt_remark: gt ? gt.remark : undefined,
-          // LLM 识别值
-          llm_right: llm.right_follicle_total,
-          llm_left: llm.left_follicle_total,
-          llm_endo_thick: llm.endometrium_thickness,
-          llm_endo_type: llm.endometrium_type,
-          llm_r_ovary: formatOvary(llm.right_ovary_length, llm.right_ovary_width),
-          llm_l_ovary: formatOvary(llm.left_ovary_length, llm.left_ovary_width),
-          llm_remark: llm.remark,
-        }
+    async function refreshAll() {
+      loading.value = true
+      try {
+        await fetchData()
+        await fetchTasks()
+        message.success('刷新成功')
+      } finally {
+        loading.value = false
       }
-
-      // 添加 selected_patient_ids 中但还没有任务的患者 (如实验新建但未启动)
-      // 由于没有 task 信息, 此时显示为 pending, 日期留空
-      if (batch.value?.selected_patient_ids) {
-        for (const recordId of batch.value.selected_patient_ids) {
-          const key = `pending-${recordId}`
-          if (!map[key]) {
-            map[key] = {
-              id: null,
-              task: null,
-              patient_id: null,
-              record_id: recordId,
-              date: '',
-              status: 'pending',
-              error_type: undefined,
-              error_message: undefined,
-              total_duration: null,
-              full_transcript: '',
-              hasTask: false,
-              gt_right: undefined,
-              gt_left: undefined,
-              gt_endo_thick: undefined,
-              gt_endo_type: undefined,
-              gt_r_ovary: '-',
-              gt_l_ovary: '-',
-              gt_remark: undefined,
-              llm_right: undefined,
-              llm_left: undefined,
-              llm_endo_thick: undefined,
-              llm_endo_type: undefined,
-              llm_r_ovary: '-',
-              llm_l_ovary: '-',
-              llm_remark: undefined,
-            }
-          }
-        }
-      }
-
-      return Object.values(map).sort((a: any, b: any) => {
-        // 先按日期, 再按病历号排序
-        if (a.date !== b.date) return a.date.localeCompare(b.date)
-        return a.record_id.localeCompare(b.record_id)
-      })
-    })
-
-    function formatOvary(l: number | undefined, w: number | undefined): string {
-      return l && w ? `${l}×${w}` : '-'
     }
 
-    const filteredTasks = computed(() => {
-      if (!batch.value) return []
-      let data = comparisonData.value
-      if (filter.value === 'with_result') {
-        data = data.filter((d) => d.llm_right !== undefined)
-      } else if (filter.value === 'mismatch') {
-        data = data.filter((d) => {
-          return (
-            d.gt_right !== d.llm_right ||
-            d.gt_left !== d.llm_left ||
-            d.gt_endo_thick !== d.llm_endo_thick ||
-            d.gt_endo_type !== d.llm_endo_type ||
-            d.gt_remark !== d.llm_remark
-          )
-        })
-      }
-      return data
-    })
+    function openTaskDetail(task: ExperimentTaskSummary) {
+      selectedTask.value = task
+      taskDetailVisible.value = true
+      taskDetailTab.value = 'asr'
+    }
 
     async function handleStart() {
       try {
         await experimentApi.start(batchId.value)
         message.success('实验已启动')
-        fetchData()
-      } catch {
-        message.error('启动失败')
-      }
+        refreshAll()
+      } catch { message.error('启动失败') }
     }
 
     async function handlePause() {
-      try {
-        await experimentApi.pause(batchId.value)
-        message.success('实验已暂停')
-        fetchData()
-      } catch {
-        message.error('暂停失败')
-      }
+      try { await experimentApi.pause(batchId.value); message.success('已暂停'); refreshAll() }
+      catch { message.error('暂停失败') }
     }
 
     async function handleResume() {
-      try {
-        await experimentApi.resume(batchId.value)
-        message.success('实验已继续')
-        fetchData()
-      } catch {
-        message.error('继续失败')
-      }
+      try { await experimentApi.resume(batchId.value); message.success('已继续'); refreshAll() }
+      catch { message.error('继续失败') }
     }
 
     async function handleRetryFailed() {
-      try {
-        await experimentApi.retry(batchId.value)
-        message.success('已重试失败任务')
-        fetchData()
-      } catch {
-        message.error('重试失败')
-      }
+      try { await experimentApi.retry(batchId.value); message.success('已重试失败任务'); refreshAll() }
+      catch { message.error('重试失败') }
     }
 
-    onMounted(() => {
-      fetchData()
-      fetchTasks()
-      loadModels()
-    })
+    onMounted(() => { refreshAll() })
 
     return {
-      batchId, batch, tasks, filter, progress, filteredTasks,
-      fetchData, handleStart, handlePause, handleResume, handleRetryFailed,
+      batchId, batch, tasks, filter, loading, progress, activeTab,
+      selectedPatientIds, metrics, statusColor,
+      combinationMetrics, patientComparison,
+      taskDetailVisible, selectedTask, taskDetailTab,
+      refreshAll, fetchData, handleStart, handlePause, handleResume, handleRetryFailed, openTaskDetail,
       ArrowLeftOutlined, ReloadOutlined,
-      get_model_name,
-      fieldModal, openFieldModal, closeFieldModal,
-      comboModalOpen, comboCreating, asrModels, llmModels, promptTemplates,
-      comboForm, hotwordsRaw, showComboModal, handleAddCombo, onPromptTemplateChange,
     }
   },
 })
@@ -558,4 +421,6 @@ export default defineComponent({
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.text-box { background: #f5f5f5; padding: 12px; border-radius: 6px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.7; }
+.code-box { background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; }
 </style>

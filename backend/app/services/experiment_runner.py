@@ -164,8 +164,17 @@ class ExperimentRunner:
                         logger.error(f"Task {task_id} ASR 调用失败: {e}")
                         new_asr_record.status = "failed"
                         new_asr_record.error_message = str(e)
-                        asr_source = "failed"
-                        raise  # 向上传递, 任务标记为 failed
+                        # 保存任务快照后再 raise, 确保失败状态持久化
+                        task.asr_result_id = new_asr_record.id
+                        task.asr_source = "failed"
+                        task.asr_model_name = asr_model.name
+                        task.asr_results = []
+                        task.full_transcript = ""
+                        task.status = TaskStatus.FAILED.value
+                        task.error_type = "asr_failed"
+                        task.error_message = str(e)
+                        task.completed_at = datetime.utcnow()
+                        raise  # 向上传递, 统一在 finally 或无异常路径外捕获
 
                 # 任务关联到患者 ASR 记录
                 task.asr_result_id = asr_result_record.id

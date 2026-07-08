@@ -30,7 +30,71 @@ router = APIRouter()
 
 @router.get("")
 async def list_experiments(db: AsyncSession = Depends(get_db)):
-    """获取实验批次列表"""
+    """获取实验批次列表 (含聚合指标)"""
+    result = await db.execute(
+        select(ExperimentBatch)
+        .options(
+            selectinload(ExperimentBatch.combinations).selectinload(ExperimentCombination.asr_model),
+            selectinload(ExperimentBatch.combinations).selectinload(ExperimentCombination.llm_model),
+            selectinload(ExperimentBatch.tasks),
+        )
+        .order_by(ExperimentBatch.created_at.desc())
+    )
+    batches = result.scalars().all()
+
+    output = []
+    for b in batches:
+        # JSON 字段处理
+        pids = b.selected_patient_ids or []
+        if isinstance(pids, str):
+            try: pids = json.loads(pids)
+            except: pids = []
+        dates = b.selected_dates or []
+        if isinstance(dates, str):
+            try: dates = json.loads(dates)
+            except: dates = []
+
+        # 聚合指标
+        tasks = b.tasks or []
+        m = calculate_metrics(tasks)
+
+        # 聚合模型/模板名称
+        asr_model_names = sorted(set(c.asr_model.name for c in (b.combinations or []) if c.asr_model))
+        llm_model_names = sorted(set(c.llm_model.name for c in (b.combinations or []) if c.llm_model))
+        prompt_names = sorted(set(c.prompt_name for c in (b.combinations or []) if c.prompt_name))
+
+        # ASR 来源统计
+        asr_reuse = sum(1 for t in tasks if t.asr_source == "reused")
+        asr_generated = sum(1 for t in tasks if t.asr_source == "generated")
+        asr_failed = sum(1 for t in tasks if t.asr_source == "failed")
+
+        output.append({
+            "id": b.id,
+            "name": b.name,
+            "status": b.status,
+            "remark": b.remark or "",
+            "selected_dates": dates,
+            "selected_patient_ids": pids,
+            "total_tasks": b.total_tasks or 0,
+            "success_count": b.success_count or 0,
+            "failure_count": b.failure_count or 0,
+            "created_at": b.created_at.isoformat() if b.created_at else None,
+            "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+            "started_at": b.started_at.isoformat() if b.started_at else None,
+            "completed_at": b.completed_at.isoformat() if b.completed_at else None,
+            "patient_count": len(pids) if isinstance(pids, list) else 0,
+            "combination_count": len(b.combinations or []),
+            "metrics": m,
+            "field_accuracy": m.get("field_accuracy", {}),
+            "asr_models": asr_model_names,
+            "llm_models": llm_model_names,
+            "prompt_templates": prompt_names,
+            "asr_reuse_count": asr_reuse,
+            "asr_generated_count": asr_generated,
+            "asr_failed_count": asr_failed,
+            "asr_reuse_rate": asr_reuse / max(len(tasks), 1),
+        })
+    return output
     result = await db.execute(
         select(ExperimentBatch)
         .options(
