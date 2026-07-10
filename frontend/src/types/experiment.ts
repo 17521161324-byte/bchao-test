@@ -16,6 +16,7 @@ export interface ExperimentBatch {
   started_at?: string | Date | null
   completed_at?: string | Date | null
   metrics?: ExperimentMetrics
+  combinations?: ExperimentCombination[]
   asr_models?: string[]
   llm_models?: string[]
   prompt_templates?: string[]
