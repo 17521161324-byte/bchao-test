@@ -46,6 +46,9 @@ export const resultApi = {
   },
   getByRecord: (recordId: string) => client.get(`/result/${recordId}`),
   update: (resultId: number, data: any) => client.put(`/result/${resultId}`, data),
+  // 按检查记录 ID 读写真实 B 超结果
+  getBUltraResult: (examRecordId: number) => client.get(`/result/exam/${examRecordId}/b-ultra`),
+  updateBUltraResult: (examRecordId: number, data: any) => client.put(`/result/exam/${examRecordId}/b-ultra`, data),
 }
 
 // ========== 模型配置 ==========

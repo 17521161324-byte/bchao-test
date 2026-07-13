@@ -21,4 +21,5 @@ export const experimentApi = {
   tasks: (id: number, status?: string) => client.get(`/experiments/${id}/tasks`, { params: status ? { status } : {} }),
   metrics: (id: number) => client.get(`/experiments/${id}/metrics`),
   results: (id: number) => client.get(`/experiments/${id}/results`),
+  export: (id: number) => `/api/experiments/${id}/export`,
 };

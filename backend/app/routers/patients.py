@@ -273,6 +273,8 @@ def _asr_response(r: PatientAsrResult) -> dict:
 
 
 def _llm_response(r: PatientLlmResult) -> dict:
+    from app.services.parser import normalize_structured_result
+    structured_result = normalize_structured_result(r.structured_result)
     asr_model_name = ""
     if r.asr_result is not None:
         # 已 preload
@@ -294,8 +296,8 @@ def _llm_response(r: PatientLlmResult) -> dict:
         "prompt_version": r.prompt_version,
         "prompt_content": r.prompt_content,
         "prompt_len": len(r.prompt_content) if r.prompt_content else 0,
-        "structured": r.structured_result,        # 前端旧字段
-        "structured_result": r.structured_result,
+        "structured": structured_result,        # 前端旧字段
+        "structured_result": structured_result,
         "summary": r.summary_text,                # 前端旧字段
         "summary_text": r.summary_text,
         "raw_text": r.raw_output,                 # 前端旧字段
@@ -369,12 +371,31 @@ async def patient_llm_run(
     if not transcript:
         raise HTTPException(status_code=400, detail="无 ASR 转写文本可用")
 
-    # 读取 LLM 模型
+    # 读取 LLM 模型并校验配置完整性
     if not llm_model_id:
         raise HTTPException(status_code=400, detail="请提供 llm_model_id")
     llm_model = await db.get(ModelConfig, llm_model_id)
     if not llm_model:
         raise HTTPException(status_code=404, detail="LLM 模型不存在")
+
+    # 校验 LLM 配置是否完整（避免后续 401 / 500 浪费资源）
+    from app.models import ModelConfig as MC
+    if llm_model.model_type != "llm":
+        raise HTTPException(status_code=400, detail=f"{llm_model.name} 不是 LLM 模型")
+    if llm_model.status != "active":
+        raise HTTPException(status_code=400, detail=f"{llm_model.name} 当前未激活（status={llm_model.status}），请先在模型配置中启用")
+    missing = []
+    if not llm_model.endpoint:
+        missing.append("endpoint")
+    if not llm_model.api_key:
+        missing.append("API Key")
+    if not llm_model.model_name:
+        missing.append("model_name")
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{llm_model.name} 未配置: {', '.join(missing)}。请先在「模型配置」中补全信息后再执行。",
+        )
 
     # 尝试获取提示词模板信息
     prompt_template_name = None
@@ -415,13 +436,14 @@ async def patient_llm_run(
             },
             prompt_template=prompt_content,
         )
-        record.structured_result = llm_result["structured_result"]
+        from app.services.parser import normalize_structured_result
+        record.structured_result = normalize_structured_result(llm_result["structured_result"])
         record.raw_output = llm_result["llm_raw_output"]
         record.prompt_content = prompt_content  # 保存实际使用的提示词
         record.status = "success"
 
         # summary_text 优先取 structured 中的 summary 字段
-        structured = llm_result.get("structured_result") or {}
+        structured = record.structured_result or {}
         if structured.get("summary"):
             record.summary_text = str(structured["summary"])
         elif llm_result.get("summary_text"):
@@ -444,6 +466,8 @@ async def patient_llm_run(
                     ground_truth={
                         "right_follicle_total": gt.right_follicle_total,
                         "left_follicle_total": gt.left_follicle_total,
+                        "right_follicles": gt.right_follicles,
+                        "left_follicles": gt.left_follicles,
                         "endometrium_thickness": gt.endometrium_thickness,
                         "endometrium_type": gt.endometrium_type,
                         "right_ovary_length": gt.right_ovary_length,
@@ -532,6 +556,7 @@ async def export_patient_llm_results(
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
     from sqlalchemy import select
     from app.models import DateFolder, BUltraResult, PromptTemplate, PatientAsrResult
+    from app.services.parser import normalize_structured_result
 
     result = await db.execute(
         select(PatientLlmResult, PatientRecord, DateFolder)
@@ -614,7 +639,7 @@ async def export_patient_llm_results(
     gt_remark = gt.remark if gt else ""
 
     for row_idx, (llm, _patient, _df) in enumerate(rows, 2):
-        structured = llm.structured_result or {}
+        structured = normalize_structured_result(llm.structured_result or {})
         right_follicles = structured.get("right_follicles") or []
         left_follicles = structured.get("left_follicles") or []
 

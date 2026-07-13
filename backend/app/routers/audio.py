@@ -9,9 +9,10 @@ from sqlalchemy.orm import selectinload
 from loguru import logger
 
 from app.database import get_db
-from app.models import DateFolder, PatientRecord, AudioSeg, BUltraResult
+from app.models import DateFolder, PatientRecord, AudioSeg, BUltraResult, PatientAsrResult, PatientLlmResult
 from app.schemas import DateFolderOut, PatientRecordOut, DataStatusOut
 from app.config import settings
+from app.services.parser import evaluate_result, normalize_structured_result
 
 router = APIRouter()
 
@@ -320,6 +321,114 @@ async def get_records_flat(date: str = None, db: AsyncSession = Depends(get_db))
     if date:
         folders = [f for f in folders if f.date == date]
 
+    patient_ids = [p.id for folder in folders for p in folder.patients]
+    latest_asr_by_patient = {}
+    latest_llm_by_patient = {}
+    _llm_asr_cache: dict[int, any] = {}  # patient_id -> PatientAsrResult | None
+    if patient_ids:
+        asr_result = await db.execute(
+            select(PatientAsrResult)
+            .where(PatientAsrResult.patient_id.in_(patient_ids))
+            .order_by(
+                PatientAsrResult.patient_id.asc(),
+                PatientAsrResult.is_current.desc(),
+                PatientAsrResult.created_at.desc(),
+                PatientAsrResult.id.desc(),
+            )
+        )
+        for asr in asr_result.scalars().all():
+            if asr.patient_id not in latest_asr_by_patient:
+                latest_asr_by_patient[asr.patient_id] = asr
+
+        llm_result = await db.execute(
+            select(PatientLlmResult)
+            .where(PatientLlmResult.patient_id.in_(patient_ids))
+            .order_by(
+                PatientLlmResult.patient_id.asc(),
+                PatientLlmResult.is_current.desc(),
+                PatientLlmResult.created_at.desc(),
+                PatientLlmResult.id.desc(),
+            )
+        )
+        llm_rows = llm_result.scalars().all()
+        # 收集所有 asr_result_id
+        llm_asr_ids = list({llm.asr_result_id for llm in llm_rows if llm.asr_result_id})
+        # 批量查询关联 ASR
+        asr_by_id: dict[int, PatientAsrResult] = {}
+        if llm_asr_ids:
+            asr_for_llm = await db.execute(
+                select(PatientAsrResult).where(PatientAsrResult.id.in_(llm_asr_ids))
+            )
+            for a in asr_for_llm.scalars().all():
+                asr_by_id[a.id] = a
+        for llm in llm_rows:
+            if llm.patient_id not in latest_llm_by_patient:
+                latest_llm_by_patient[llm.patient_id] = llm
+                _llm_asr_cache[llm.patient_id] = asr_by_id.get(llm.asr_result_id) if llm.asr_result_id else None
+
+    def build_ground_truth(result_obj):
+        if not result_obj:
+            return None
+        return {
+            "right_follicle_total": result_obj.right_follicle_total,
+            "left_follicle_total": result_obj.left_follicle_total,
+            "right_follicles": result_obj.right_follicles,
+            "left_follicles": result_obj.left_follicles,
+            "endometrium_thickness": result_obj.endometrium_thickness,
+            "endometrium_type": result_obj.endometrium_type,
+            "right_ovary_length": result_obj.right_ovary_length,
+            "right_ovary_width": result_obj.right_ovary_width,
+            "left_ovary_length": result_obj.left_ovary_length,
+            "left_ovary_width": result_obj.left_ovary_width,
+            "remark": result_obj.remark,
+        }
+
+    def build_latest_asr(asr):
+        if not asr:
+            return None
+        return {
+            "id": asr.id,
+            "status": asr.status,
+            "asr_model_id": asr.asr_model_id,
+            "asr_model_name": asr.asr_model_name,
+            "provider": asr.provider,
+            "created_at": asr.created_at.isoformat() if asr.created_at else None,
+            "is_current": asr.is_current,
+        }
+
+    def build_latest_llm(llm, result_obj):
+        if not llm:
+            return None
+        structured = normalize_structured_result(llm.structured_result)
+        evaluation = llm.evaluation
+        gt = build_ground_truth(result_obj)
+        if structured and gt:
+            evaluation = evaluate_result(structured, gt)
+        # 关联 ASR 信息
+        asr_info = None
+        asr = _llm_asr_cache.get(llm.patient_id)
+        if asr:
+            asr_info = {
+                "asr_result_id": asr.id,
+                "asr_model_id": asr.asr_model_id,
+                "asr_model_name": asr.asr_model_name,
+                "asr_provider": asr.provider,
+            }
+        return {
+            "id": llm.id,
+            "status": llm.status,
+            "llm_model_name": llm.llm_model_name,
+            "prompt_template_name": llm.prompt_template_name,
+            "created_at": llm.created_at.isoformat() if llm.created_at else None,
+            "accuracy": evaluation.get("accuracy") if isinstance(evaluation, dict) else llm.accuracy,
+            "evaluation": evaluation,
+            "structured_result": structured,
+            "asr_result_id": asr_info["asr_result_id"] if asr_info else llm.asr_result_id,
+            "asr_model_id": asr_info["asr_model_id"] if asr_info else None,
+            "asr_model_name": asr_info["asr_model_name"] if asr_info else None,
+            "asr_provider": asr_info["asr_provider"] if asr_info else None,
+        }
+
     records = []
     for folder in folders:
         for p in folder.patients:
@@ -343,6 +452,8 @@ async def get_records_flat(date: str = None, db: AsyncSession = Depends(get_db))
                     for s in sorted(p.segs, key=lambda x: x.seg_index)
                 ],
                 "result": None,
+                "latest_asr": build_latest_asr(latest_asr_by_patient.get(p.id)),
+                "latest_llm": build_latest_llm(latest_llm_by_patient.get(p.id), p.result),
             })
             if p.result:
                 records[-1]["result"] = {

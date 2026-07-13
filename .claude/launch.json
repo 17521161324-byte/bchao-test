@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "frontend-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "5190", "--strict-port"],
+      "runtimeExecutable": "E:/bchao-test/frontend/start-vite.cmd",
+      "runtimeArgs": [],
       "port": 5190,
       "autoPort": false,
       "cwd": "frontend"

@@ -12,6 +12,13 @@ class ExperimentBatchCreate(BaseModel):
     remark: str = ""
     selected_dates: list[str] = Field(default_factory=list)
     selected_patient_ids: list[str] = Field(default_factory=list)
+    # 单一组合配置（新设计：一个实验只允许一个组合）
+    asr_model_id: int | None = None
+    llm_model_id: int | None = None
+    prompt_template_id: int | None = None
+    prompt_name: str = ""
+    prompt_template: str = ""
+    hotwords: list[str] = Field(default_factory=list)
 
 
 class ExperimentPatientScopeUpdate(BaseModel):
@@ -92,16 +99,18 @@ class ExperimentTaskSummary(BaseModel):
 
 
 class ExperimentMetrics(BaseModel):
-    combination_id: int
     total_tasks: int
     success_count: int
     failure_count: int
     asr_success_rate: float
     asr_empty_rate: float
     avg_asr_duration: float
-    follicle_accuracy: float
-    endometrium_accuracy: float
-    ovary_accuracy: float
+    right_follicle_accuracy: float
+    left_follicle_accuracy: float
+    endometrium_thickness_accuracy: float
+    endometrium_type_accuracy: float
+    right_ovary_accuracy: float
+    left_ovary_accuracy: float
     complete_patient_rate: float
     llm_failure_rate: float
     total_cost: float
@@ -109,6 +118,12 @@ class ExperimentMetrics(BaseModel):
 
 class ExperimentDetailOut(ExperimentBatchOut):
     combinations: list[ExperimentCombinationOut] = Field(default_factory=list)
+    # 单一组合便捷字段
+    asr_model_id: int | None = None
+    llm_model_id: int | None = None
+    prompt_name: str = ""
+    prompt_template_name: str = ""
+    hotwords: list[str] = Field(default_factory=list)
 
 
 class ExperimentListResponse(BaseModel):
@@ -122,11 +137,11 @@ class ExperimentListResponse(BaseModel):
     success_count: int
     failure_count: int
     created_at: datetime
-    # 新增字段
+    # 单一组合展示字段
     patient_count: int = 0
     field_accuracy: dict = Field(default_factory=dict)
-    asr_models: list[str] = Field(default_factory=list)
-    llm_models: list[str] = Field(default_factory=list)
-    prompt_templates: list[str] = Field(default_factory=list)
+    asr_model_name: str = ""
+    llm_model_name: str = ""
+    prompt_template_name: str = ""
 
     model_config = {"protected_namespaces": (), "from_attributes": True}

@@ -164,8 +164,8 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
             endpoint="https://api.xiaomimimo.com/v1",
             api_key="",
             model_name="mimo-v2.5",
-            is_default=True,
-            status="active",
+            is_default=False,  # 默认不启用，需配置 API Key 后手动启用
+            status="inactive",  # 未配置 Key 前设为 inactive
         )
         db.add(mimo_llm)
 

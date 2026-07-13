@@ -4,7 +4,85 @@ B 超结果解析器
 - 结果对比评估
 """
 import re
+from typing import Any, Optional
 from loguru import logger
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return round(float(value), 1)
+    except (ValueError, TypeError):
+        return None
+
+
+def normalize_follicles(follicles: any) -> list[dict]:
+    """卵泡明细归一化: 数值化、同尺寸合并、按大小降序。"""
+    if not isinstance(follicles, list):
+        return []
+
+    merged: dict[float, int] = {}
+    for item in follicles:
+        if not isinstance(item, dict):
+            continue
+        size = _to_float(item.get("size"))
+        if size is None:
+            continue
+        try:
+            count = int(item.get("count") or 1)
+        except (ValueError, TypeError):
+            count = 1
+        if count <= 0:
+            continue
+        merged[size] = merged.get(size, 0) + count
+
+    return [
+        {"size": size, "count": count}
+        for size, count in sorted(merged.items(), key=lambda x: x[0], reverse=True)
+    ]
+
+
+def _follicle_total(follicles: list[dict]) -> int:
+    return sum(int(f.get("count") or 0) for f in follicles)
+
+
+def normalize_structured_result(structured: any) -> any:
+    """
+    归一化 LLM 结构化结果:
+    - 卵泡明细统一排序/合并
+    - 当 total 与明细 count 不一致时, 以明细 count 为准
+    """
+    if not isinstance(structured, dict):
+        return structured
+
+    normalized = dict(structured)
+    notes = []
+
+    for side, label in (("right", "右侧"), ("left", "左侧")):
+        list_key = f"{side}_follicles"
+        total_key = f"{side}_follicle_total"
+        follicles = normalize_follicles(normalized.get(list_key))
+        normalized[list_key] = follicles
+
+        if follicles:
+            detail_total = _follicle_total(follicles)
+            original_total = normalized.get(total_key)
+            try:
+                original_total_int = int(original_total) if original_total is not None else None
+            except (ValueError, TypeError):
+                original_total_int = None
+            if original_total_int != detail_total:
+                notes.append(
+                    f"{label}卵泡总数与明细不一致: 原total={original_total}, 明细合计={detail_total}, 已按明细修正"
+                )
+            normalized[total_key] = detail_total
+
+    if notes:
+        old_uncertain = str(normalized.get("uncertain_text") or "").strip()
+        normalized["uncertain_text"] = "；".join([x for x in [old_uncertain, *notes] if x])
+
+    return normalized
 
 
 def parse_follicle_string(s: str) -> list[dict]:
@@ -81,6 +159,16 @@ def evaluate_field(identified: any, ground_truth: any, field_type: str = "number
         except (ValueError, TypeError):
             return {"match": False, "identified": identified, "truth": ground_truth, "diff": None}
 
+    if field_type == "follicles":
+        id_list = normalize_follicles(identified)
+        gt_list = normalize_follicles(ground_truth)
+        return {
+            "match": id_list == gt_list,
+            "identified": id_list,
+            "truth": gt_list,
+            "diff": None if id_list == gt_list else {"identified_count": _follicle_total(id_list), "truth_count": _follicle_total(gt_list)},
+        }
+
     return {"match": str(identified) == str(ground_truth),
             "identified": identified, "truth": ground_truth, "diff": None}
 
@@ -100,6 +188,8 @@ def evaluate_result(identified: dict, ground_truth: dict) -> dict:
     field_configs = [
         ("right_follicle_total", "right_follicle_total", "follicle_total", 0),
         ("left_follicle_total", "left_follicle_total", "follicle_total", 0),
+        ("right_follicles", "right_follicles", "follicles", 0),
+        ("left_follicles", "left_follicles", "follicles", 0),
         ("endometrium_thickness", "endometrium_thickness", "number", 0.5),
         ("endometrium_type", "endometrium_type", "string", 0),
         ("right_ovary_length", "right_ovary_length", "number", 2.0),

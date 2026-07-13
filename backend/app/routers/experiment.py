@@ -3,7 +3,7 @@
 """
 import json
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from typing import Optional
@@ -58,10 +58,11 @@ async def list_experiments(db: AsyncSession = Depends(get_db)):
         tasks = b.tasks or []
         m = calculate_metrics(tasks)
 
-        # 聚合模型/模板名称
-        asr_model_names = sorted(set(c.asr_model.name for c in (b.combinations or []) if c.asr_model))
-        llm_model_names = sorted(set(c.llm_model.name for c in (b.combinations or []) if c.llm_model))
-        prompt_names = sorted(set(c.prompt_name for c in (b.combinations or []) if c.prompt_name))
+        # 单一组合信息（新设计）
+        first_combo = (b.combinations or [None])[0]
+        asr_model_name = first_combo.asr_model.name if first_combo and first_combo.asr_model else ""
+        llm_model_name = first_combo.llm_model.name if first_combo and first_combo.llm_model else ""
+        prompt_template_name = first_combo.prompt_name if first_combo else ""
 
         # ASR 来源统计
         asr_reuse = sum(1 for t in tasks if t.asr_source == "reused")
@@ -86,77 +87,13 @@ async def list_experiments(db: AsyncSession = Depends(get_db)):
             "combination_count": len(b.combinations or []),
             "metrics": m,
             "field_accuracy": m.get("field_accuracy", {}),
-            "asr_models": asr_model_names,
-            "llm_models": llm_model_names,
-            "prompt_templates": prompt_names,
+            "asr_model_name": asr_model_name,
+            "llm_model_name": llm_model_name,
+            "prompt_template_name": prompt_template_name,
             "asr_reuse_count": asr_reuse,
             "asr_generated_count": asr_generated,
             "asr_failed_count": asr_failed,
             "asr_reuse_rate": asr_reuse / max(len(tasks), 1),
-        })
-    return output
-    result = await db.execute(
-        select(ExperimentBatch)
-        .options(
-            selectinload(ExperimentBatch.combinations).selectinload(ExperimentCombination.asr_model),
-            selectinload(ExperimentBatch.combinations).selectinload(ExperimentCombination.llm_model),
-            selectinload(ExperimentBatch.tasks),
-        )
-        .order_by(ExperimentBatch.created_at.desc())
-    )
-    batches = result.scalars().all()
-
-    # 手动构建响应数据，避免 schema 验证问题
-    output = []
-    for b in batches:
-        # 确保 selected_patient_ids 是列表
-        pids = b.selected_patient_ids
-        if pids is None:
-            pids = []
-        elif isinstance(pids, str):
-            try:
-                pids = json.loads(pids)
-            except:
-                pids = []
-        else:
-            try:
-                # 通过 JSON 序列化/反序列化确保是普通列表
-                pids = json.loads(json.dumps(pids))
-            except:
-                pids = []
-
-        dates = b.selected_dates
-        if dates is None:
-            dates = []
-        elif isinstance(dates, str):
-            try:
-                dates = json.loads(dates)
-            except:
-                dates = []
-        else:
-            try:
-                dates = json.loads(json.dumps(dates))
-            except:
-                dates = []
-
-        output.append({
-            "id": b.id,
-            "name": b.name,
-            "status": b.status,
-            "remark": b.remark or "",
-            "selected_dates": dates,
-            "selected_patient_ids": pids,
-            "total_tasks": b.total_tasks or 0,
-            "success_count": b.success_count or 0,
-            "failure_count": b.failure_count or 0,
-            "created_at": b.created_at.isoformat() if b.created_at else None,
-            "updated_at": b.updated_at.isoformat() if b.updated_at else None,
-            "patient_count": len(pids) if isinstance(pids, list) else 0,
-            "combination_count": len(b.combinations) if b.combinations else 0,
-            "field_accuracy": {},
-            "asr_models": sorted(set(c.asr_model.name for c in b.combinations if c.asr_model)),
-            "llm_models": sorted(set(c.llm_model.name for c in b.combinations if c.llm_model)),
-            "prompt_templates": sorted(set(c.prompt_name for c in b.combinations if c.prompt_name)),
         })
     return output
 
@@ -166,7 +103,11 @@ async def create_experiment(
     data: ExperimentBatchCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """创建实验批次"""
+    """创建实验批次（新设计：单组合，立即创建 pending tasks）"""
+    # 校验：如果配置了 LLM，必须有提示词
+    if data.llm_model_id and not data.prompt_template and not data.prompt_template_id:
+        raise HTTPException(status_code=400, detail="使用 LLM 时必须配置提示词模板或提示词内容")
+
     batch = ExperimentBatch(
         name=data.name,
         description=data.description,
@@ -176,6 +117,62 @@ async def create_experiment(
         status=BatchStatus.PENDING.value,
     )
     db.add(batch)
+    await db.flush()  # 获取 batch.id
+
+    # 解析提示词（优先使用传入内容，否则从模板查询）
+    prompt_name = data.prompt_name or ""
+    prompt_template = data.prompt_template or ""
+
+    if data.prompt_template_id and not prompt_template:
+        from app.models import PromptTemplate
+        tmpl = await db.get(PromptTemplate, data.prompt_template_id)
+        if tmpl:
+            prompt_name = tmpl.name
+            prompt_template = tmpl.content
+
+    # 最终校验：如果配置了 LLM，提示词内容必须非空
+    if data.llm_model_id and not prompt_template:
+        raise HTTPException(
+            status_code=400,
+            detail="使用 LLM 时必须配置有效的提示词模板或提示词内容"
+        )
+
+    # 创建单条 combination 记录
+    if data.asr_model_id:
+        combo = ExperimentCombination(
+            batch_id=batch.id,
+            asr_model_id=data.asr_model_id,
+            llm_model_id=data.llm_model_id,
+            prompt_name=prompt_name,
+            prompt_template=prompt_template,
+            hotwords=data.hotwords or [],
+            enabled=True,
+        )
+        db.add(combo)
+        await db.flush()
+
+        # 立即创建 pending tasks（根据 selected_dates + selected_patient_ids）
+        if batch.selected_dates and batch.selected_patient_ids:
+            patient_records = await db.execute(
+                select(PatientRecord)
+                .join(DateFolder)
+                .where(
+                    DateFolder.date.in_(batch.selected_dates),
+                    PatientRecord.record_id.in_(batch.selected_patient_ids),
+                )
+            )
+            patients = patient_records.scalars().all()
+            for p in patients:
+                task = ExperimentTask(
+                    batch_id=batch.id,
+                    combination_id=combo.id,
+                    patient_id=p.id,
+                    stage=TaskStage.ASR.value,
+                    status=TaskStatus.PENDING.value,
+                )
+                db.add(task)
+            batch.total_tasks = len(patients)
+
     await db.commit()
     await db.refresh(batch)
     return batch
@@ -207,6 +204,7 @@ async def get_experiment(
     if not batch:
         raise HTTPException(status_code=404, detail="实验不存在")
     # 手动构建响应以确保 JSON 字段正确序列化
+    first_combo = batch.combinations[0] if batch.combinations else None
     return {
         "id": batch.id,
         "name": batch.name,
@@ -236,32 +234,32 @@ async def get_experiment(
             }
             for c in batch.combinations
         ],
+        # 单一组合便捷字段
+        "asr_model_id": first_combo.asr_model_id if first_combo else None,
+        "llm_model_id": first_combo.llm_model_id if first_combo else None,
+        "prompt_name": first_combo.prompt_name if first_combo else "",
+        "prompt_template_name": first_combo.prompt_name if first_combo else "",
+        "hotwords": first_combo.hotwords if first_combo else [],
     }
 
 
-@router.post("/{batch_id}/combinations", response_model=ExperimentCombinationOut)
+@router.post("/{batch_id}/combinations")
 async def add_combination(
     batch_id: int,
     data: ExperimentCombinationCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """添加实验组合"""
-    batch = await db.get(ExperimentBatch, batch_id)
-    if not batch:
-        raise HTTPException(status_code=404, detail="实验不存在")
-
-    combo = ExperimentCombination(
-        batch_id=batch_id,
-        asr_model_id=data.asr_model_id,
-        llm_model_id=data.llm_model_id,
-        prompt_name=data.prompt_name,
-        prompt_template=data.prompt_template,
-        hotwords=data.hotwords,
+    """添加实验组合（已禁用：单组合设计）"""
+    # 检查是否已有组合
+    existing = await db.execute(
+        select(ExperimentCombination).where(ExperimentCombination.batch_id == batch_id)
     )
-    db.add(combo)
-    await db.commit()
-    await db.refresh(combo)
-    return combo
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail="当前版本一个实验只允许一个组合，如需比较多个组合请新建实验。"
+        )
+    raise HTTPException(status_code=400, detail="当前版本不支持添加组合，请在创建实验时配置。")
 
 
 @router.put("/{batch_id}/combinations/{combo_id}", response_model=ExperimentCombinationOut)
@@ -364,7 +362,7 @@ async def start_experiment(
     data: ExperimentControlAction = ExperimentControlAction(),
     db: AsyncSession = Depends(get_db),
 ):
-    """启动实验"""
+    """启动实验（单组合，快速返回）"""
     result = await db.execute(
         select(ExperimentBatch)
         .where(ExperimentBatch.id == batch_id)
@@ -373,43 +371,68 @@ async def start_experiment(
     if not batch:
         raise HTTPException(status_code=404, detail="实验不存在")
 
-    enabled_combos = await db.execute(
+    # 检查是否已有组合
+    combo_result = await db.execute(
         select(ExperimentCombination).where(
             ExperimentCombination.batch_id == batch_id,
             ExperimentCombination.enabled == True,
         )
     )
-    combos = enabled_combos.scalars().all()
-    if not combos:
-        raise HTTPException(status_code=400, detail="没有启用的实验组合")
+    combo = combo_result.scalar_one_or_none()
+    if not combo:
+        raise HTTPException(status_code=400, detail="没有启用的实验组合，请先配置 ASR/LLM/提示词")
 
-    # Only include patients from selected_dates
-    patient_records = await db.execute(
-        select(PatientRecord)
-        .join(DateFolder)
-        .where(
-            DateFolder.date.in_(batch.selected_dates),
-            PatientRecord.record_id.in_(batch.selected_patient_ids),
-        )
+    # 检查任务状态
+    task_stats = await db.execute(
+        select(ExperimentTask.status, func.count(ExperimentTask.id))
+        .where(ExperimentTask.batch_id == batch_id)
+        .group_by(ExperimentTask.status)
     )
-    patients = patient_records.scalars().all()
-    if not patients:
-        raise HTTPException(status_code=400, detail="所选日期/患者组合无匹配数据")
+    counts = {row[0]: row[1] for row in task_stats.all()}
+    total = sum(counts.values())
+    pending = counts.get("pending", 0)
+    running = counts.get("running", 0)
+    success = counts.get("success", 0)
+    failed = counts.get("failed", 0)
 
-    patient_ids = [p.id for p in patients]
+    # 如果没有任务，尝试创建
+    if total == 0 and batch.selected_dates and batch.selected_patient_ids:
+        patient_records = await db.execute(
+            select(PatientRecord)
+            .join(DateFolder)
+            .where(
+                DateFolder.date.in_(batch.selected_dates),
+                PatientRecord.record_id.in_(batch.selected_patient_ids),
+            )
+        )
+        patients = patient_records.scalars().all()
+        for p in patients:
+            task = ExperimentTask(
+                batch_id=batch.id,
+                combination_id=combo.id,
+                patient_id=p.id,
+                stage=TaskStage.ASR.value,
+                status=TaskStatus.PENDING.value,
+            )
+            db.add(task)
+        pending = len(patients)
+        batch.total_tasks = pending
 
-    # Generate tasks
-    from app.services.experiment_planner import plan_tasks
-    total_tasks = 0
-    for combo in combos:
-        tasks = await plan_tasks(db, batch.id, combo.id, patient_ids)
-        total_tasks += len(tasks)
+    # 如果所有任务已完成，直接设置终态
+    if pending == 0 and running == 0:
+        if failed == 0 and success > 0:
+            batch.status = BatchStatus.COMPLETED.value
+        elif failed > 0:
+            batch.status = BatchStatus.PARTIAL.value
+        else:
+            batch.status = BatchStatus.PENDING.value
+        await db.commit()
+        return {"batch_id": batch_id, "total_tasks": batch.total_tasks or total, "status": batch.status}
 
-    batch.total_tasks = total_tasks
     batch.status = BatchStatus.RUNNING.value
     await db.commit()
 
-    return {"batch_id": batch_id, "total_tasks": total_tasks, "status": "running"}
+    return {"batch_id": batch_id, "total_tasks": batch.total_tasks or total, "status": "running"}
 
 
 @router.get("/{batch_id}/progress")
@@ -632,3 +655,204 @@ async def get_results(batch_id: int, db: AsyncSession = Depends(get_db)):
         select(ExperimentTask).where(ExperimentTask.batch_id == batch_id)
     )
     return result.scalars().all()
+
+
+@router.get("/{batch_id}/export")
+async def export_experiment(batch_id: int, db: AsyncSession = Depends(get_db)):
+    """导出实验全部任务结果为 Excel"""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from fastapi.responses import Response
+    from app.models import BUltraResult, PromptTemplate, PatientAsrResult, PatientLlmResult
+
+    batch = await db.get(ExperimentBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="实验不存在")
+
+    # 获取组合信息
+    combo = await db.execute(
+        select(ExperimentCombination).where(ExperimentCombination.batch_id == batch_id)
+    )
+    combination = combo.scalar_one_or_none()
+
+    # 查询任务
+    tasks_result = await db.execute(
+        select(ExperimentTask)
+        .options(
+            selectinload(ExperimentTask.patient).selectinload(PatientRecord.date_folder),
+            selectinload(ExperimentTask.patient).selectinload(PatientRecord.result),
+            selectinload(ExperimentTask.combination).selectinload(ExperimentCombination.asr_model),
+            selectinload(ExperimentTask.combination).selectinload(ExperimentCombination.llm_model),
+        )
+        .where(ExperimentTask.batch_id == batch_id)
+        .order_by(ExperimentTask.id)
+    )
+    tasks = tasks_result.scalars().all()
+    if not tasks:
+        raise HTTPException(status_code=404, detail="实验暂无任务")
+
+    # 准备辅助数据
+    patient_ids = [t.patient_id for t in tasks if t.patient_id]
+    gt_results = await db.execute(
+        select(BUltraResult).where(BUltraResult.patient_id.in_(patient_ids))
+    )
+    gt_map = {g.patient_id: g for g in gt_results.scalars().all()}
+
+    asr_ids = [t.asr_result_id for t in tasks if t.asr_result_id]
+    asr_results = await db.execute(
+        select(PatientAsrResult).where(PatientAsrResult.id.in_(asr_ids))
+    )
+    asr_map = {a.id: a for a in asr_results.scalars().all()}
+
+    llm_ids = [t.llm_result_id for t in tasks if t.llm_result_id]
+    llm_results = await db.execute(
+        select(PatientLlmResult).where(PatientLlmResult.id.in_(llm_ids))
+    )
+    llm_map = {l.id: l for l in llm_results.scalars().all()}
+
+    # 导出
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "实验结果"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1890FF", end_color="1890FF", fill_type="solid")
+    header_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    headers = [
+        "实验ID", "实验名称", "组合ID", "任务ID", "病历号", "检查日期", "状态", "准确率",
+        "错误信息", "执行耗时(s)",
+        "ASR来源", "ASR模型名称", "ASR结果ID", "LLM模型名称",
+        "提示词模板名称", "提示词长度", "提示词内容", "ASR转写文本",
+        "LLM_右侧卵泡总数", "LLM_右侧卵泡明细", "LLM_左侧卵泡总数", "LLM_左侧卵泡明细",
+        "LLM_内膜厚度", "LLM_内膜类型",
+        "LLM_右卵巢长", "LLM_右卵巢宽", "LLM_左卵巢长", "LLM_左卵巢宽",
+        "LLM_备注", "LLM_总结",
+        "真实_右侧卵泡总数", "真实_右侧卵泡明细", "真实_左侧卵泡总数", "真实_左侧卵泡明细",
+        "真实_内膜厚度", "真实_内膜类型",
+        "真实_右卵巢长", "真实_右卵巢宽", "真实_左卵巢长", "真实_左卵巢宽", "真实_备注",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_wrap
+        cell.border = thin_border
+
+    def follicles_to_str(follicles: any) -> str:
+        if not follicles or not isinstance(follicles, list):
+            return "-"
+        return "; ".join(f"{f.get('size', '?')}x{f.get('count', '?')}" for f in follicles)
+
+    # 获取提示词模板信息
+    prompt_content = ""
+    prompt_name = ""
+    if combination:
+        prompt_name = combination.prompt_name or ""
+        prompt_content = combination.prompt_template or ""
+
+    batch_name = batch.name or f"实验{batch_id}"
+
+    for row_idx, t in enumerate(tasks, 2):
+        patient = t.patient
+        record_id = patient.record_id if patient else f"record_{t.patient_id}"
+        date_str = patient.date_folder.date if patient and patient.date_folder else ""
+
+        # ASR
+        asr_record = asr_map.get(t.asr_result_id) if t.asr_result_id else None
+        asr_model_name = ""
+        asr_transcript = ""
+        if asr_record:
+            asr_model_name = asr_record.asr_model_name or t.asr_model_name or ""
+            asr_transcript = asr_record.full_transcript or t.full_transcript or ""
+        else:
+            asr_model_name = t.asr_model_name or ""
+            asr_transcript = t.full_transcript or ""
+        asr_source = t.asr_source or "-"
+
+        # LLM
+        llm_record = llm_map.get(t.llm_result_id) if t.llm_result_id else None
+        structured = t.structured_result or (llm_record.structured_result if llm_record else None) or {}
+        llm_model_name = t.llm_model_name or (llm_record.llm_model_name if llm_record else "") or ""
+        llm_summary = t.summary_text or (llm_record.summary_text if llm_record else "") or ""
+        llm_raw = t.llm_raw_output or (llm_record.raw_output if llm_record else "") or ""
+
+        # Ground truth
+        gt = gt_map.get(t.patient_id)
+
+        row_data = [
+            batch_id, batch_name, t.combination_id or "", t.id,
+            record_id, date_str, t.status or "pending",
+            t.accuracy if t.accuracy is not None else "",
+            t.error_message or "",
+            t.total_duration or "",
+            asr_source, asr_model_name, t.asr_result_id or "",
+            llm_model_name,
+            prompt_name, len(prompt_content) if prompt_content else 0, prompt_content,
+            asr_transcript,
+            structured.get("right_follicle_total", ""),
+            follicles_to_str(structured.get("right_follicles") if isinstance(structured, dict) else None),
+            structured.get("left_follicle_total", ""),
+            follicles_to_str(structured.get("left_follicles") if isinstance(structured, dict) else None),
+            structured.get("endometrium_thickness", ""),
+            structured.get("endometrium_type", ""),
+            structured.get("right_ovary_length", ""),
+            structured.get("right_ovary_width", ""),
+            structured.get("left_ovary_length", ""),
+            structured.get("left_ovary_width", ""),
+            structured.get("remark", ""),
+            llm_summary,
+            gt.right_follicle_total if gt else "",
+            follicles_to_str(gt.right_follicles if gt else None),
+            gt.left_follicle_total if gt else "",
+            follicles_to_str(gt.left_follicles if gt else None),
+            gt.endometrium_thickness if gt else "",
+            gt.endometrium_type if gt else "",
+            gt.right_ovary_length if gt else "",
+            gt.right_ovary_width if gt else "",
+            gt.left_ovary_length if gt else "",
+            gt.left_ovary_width if gt else "",
+            gt.remark if gt else "",
+        ]
+
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    col_widths = [
+        8, 15, 8, 8, 12, 10, 10, 8, 30, 10,
+        10, 15, 10, 15,
+        15, 10, 50, 50,
+        12, 25, 12, 25, 10, 10, 10, 10, 10, 10,
+        30, 40,
+        12, 25, 12, 25, 10, 10, 10, 10, 10, 10, 30,
+    ]
+    for idx, w in enumerate(col_widths, 1):
+        if idx <= 26:
+            col_letter = chr(64 + idx)
+        elif idx <= 52:
+            col_letter = "A" + chr(64 + idx - 26)
+        else:
+            col_letter = "B" + chr(64 + idx - 52)
+        ws.column_dimensions[col_letter].width = w
+
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = batch_name.encode("ascii", "ignore").decode() or f"batch_{batch_id}"
+    filename = f"Experiment_{batch_id}_{safe_name}_export.xlsx"
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
