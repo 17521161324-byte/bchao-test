@@ -30,6 +30,12 @@ export const audioApi = {
   getStatus: () => client.get('/audio/status'),
   verify: (date?: string) => client.get('/audio/verify', { params: date ? { date } : {} }),
   deletePatient: (patientId: number) => client.delete(`/audio/patient/${patientId}`),
+  updatePatientNote: (patientId: number, note: string) => client.put(`/audio/patient/${patientId}/note`, { note }),
+  exportLatestLlmResults: (patientIds: number[]) =>
+    client.post('/audio/records/export-latest', { patient_ids: patientIds }, {
+      responseType: 'blob',
+      timeout: 300000,
+    }),
   scan: () => client.post('/audio/scan'),
   getFileUrl: (path: string) => `${API_BASE}/audio/file?path=${encodeURIComponent(path)}`,
 }
@@ -201,6 +207,9 @@ export const patientApi = {
   getLlmCurrent: (patientId: number) => client.get(`/patients/${patientId}/llm-current`),
   setLlmCurrent: (patientId: number, resultId: number) =>
     client.put(`/patients/${patientId}/llm-results/${resultId}/current`),
+  // 字段人工标记
+  saveFieldReviewMark: (patientId: number, data: any) => client.put(`/patients/${patientId}/field-review-marks`, data),
+  clearFieldReviewMark: (patientId: number, fieldGroup: string) => client.delete(`/patients/${patientId}/field-review-marks`, { params: { field_group: fieldGroup } }),
   exportLlmResults: (patientId: number) => `${API_BASE}/patients/${patientId}/llm-results/export`,
   clearLlmResults: (patientId: number) => client.delete(`/patients/${patientId}/llm-results`),
 }

@@ -15,6 +15,7 @@ export interface PatientRecord {
   record_id: string
   date_folder_id: number
   timestamp_folder: string
+  note?: string
   segs: AudioSeg[]
   has_result: boolean
 }
@@ -135,6 +136,67 @@ export interface PatientExamination {
   timestamp_folder: string
   segs: AudioSeg[]
   result: BUltraResult | null
+  has_audio?: boolean
+  has_result?: boolean
+  latest_asr?: {
+    id: number
+    status: string
+    asr_model_id?: number
+    asr_model_name?: string
+    provider?: string
+    created_at?: string
+    is_current?: boolean
+  } | null
+  latest_llm?: {
+    id: number
+    status: string
+    llm_model_name?: string
+    prompt_template_name?: string
+    created_at?: string
+    asr_result_id?: number
+    asr_model_id?: number
+    asr_model_name?: string
+    asr_provider?: string
+    asr_status?: string
+    asr_created_at?: string
+    accuracy?: number
+    accuracy_without_remark?: number
+    accuracy_with_remark?: number
+    evaluation?: {
+      fields?: Record<string, {
+        match?: boolean
+        identified?: any
+        truth?: any
+        diff?: any
+      }>
+      accuracy?: number
+    }
+    evaluation_with_remark?: {
+      fields?: Record<string, {
+        match?: boolean
+        identified?: any
+        truth?: any
+        diff?: any
+      }>
+      accuracy?: number
+    }
+    structured_result?: any
+    ground_truth?: any
+    field_review_marks?: FieldReviewMark[]
+  } | null
+  field_review_marks?: FieldReviewMark[]
+}
+
+export interface FieldReviewMark {
+  id: number
+  patient_id: number
+  field_group: string
+  field_key: string | null
+  mark_type: 'exclude' | 'mismatch_note'
+  reason: string | null
+  note: string | null
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface PatientGroup {

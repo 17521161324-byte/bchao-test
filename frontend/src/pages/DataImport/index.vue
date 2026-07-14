@@ -2,54 +2,54 @@
   <div class="page-container">
     <!-- 筛选区域 -->
     <a-card style="margin-bottom: 16px">
-      <a-row :gutter="16" align="middle">
-        <a-col :span="16">
-          <a-space>
+      <div class="filter-row">
+        <div class="batch-filter">
+          <a-space wrap>
             <span style="color: #666">批次：</span>
             <a-checkable-tag :checked="selectedBatch === null" @click="selectBatch(null)" style="cursor: pointer">全部</a-checkable-tag>
             <a-checkable-tag v-for="batch in batches" :key="batch.date" :checked="selectedBatch === batch.date" @click="selectBatch(batch.date)" style="cursor: pointer">
               {{ formatDate(batch.date) }} ({{ batch.patient_count }}人)
             </a-checkable-tag>
           </a-space>
-        </a-col>
-        <a-col :span="8">
-          <a-input-search v-model:value="searchText" placeholder="搜索病历号" allow-clear />
-        </a-col>
-      </a-row>
+        </div>
+        <a-input-search v-model:value="searchText" class="record-search" placeholder="搜索病历号" allow-clear />
+      </div>
     </a-card>
 
     <!-- 批量执行区域 -->
     <a-card size="small" title="批量执行" style="margin-bottom: 16px">
-      <a-row :gutter="12" align="middle">
-        <a-col :span="5">
+      <div class="batch-action-row">
+        <div class="batch-select">
           <a-select v-model:value="batchAsrModelId" placeholder="选择 ASR 模型" allow-clear style="width: 100%">
             <a-select-option v-for="m in asrModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
           </a-select>
-        </a-col>
-        <a-col :span="5">
+        </div>
+        <div class="batch-select">
           <a-select v-model:value="batchTemplateId" placeholder="选择提示词模板" allow-clear style="width: 100%" @change="onBatchTemplateChange">
             <a-select-option v-for="t in promptTemplates" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
           </a-select>
-        </a-col>
-        <a-col :span="5">
+        </div>
+        <div class="batch-select">
           <a-select v-model:value="batchLlmModelId" placeholder="选择 LLM 模型" allow-clear style="width: 100%">
             <a-select-option v-for="m in llmModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
           </a-select>
-        </a-col>
-        <a-col :span="9">
+        </div>
+        <div class="batch-buttons">
           <a-space wrap>
             <a-button type="primary" :disabled="!batchAsrModelId || batchRunning" :loading="batchRunning && batchMode === 'asr'" @click="runBatch('asr')">批量 ASR</a-button>
             <a-button :disabled="!batchLlmModelId || !batchTemplateId || batchRunning" :loading="batchRunning && batchMode === 'llm'" @click="runBatch('llm')">批量 LLM</a-button>
             <a-button type="primary" ghost :disabled="!batchAsrModelId || !batchLlmModelId || !batchTemplateId || batchRunning" :loading="batchRunning && batchMode === 'both'" @click="runBatch('both')">ASR + LLM</a-button>
             <span style="font-size: 12px; color: #666">作用范围：当前筛选 {{ filteredRecords.length }} 条</span>
           </a-space>
-        </a-col>
-      </a-row>
+        </div>
+      </div>
       <div v-if="batchRunning || batchFailures.length" style="margin-top: 12px">
         <div v-if="batchRunning" style="color: #666; font-size: 12px; margin-bottom: 8px">
           执行中：{{ batchProgress.done }}/{{ batchProgress.total }}
           成功 {{ batchProgress.success }} 条，失败 {{ batchProgress.failed }} 条
           <span v-if="batchProgress.current">，当前：{{ batchProgress.current }}</span>
+          <span v-if="batchProgress.stage">，阶段：{{ batchProgress.stage }}</span>
+          <span v-if="batchProgress.asrTotal">，ASR 分段：{{ batchProgress.asrDone }}/{{ batchProgress.asrTotal }}</span>
         </div>
         <div v-if="batchFailures.length" style="border: 1px solid #ffccc7; border-radius: 6px; background: #fff2f0; padding: 8px 12px; margin-top: 8px">
           <div style="font-weight: 600; color: #ff4d4f; font-size: 12px; margin-bottom: 6px">
@@ -67,68 +67,67 @@
 
     <!-- 数据表格 -->
     <a-card>
-      <a-table :data-source="filteredRecords" :loading="loadingTree" :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }" size="small" :custom-row="onRowClick" row-key="id" :scroll="{ x: 'max-content' }">
-        <a-table-column title="病历号" data-index="record_id" :width="120" />
-        <a-table-column title="日期" data-index="date" :width="120">
-          <template #default="{ record }">{{ formatDate(record.date) }}</template>
-        </a-table-column>
-        <a-table-column title="录音" :width="100">
-          <template #default="{ record }">
+      <div class="table-toolbar">
+        <a-space wrap>
+          <span class="toolbar-label">准确率口径：</span>
+          <a-radio-group v-model:value="accuracyMode" size="small" button-style="solid">
+            <a-radio-button value="without_remark">不含备注</a-radio-button>
+            <a-radio-button value="with_remark">含备注</a-radio-button>
+          </a-radio-group>
+          <a-button size="small" type="primary" ghost :disabled="!filteredRecords.length" @click="exportLatestLlmForFilteredRecords">
+            导出当前最新结果
+          </a-button>
+          <span style="font-size: 12px; color: #666">导出范围：当前筛选 {{ filteredRecords.length }} 条</span>
+        </a-space>
+      </div>
+      <div class="field-stats-row">
+        <span class="toolbar-label">字段成功率：</span>
+        <a-tag v-for="stat in fieldMatchStats" :key="stat.key" :color="stat.rate >= 0.9 ? 'green' : stat.rate >= 0.7 ? 'orange' : 'red'">
+          {{ stat.label }} {{ stat.matched }}/{{ stat.total }} · {{ stat.total ? (stat.rate * 100).toFixed(1) : '-' }}%
+        </a-tag>
+      </div>
+      <a-table :data-source="filteredRecords" :loading="loadingTree" :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }" size="small" :custom-row="onRowClick" row-key="id" :columns="resizableColumns">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.dataIndex === 'record_id'">{{ record.record_id }}</template>
+          <template v-else-if="column.dataIndex === 'date'">{{ formatDate(record.date) }}</template>
+          <template v-else-if="column.dataIndex === 'note'">
+            <a-tooltip :title="record.note || '-'">
+              <span class="table-ellipsis">{{ record.note || '-' }}</span>
+            </a-tooltip>
+          </template>
+          <template v-else-if="column.dataIndex === 'has_audio'">
             <a-tag v-if="record.has_audio" color="green">有 ({{ record.segs?.length || 0 }}段)</a-tag>
             <a-tag v-else color="red">无</a-tag>
           </template>
-        </a-table-column>
-        <a-table-column title="结果" :width="100">
-          <template #default="{ record }">
+          <template v-else-if="column.dataIndex === 'has_result'">
             <a-tag v-if="record.has_result" color="green">有</a-tag>
             <a-tag v-else color="default">无</a-tag>
           </template>
-        </a-table-column>
-        <a-table-column title="ASR模型" :width="150">
-          <template #default="{ record }">
+          <template v-else-if="column.dataIndex === 'asr_status'">
             <a-tag :color="getListAsrStatusColor(record)">{{ getListAsrStatusText(record) }}</a-tag>
           </template>
-        </a-table-column>
-        <a-table-column title="LLM状态" :width="150">
-          <template #default="{ record }">
-            <a-tag :color="getLlmStatusColor(record)">{{ getLlmStatusText(record) }}</a-tag>
-            <div v-if="record.latest_llm" style="font-size: 12px; color: #666; margin-top: 4px">
-              <span style="color: #1890ff">{{ record.latest_llm.asr_model_name || record.latest_llm.asr_source || '-' }}</span>
-              <span style="margin: 0 2px">+</span>
+          <template v-else-if="column.dataIndex === 'llm_status'">
+            <a-tag v-if="!record.latest_llm || record.latest_llm.status !== 'success'" :color="getLlmStatusColor(record)">{{ getLlmStatusText(record) }}</a-tag>
+            <div v-if="record.latest_llm" class="llm-model-info">
+              <span class="llm-model-asr">{{ record.latest_llm.asr_model_name || record.latest_llm.asr_provider || '-' }}</span>
+              <span class="llm-model-sep">+</span>
               <span>{{ record.latest_llm.llm_model_name || '-' }}</span>
-              <span v-if="record.latest_llm.prompt_template_name"> / {{ record.latest_llm.prompt_template_name }}</span>
+              <span v-if="record.latest_llm.prompt_template_name" class="llm-model-prompt"> / {{ record.latest_llm.prompt_template_name }}</span>
             </div>
-            <div v-else-if="record.latest_asr" style="font-size: 12px; color: #999; margin-top: 4px">
+            <div v-else-if="record.latest_asr" class="llm-model-info">
               ASR: {{ record.latest_asr.asr_model_name || '-' }}
             </div>
           </template>
-        </a-table-column>
-        <a-table-column title="准确率" :width="90" align="center">
-          <template #default="{ record }">{{ formatAccuracy(record.latest_llm?.accuracy) }}</template>
-        </a-table-column>
-        <a-table-column title="右卵泡" :width="80" align="center">
-          <template #default="{ record }"><a-tag :color="matchTagColor(getMatchStatus(record, 'right_follicle'))">{{ matchTagText(getMatchStatus(record, 'right_follicle')) }}</a-tag></template>
-        </a-table-column>
-        <a-table-column title="左卵泡" :width="80" align="center">
-          <template #default="{ record }"><a-tag :color="matchTagColor(getMatchStatus(record, 'left_follicle'))">{{ matchTagText(getMatchStatus(record, 'left_follicle')) }}</a-tag></template>
-        </a-table-column>
-        <a-table-column title="内膜厚度" :width="90" align="center">
-          <template #default="{ record }"><a-tag :color="matchTagColor(getMatchStatus(record, 'endometrium_thickness'))">{{ matchTagText(getMatchStatus(record, 'endometrium_thickness')) }}</a-tag></template>
-        </a-table-column>
-        <a-table-column title="内膜类型" :width="90" align="center">
-          <template #default="{ record }"><a-tag :color="matchTagColor(getMatchStatus(record, 'endometrium_type'))">{{ matchTagText(getMatchStatus(record, 'endometrium_type')) }}</a-tag></template>
-        </a-table-column>
-        <a-table-column title="右卵巢" :width="80" align="center">
-          <template #default="{ record }"><a-tag :color="matchTagColor(getMatchStatus(record, 'right_ovary'))">{{ matchTagText(getMatchStatus(record, 'right_ovary')) }}</a-tag></template>
-        </a-table-column>
-        <a-table-column title="左卵巢" :width="80" align="center">
-          <template #default="{ record }"><a-tag :color="matchTagColor(getMatchStatus(record, 'left_ovary'))">{{ matchTagText(getMatchStatus(record, 'left_ovary')) }}</a-tag></template>
-        </a-table-column>
-        <a-table-column title="操作" :width="100">
-          <template #default="{ record }">
+          <template v-else-if="column.dataIndex === 'accuracy'">{{ formatAccuracy(getAccuracyValue(record)) }}</template>
+          <template v-else-if="getFieldColumn(column.dataIndex)">
+            <a-tag :color="matchTagColor(getMatchStatus(record, getFieldColumn(column.dataIndex)?.group || ''))" class="match-tag-sm clickable" @click.stop="openFieldCompare(record, getFieldColumn(column.dataIndex)?.group || '')" :title="`${getFieldColumn(column.dataIndex)?.label}: 点击查看专项对比`">
+              {{ matchTagText(getMatchStatus(record, getFieldColumn(column.dataIndex)?.group || '')) }}
+            </a-tag>
+          </template>
+          <template v-else-if="column.dataIndex === 'action'">
             <a-button size="small" type="link" @click.stop="openDetail(record)">详情</a-button>
           </template>
-        </a-table-column>
+        </template>
       </a-table>
     </a-card>
 
@@ -144,7 +143,25 @@
             <a-tag v-if="selectedRecord.result" color="green">有</a-tag>
             <a-tag v-else color="default">无</a-tag>
           </a-descriptions-item>
+          <a-descriptions-item label="最新ASR">{{ selectedAsrResult?.model_name || selectedAsrResult?.asr_model_name || selectedRecord.latest_asr?.asr_model_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="最新LLM">{{ selectedRecord.latest_llm?.llm_model_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="提示词">{{ selectedRecord.latest_llm?.prompt_template_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="最新准确率">{{ formatAccuracy(getAccuracyValue(selectedRecord)) }}</a-descriptions-item>
         </a-descriptions>
+
+        <a-card size="small" style="margin-bottom: 16px">
+          <template #title><span style="font-size: 12px">检查备注 / 人工标注</span></template>
+          <a-space direction="vertical" style="width: 100%">
+            <a-textarea
+              v-model:value="recordNoteDraft"
+              :rows="2"
+              placeholder="可记录该检查的特殊情况、错误原因、人工判断等；不参与真实 B 超结果和准确率计算"
+            />
+            <div style="text-align: right">
+              <a-button size="small" type="primary" :loading="recordNoteSaving" @click="saveRecordNote">保存备注</a-button>
+            </div>
+          </a-space>
+        </a-card>
 
         <!-- ASR + LLM 并行双列布局 -->
         <a-row :gutter="16" style="margin-bottom: 16px">
@@ -389,13 +406,17 @@
                     </span>
                   </a-descriptions-item>
                   <a-descriptions-item label="右卵巢">
-                    {{ llmResult.structured?.right_ovary_length && llmResult.structured?.right_ovary_width ? `${llmResult.structured.right_ovary_length} × ${llmResult.structured.right_ovary_width} mm` : '-' }}
+                    <span :style="{ color: detailGroupTextColor('right_ovary') }">
+                      {{ llmResult.structured?.right_ovary_length && llmResult.structured?.right_ovary_width ? `${llmResult.structured.right_ovary_length} × ${llmResult.structured.right_ovary_width} mm` : '-' }}
+                    </span>
                   </a-descriptions-item>
                   <a-descriptions-item label="左卵巢">
-                    {{ llmResult.structured?.left_ovary_length && llmResult.structured?.left_ovary_width ? `${llmResult.structured.left_ovary_length} × ${llmResult.structured.left_ovary_width} mm` : '-' }}
+                    <span :style="{ color: detailGroupTextColor('left_ovary') }">
+                      {{ llmResult.structured?.left_ovary_length && llmResult.structured?.left_ovary_width ? `${llmResult.structured.left_ovary_length} × ${llmResult.structured.left_ovary_width} mm` : '-' }}
+                    </span>
                   </a-descriptions-item>
                   <a-descriptions-item label="备注" :span="2">
-                    {{ llmResult.structured?.remark || '-' }}
+                    <div class="remark-text">{{ llmResult.structured?.remark || '-' }}</div>
                   </a-descriptions-item>
                 </a-descriptions>
               </div>
@@ -448,7 +469,9 @@
                 <a-descriptions-item label="左卵巢">
                   {{ selectedRecord.result.left_ovary_length && selectedRecord.result.left_ovary_width ? `${selectedRecord.result.left_ovary_length} × ${selectedRecord.result.left_ovary_width} mm` : '-' }}
                 </a-descriptions-item>
-                <a-descriptions-item label="备注" :span="2" v-if="selectedRecord.result.remark">{{ selectedRecord.result.remark }}</a-descriptions-item>
+                <a-descriptions-item label="备注" :span="2">
+                  <div class="remark-text">{{ selectedRecord.result.remark || '-' }}</div>
+                </a-descriptions-item>
               </a-descriptions>
             </a-card>
             <a-card v-else size="small" title="B 超检查结果" style="margin-bottom: 16px">
@@ -473,8 +496,16 @@
     >
       <a-form layout="vertical" size="small">
         <a-row :gutter="12">
-          <a-col :span="12"><a-form-item label="右侧卵泡总数"><a-input-number v-model:value="bUltraForm.right_follicle_total" style="width: 100%" placeholder="自动求和" /></a-form-item></a-col>
-          <a-col :span="12"><a-form-item label="左侧卵泡总数"><a-input-number v-model:value="bUltraForm.left_follicle_total" style="width: 100%" placeholder="自动求和" /></a-form-item></a-col>
+          <a-col :span="12">
+            <a-form-item label="右侧卵泡总数">
+              <a-input-number v-model:value="bUltraForm.right_follicle_total" style="width: 100%" placeholder="自动求和" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="左侧卵泡总数">
+              <a-input-number v-model:value="bUltraForm.left_follicle_total" style="width: 100%" placeholder="自动求和" />
+            </a-form-item>
+          </a-col>
         </a-row>
         <a-form-item label="右侧卵泡明细"><a-textarea v-model:value="bUltraForm.right_follicles_raw" :rows="3" placeholder="10x2&#10;12×1" /></a-form-item>
         <a-form-item label="左侧卵泡明细"><a-textarea v-model:value="bUltraForm.left_follicles_raw" :rows="3" /></a-form-item>
@@ -626,6 +657,103 @@
         当前历史数: {{ llmHistory.length }} 条
       </p>
     </a-modal>
+
+    <!-- 字段专项对比弹窗 -->
+    <a-modal
+      v-model:open="compareModalOpen"
+      :title="`${compareModalRecord?.record_id || ''} - ${compareModalGroupTitle}`"
+      width="700px"
+      :footer="null"
+      @cancel="compareModalOpen = false"
+      destroy-on-close
+    >
+      <template v-if="compareModalRecord">
+        <!-- 顶部基础信息 -->
+        <a-descriptions :column="2" bordered size="small" style="margin-bottom: 12px">
+          <a-descriptions-item label="病历号">{{ compareModalRecord.record_id }}</a-descriptions-item>
+          <a-descriptions-item label="日期">{{ formatDate(compareModalRecord.date) }}</a-descriptions-item>
+          <a-descriptions-item label="准确率">{{ formatAccuracy(getAccuracyValue(compareModalRecord)) }}</a-descriptions-item>
+          <a-descriptions-item label="ASR模型">{{ compareModalRecord.latest_llm?.asr_model_name || compareModalRecord.latest_asr?.asr_model_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="LLM模型">{{ compareModalRecord.latest_llm?.llm_model_name || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="提示词">{{ compareModalRecord.latest_llm?.prompt_template_name || '-' }}</a-descriptions-item>
+        </a-descriptions>
+
+        <!-- ASR 摘要 -->
+        <a-card size="small" style="margin-bottom: 12px">
+          <template #title>
+            <span>ASR 转写（前 500 字）</span>
+          </template>
+          <div v-if="compareModalRecord.latest_llm?.full_transcript" class="text-box small">{{ compareModalRecord.latest_llm.full_transcript.substring(0, 500) }}</div>
+          <div v-else-if="compareModalRecord.latest_llm?.asr_transcript" class="text-box small">{{ compareModalRecord.latest_llm.asr_transcript.substring(0, 500) }}</div>
+          <div v-else class="muted" style="padding: 8px">当前列表数据未包含 ASR 全文，请进入检查详情查看完整转写</div>
+        </a-card>
+
+        <!-- 字段对比表 -->
+        <a-table
+          :data-source="getFieldCompareRows(compareModalRecord, compareModalGroupKey)"
+          size="small"
+          row-key="field"
+          :pagination="false"
+          bordered
+        >
+          <a-table-column title="字段" data-index="label" :width="120" />
+          <a-table-column title="匹配" :width="80" align="center">
+            <template #default="{ record }">
+              <a-tag v-if="record.match === 'match'" color="green">✓</a-tag>
+              <a-tag v-else-if="record.match === 'mismatch'" color="red">✗</a-tag>
+              <a-tag v-else-if="record.match === 'ignored'" color="orange">⚠</a-tag>
+              <a-tag v-else color="default">-</a-tag>
+            </template>
+          </a-table-column>
+          <a-table-column title="LLM结果" data-index="llmValue">
+            <template #default="{ record }"><div class="compare-value-cell">{{ record.llmValue }}</div></template>
+          </a-table-column>
+          <a-table-column title="真实值" data-index="gtValue">
+            <template #default="{ record }"><div class="compare-value-cell">{{ record.gtValue }}</div></template>
+          </a-table-column>
+        </a-table>
+
+        <!-- 人工标记区域 -->
+        <a-divider style="margin-top: 16px">人工标记</a-divider>
+        <div :key="compareModalMarkRefreshKey">
+          <template v-if="getFieldReviewMark(compareModalRecord, compareModalGroupKey)">
+            <a-alert :type="getFieldReviewMark(compareModalRecord, compareModalGroupKey)?.mark_type === 'exclude' ? 'warning' : 'error'" show-icon style="margin-bottom: 12px">
+              <template #message>
+                <a-space direction="vertical" style="width: 100%">
+                  <div>
+                    <strong>{{ getFieldReviewMark(compareModalRecord, compareModalGroupKey)?.mark_type === 'exclude' ? '排除统计' : '异常说明，计入不匹配' }}</strong>
+                    <a-button type="link" size="small" danger :loading="markClearing" @click="handleClearMark">清除标记</a-button>
+                  </div>
+                  <div v-if="getFieldReviewMark(compareModalRecord, compareModalGroupKey)?.reason">原因：{{ getFieldReviewMark(compareModalRecord, compareModalGroupKey).reason }}</div>
+                  <div v-if="getFieldReviewMark(compareModalRecord, compareModalGroupKey)?.note">备注：{{ getFieldReviewMark(compareModalRecord, compareModalGroupKey).note }}</div>
+                </a-space>
+              </template>
+            </a-alert>
+          </template>
+          <a-empty v-else description="暂无人工标记" style="margin-bottom: 12px" />
+
+          <a-form layout="vertical" size="small">
+            <a-form-item label="标记类型">
+              <a-select v-model:value="markForm.markType">
+                <a-select-option value="exclude">排除统计</a-select-option>
+                <a-select-option value="mismatch_note">异常说明，计入不匹配</a-select-option>
+              </a-select>
+            </a-form-item>
+            <a-form-item label="原因">
+              <a-select v-model:value="markForm.reason" placeholder="选择原因" allow-clear>
+                <a-select-option v-for="r in markReasonOptions" :key="r" :value="r">{{ r }}</a-select-option>
+              </a-select>
+            </a-form-item>
+            <a-form-item label="备注">
+              <a-textarea v-model:value="markForm.note" :rows="2" placeholder="可选：补充说明" />
+            </a-form-item>
+            <a-form-item>
+              <a-button type="primary" :loading="markSaving" @click="handleSaveMark">保存标记</a-button>
+            </a-form-item>
+          </a-form>
+        </div>
+      </template>
+    </a-modal>
   </div>
 </template>
 
@@ -636,7 +764,7 @@ import {
   ScanOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, PlusOutlined, EyeOutlined, EditOutlined,
 } from '@ant-design/icons-vue'
 import { useAppStore } from '@/stores'
-import { resultApi, modelApi, testApi, promptTemplateApi, patientApi } from '@/api/client'
+import { audioApi, resultApi, modelApi, testApi, promptTemplateApi, patientApi } from '@/api/client'
 import type { PatientExamination, BUltraResult } from '@/types'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
 import MarkdownIt from 'markdown-it'
@@ -645,7 +773,7 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
 export default defineComponent({
   name: 'DataImport',
-  components: { AudioPlayer },
+  components: { AudioPlayer, FieldMarkEditor },
   setup() {
     const store = useAppStore()
     const searchText = ref('')
@@ -656,12 +784,246 @@ export default defineComponent({
     const selectedBatch = computed(() => store.selectedBatch)
     const loadingTree = computed(() => store.loadingTree)
     const allRecords = computed(() => store.records)
+    const accuracyMode = ref<'without_remark' | 'with_remark'>('without_remark')
+    const recordNoteDraft = ref('')
+    const recordNoteSaving = ref(false)
+
+    const fieldColumns = [
+      { key: 'right_follicle_match', label: '右卵泡', group: 'right_follicle' },
+      { key: 'left_follicle_match', label: '左卵泡', group: 'left_follicle' },
+      { key: 'endometrium_thickness_match', label: '内膜厚度', group: 'endometrium_thickness' },
+      { key: 'endometrium_type_match', label: '内膜类型', group: 'endometrium_type' },
+      { key: 'right_ovary_match', label: '右卵巢', group: 'right_ovary' },
+      { key: 'left_ovary_match', label: '左卵巢', group: 'left_ovary' },
+    ]
+
+    // 字段组专项对比配置
+    const compareFieldGroups: Record<string, { title: string; fields: { key: string; label: string }[] }> = {
+      right_follicle: {
+        title: '右卵泡',
+        fields: [
+          { key: 'right_follicle_total', label: '右卵泡总数' },
+          { key: 'right_follicles', label: '右卵泡明细' },
+        ],
+      },
+      left_follicle: {
+        title: '左卵泡',
+        fields: [
+          { key: 'left_follicle_total', label: '左卵泡总数' },
+          { key: 'left_follicles', label: '左卵泡明细' },
+        ],
+      },
+      endometrium_thickness: {
+        title: '内膜厚度',
+        fields: [
+          { key: 'endometrium_thickness', label: '内膜厚度' },
+        ],
+      },
+      endometrium_type: {
+        title: '内膜类型',
+        fields: [
+          { key: 'endometrium_type', label: '内膜类型' },
+        ],
+      },
+      right_ovary: {
+        title: '右卵巢',
+        fields: [
+          { key: 'right_ovary_length', label: '右卵巢长' },
+          { key: 'right_ovary_width', label: '右卵巢宽' },
+        ],
+      },
+      left_ovary: {
+        title: '左卵巢',
+        fields: [
+          { key: 'left_ovary_length', label: '左卵巢长' },
+          { key: 'left_ovary_width', label: '左卵巢宽' },
+        ],
+      },
+    }
+
+    // 字段专项对比弹窗状态
+    const compareModalOpen = ref(false)
+    const compareModalRecord = ref<any | null>(null)
+    const compareModalGroupKey = ref<string>('')
+    const compareModalMarkRefreshKey = ref(0) // 强制刷新标记 UI
+
+    const compareModalGroupTitle = computed(() => compareFieldGroups[compareModalGroupKey.value]?.title || '')
+
+    function openFieldCompare(record: any, groupKey: string) {
+      compareModalRecord.value = { ...record }
+      compareModalGroupKey.value = groupKey
+      compareModalOpen.value = true
+    }
+
+    // 保存标记后的刷新回调
+    async function onFieldMarkSaved(_savedMark: any) {
+      compareModalMarkRefreshKey.value++
+      // 刷新列表数据（包含新标记）
+      await store.fetchRecords()
+      // 更新弹窗中的记录
+      const fresh = store.records.find((r: any) => r.id === compareModalRecord.value?.id)
+      if (fresh) compareModalRecord.value = { ...fresh }
+    }
+
+    async function onFieldMarkCleared() {
+      compareModalMarkRefreshKey.value++
+      await store.fetchRecords()
+      const fresh = store.records.find((r: any) => r.id === compareModalRecord.value?.id)
+      if (fresh) compareModalRecord.value = { ...fresh }
+    }
+
+    // 人工标记表单与操作
+    const markSaving = ref(false)
+    const markClearing = ref(false)
+    const markForm = reactive({ markType: 'exclude', reason: '', note: '' })
+
+    const markReasonOptions = computed(() =>
+      markForm.markType === 'exclude'
+        ? ['收音设备问题', '录音缺失/不完整', '真实 B 超数据疑似错误', '非本次评估范围', '暂时排查', '其他']
+        : ['ASR 漏识别', 'ASR 错识别', 'LLM 未提取', 'LLM 提取错误', '左右侧混淆', '数量统计错误', '尺寸解析错误', '格式不规范', '其他']
+    )
+
+    async function handleSaveMark() {
+      if (!compareModalRecord.value) return
+      markSaving.value = true
+      try {
+        await audioApi.saveFieldReviewMark(compareModalRecord.value.id, {
+          field_group: compareModalGroupKey.value,
+          field_key: null,
+          mark_type: markForm.markType,
+          reason: markForm.reason || null,
+          note: markForm.note || null,
+        })
+        message.success('标记已保存')
+        await onFieldMarkSaved(null)
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '保存失败')
+      } finally {
+        markSaving.value = false
+      }
+    }
+
+    async function handleClearMark() {
+      if (!compareModalRecord.value) return
+      markClearing.value = true
+      try {
+        await audioApi.clearFieldReviewMark(compareModalRecord.value.id, compareModalGroupKey.value)
+        message.success('标记已清除')
+        await onFieldMarkCleared()
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '清除失败')
+      } finally {
+        markClearing.value = false
+      }
+    }
+
+    // 兼容 structured_result 和 structured 字段
+    function getLatestLlmStructured(record: any): any {
+      const structured = record.latest_llm?.structured_result || record.latest_llm?.structured
+      if (!structured) return undefined
+      return structured[fieldKey]
+    }
+    const fieldColumnMap = fieldColumns.reduce((acc, item) => {
+      acc[item.key] = item
+      return acc
+    }, {} as Record<string, { key: string; label: string; group: string }>)
 
     const filteredRecords = computed(() => {
       if (!searchText.value.trim()) return allRecords.value
       const q = searchText.value.trim().toLowerCase()
       return allRecords.value.filter((r) => r.record_id.toLowerCase().includes(q))
     })
+
+    // 响应式表格列定义
+    const tableColumns = computed(() => [
+      { title: '病历号', dataIndex: 'record_id', key: 'record_id', ellipsis: true },
+      { title: '日期', dataIndex: 'date', key: 'date' },
+      { title: '备注', dataIndex: 'note', key: 'note', ellipsis: true },
+      { title: '录音', dataIndex: 'has_audio', key: 'has_audio' },
+      { title: '结果', dataIndex: 'has_result', key: 'has_result' },
+      { title: 'ASR', dataIndex: 'asr_status', key: 'asr_status', ellipsis: true },
+      { title: 'LLM', dataIndex: 'llm_status', key: 'llm_status', ellipsis: true },
+      {
+        title: '准确率',
+        dataIndex: 'accuracy',
+        key: 'accuracy',
+        align: 'center' as const,
+        sorter: (a: PatientExamination, b: PatientExamination) => getAccuracySortValue(a) - getAccuracySortValue(b),
+      },
+      ...fieldColumns.map((field) => ({
+        title: field.label,
+        dataIndex: field.key,
+        key: field.key,
+        align: 'center' as const,
+      })),
+      { title: '操作', dataIndex: 'action', key: 'action' },
+    ])
+
+    // 可拖拽列宽
+    const columnWidths = ref<Record<string, number>>({})
+    const resizableColumns = computed(() =>
+      tableColumns.value.map((col) => ({
+        ...col,
+        width: columnWidths.value[col.dataIndex] || col.width,
+      }))
+    )
+
+    function getAccuracyValue(record: PatientExamination): number | undefined {
+      const latest = record.latest_llm as any
+      if (!latest) return undefined
+      if (accuracyMode.value === 'with_remark') {
+        return latest.accuracy_with_remark ?? latest.evaluation_with_remark?.accuracy ?? calculateAccuracyFromEvaluation(latest.evaluation, true) ?? latest.accuracy
+      }
+      return latest.accuracy_without_remark ?? calculateAccuracyFromEvaluation(latest.evaluation, false) ?? latest.accuracy
+    }
+
+    function getAccuracySortValue(record: PatientExamination): number {
+      const value = getAccuracyValue(record)
+      return typeof value === 'number' ? value : -1
+    }
+
+    function calculateAccuracyFromEvaluation(evaluation: any, includeRemark: boolean): number | undefined {
+      const fields = evaluation?.fields
+      if (!fields || typeof fields !== 'object') return undefined
+      const entries = Object.entries(fields).filter(([key]) => includeRemark || key !== 'remark')
+      if (!entries.length) return undefined
+      const correct = entries.filter(([, value]: any) => value?.match === true).length
+      return Number((correct / entries.length).toFixed(4))
+    }
+
+    const fieldMatchStats = computed(() => fieldColumns.map((field) => {
+      const statuses = filteredRecords.value.map((record) => getMatchStatus(record, field.group)).filter((status) => status !== 'empty')
+      const matched = statuses.filter((status) => status === 'match').length
+      const total = statuses.length
+      return {
+        ...field,
+        matched,
+        total,
+        rate: total ? matched / total : 0,
+      }
+    }))
+
+    function getFieldColumn(dataIndex: any) {
+      return fieldColumnMap[String(dataIndex || '')] || null
+    }
+
+    async function saveRecordNote() {
+      if (!selectedRecord.value) return
+      recordNoteSaving.value = true
+      try {
+        const noteVal = recordNoteDraft.value || ''
+        const res: any = await audioApi.updatePatientNote(selectedRecord.value.id, noteVal)
+        const note = res?.note ?? noteVal
+        store.selectedRecord = { ...selectedRecord.value, note } as any
+        const target = store.records.find((record) => record.id === selectedRecord.value?.id)
+        if (target) target.note = note
+        message.success('检查备注已保存')
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || e?.message || '保存备注失败')
+      } finally {
+        recordNoteSaving.value = false
+      }
+    }
 
     function selectBatch(date: string | null) { store.selectBatch(date) }
     function openDetail(record: PatientExamination) {
@@ -693,7 +1055,8 @@ export default defineComponent({
     }
 
     function getListAsrStatusColor(record: PatientExamination): string {
-      const status = record.latest_asr?.status
+      const linkedAsr = record.latest_llm?.asr_result_id ? record.latest_llm : null
+      const status = linkedAsr?.asr_status || record.latest_asr?.status
       if (!status) return 'default'
       if (status === 'success') return 'blue'
       if (status === 'failed') return 'red'
@@ -702,12 +1065,12 @@ export default defineComponent({
     }
 
     function getListAsrStatusText(record: PatientExamination): string {
-      const asr = record.latest_asr
-      if (!asr) return '未转写'
-      const name = asr.asr_model_name || 'ASR'
-      if (asr.status === 'success') return name
-      if (asr.status === 'failed') return `${name} / 失败`
-      if (asr.status === 'running') return `${name} / 转写中`
+      const linkedAsr = record.latest_llm?.asr_result_id ? record.latest_llm : null
+      const name = linkedAsr?.asr_model_name || record.latest_asr?.asr_model_name
+      const status = linkedAsr?.asr_status || record.latest_asr?.status
+      if (!name) return '未转写'
+      if (status === 'failed') return `${name} / 失败`
+      if (status === 'running') return `${name} / 转写中`
       return name
     }
 
@@ -729,6 +1092,11 @@ export default defineComponent({
     }
 
     function getMatchStatus(record: PatientExamination, group: string): MatchStatus {
+      // 优先检查人工标记
+      const mark = getFieldReviewMark(record, group)
+      if (mark?.mark_type === 'exclude') return 'ignored'
+      if (mark?.mark_type === 'mismatch_note') return 'mismatch'
+
       if (!record.latest_llm || !record.result) return 'empty'
       if (group === 'right_follicle') {
         const detail = fieldMatch(record, 'right_follicles')
@@ -750,32 +1118,149 @@ export default defineComponent({
     function matchTagColor(status: MatchStatus): string {
       if (status === 'match') return 'green'
       if (status === 'mismatch') return 'red'
+      if (status === 'ignored') return 'orange'
       return 'default'
     }
 
     function matchTagText(status: MatchStatus): string {
       if (status === 'match') return '✅'
       if (status === 'mismatch') return '❌'
+      if (status === 'ignored') return '⚠️'
       return '-'
     }
 
-    function computeLocalFieldMatch(record: PatientExamination, field: string): MatchStatus {
-      if (!record.latest_llm?.structured_result || !record.result) return 'empty'
-      const structured = normalizeStructured(record.latest_llm.structured_result)
-      const gt = record.result as any
-      if (!structured) return 'empty'
+    // 兼容 structured_result 和 structured 字段
+    function getLatestLlmStructured(record: any): any {
+      return record?.latest_llm?.structured_result
+        || record?.latest_llm?.structured
+        || record?.structured_result
+        || record?.structured
+        || {}
+    }
 
-      if (field === 'right_follicles' || field === 'left_follicles') {
-        const llmList = normalizeFollicles(structured[field])
-        const gtList = normalizeFollicles(gt[field])
+    // 兼容 ground_truth 和 result 字段
+    function getLatestGroundTruth(record: any): any {
+      return record?.latest_llm?.ground_truth
+        || record?.ground_truth
+        || record?.result
+        || {}
+    }
+
+    // 统一值格式化
+    function formatCompareValue(val: any): string {
+      if (val == null || val === '') return '-'
+      if (Array.isArray(val)) {
+        if (!val.length) return '-'
+        return val.map((v: any) => {
+          if (v && typeof v === 'object' && ('size' in v || 'count' in v)) {
+            return `${v.size ?? '?'}×${v.count ?? 1}`
+          }
+          if (v && typeof v === 'object') return JSON.stringify(v)
+          return String(v)
+        }).join('；')
+      }
+      if (typeof val === 'object') return JSON.stringify(val, null, 2)
+      return String(val)
+    }
+
+    // 字段组到字段的映射（用于查找标记）
+    const FIELD_TO_GROUP: Record<string, string> = {
+      right_follicle_total: 'right_follicle',
+      right_follicles: 'right_follicle',
+      left_follicle_total: 'left_follicle',
+      left_follicles: 'left_follicle',
+      endometrium_thickness: 'endometrium_thickness',
+      endometrium_type: 'endometrium_type',
+      right_ovary_length: 'right_ovary',
+      right_ovary_width: 'right_ovary',
+      left_ovary_length: 'left_ovary',
+      left_ovary_width: 'left_ovary',
+    }
+
+    function getFieldReviewMark(record: any, fieldOrGroup: string): any | null {
+      const marks = record?.field_review_marks || record?.latest_llm?.field_review_marks || []
+      if (!marks.length) return null
+      // 优先精确匹配 field_key
+      let mark = marks.find((m: any) => m.field_key === fieldOrGroup)
+      if (mark) return mark
+      // 匹配 field_group
+      const group = FIELD_TO_GROUP[fieldOrGroup] || fieldOrGroup
+      mark = marks.find((m: any) => m.field_group === group)
+      return mark || null
+    }
+
+    // 字段专项弹窗匹配判断（含人工标记逻辑）
+    function compareModalFieldStatus(record: any, fieldKey: string, llmVal: any, gtVal: any): MatchStatus {
+      const manualMark = getFieldReviewMark(record, fieldKey)
+      if (manualMark?.mark_type === 'exclude') return 'ignored'
+      if (manualMark?.mark_type === 'mismatch_note') return 'mismatch'
+
+      const item = record?.latest_llm?.evaluation?.fields?.[fieldKey]
+      if (item?.match != null) return item.match ? 'match' : 'mismatch'
+
+      if (llmVal == null && gtVal == null) return 'empty'
+      if (llmVal == null || gtVal == null) return 'mismatch'
+
+      if (fieldKey === 'right_follicles' || fieldKey === 'left_follicles') {
+        const llmList = normalizeFollicles(llmVal)
+        const gtList = normalizeFollicles(gtVal)
         if (!llmList.length && !gtList.length) return 'empty'
         return JSON.stringify(llmList) === JSON.stringify(gtList) ? 'match' : 'mismatch'
       }
 
-      const llmVal = (structured as any)[field]
-      const gtVal = gt[field]
-      if (llmVal == null || gtVal == null) return 'empty'
-      return String(llmVal).trim() === String(gtVal).trim() ? 'match' : 'mismatch'
+      return normalizeComparableText(llmVal) === normalizeComparableText(gtVal) ? 'match' : 'mismatch'
+    }
+
+    // 获取字段专项对比表格数据
+    function getFieldCompareRows(record: any, groupKey: string): any[] {
+      const group = compareFieldGroups[groupKey]
+      if (!group) return []
+      const structured = getLatestLlmStructured(record)
+      const gt = getLatestGroundTruth(record)
+
+      return group.fields.map((f) => {
+        const llmVal = structured?.[f.key]
+        const gtVal = gt?.[f.key]
+        const match = compareModalFieldStatus(record, f.key, llmVal, gtVal)
+        return {
+          field: f.key,
+          label: f.label,
+          llmValue: formatCompareValue(llmVal),
+          gtValue: formatCompareValue(gtVal),
+          match,
+        }
+      })
+    }
+
+    // 真实值格式化（向后兼容）
+    function formatGtValue(fieldKey: string, val: any): string {
+      return formatCompareValue(val)
+    }
+
+    // 统一值格式化
+    function formatCompareValue(val: any): string {
+      if (val == null || val === '') return '-'
+      if (Array.isArray(val)) {
+        if (!val.length) return '-'
+        return val.map((v: any) => {
+          if (v && typeof v === 'object' && ('size' in v || 'count' in v)) {
+            return `${v.size ?? '?'}×${v.count ?? 1}`
+          }
+          if (v && typeof v === 'object') return JSON.stringify(v)
+          return String(v)
+        }).join('；')
+      }
+      if (typeof val === 'object') return JSON.stringify(val, null, 2)
+      return String(val)
+    }
+
+    // 列表页本地字段匹配计算
+    function computeLocalFieldMatch(record: PatientExamination, field: string): MatchStatus {
+      const text = String(value ?? '').trim()
+      if (!text) return ''
+      const num = Number(text)
+      if (Number.isFinite(num)) return String(Math.round(num * 100) / 100)
+      return text
     }
 
     // ======= 真实 B 超结果编辑 =======
@@ -798,7 +1283,7 @@ export default defineComponent({
     })
 
     function openEditBUltra() {
-      const r = selectedRecord.value?.result || {}
+      const r = (selectedRecord.value?.result || {}) as any
       bUltraForm.right_follicle_total = r.right_follicle_total ?? null
       bUltraForm.left_follicle_total = r.left_follicle_total ?? null
       bUltraForm.right_follicles = r.right_follicles || []
@@ -864,7 +1349,7 @@ export default defineComponent({
         const updated = res?.data || res
         message.success('真实 B 超结果已保存')
         showBUltraModal.value = false
-        selectedRecord.value = { ...selectedRecord.value, result: updated }
+        store.selectedRecord = { ...selectedRecord.value, result: updated } as any
       } catch (e: any) {
         message.error(e?.response?.data?.detail || '保存失败')
       } finally {
@@ -926,11 +1411,8 @@ export default defineComponent({
       if (newRank > oldRank) return newResult
       if (newRank < oldRank) return oldResult
 
-      // 同 rank, 优先 is_current
-      if (newResult.is_current && !oldResult.is_current) return newResult
-      if (oldResult.is_current && !newResult.is_current) return oldResult
-
-      // 同 rank, 同 is_current, 取 created_at 更新者
+      // 同 rank 时一律取更新时间更新者；is_current 只保留为展示字段，
+      // 不再影响默认选择，避免最新豆包结果被历史 FunASR current 覆盖。
       const oldTime = oldResult.created_at ? new Date(oldResult.created_at).getTime() : 0
       const newTime = newResult.created_at ? new Date(newResult.created_at).getTime() : 0
       return newTime >= oldTime ? newResult : oldResult
@@ -954,6 +1436,17 @@ export default defineComponent({
       return r.status  // success / running / failed
     })
 
+    function pickLatestSuccessfulAsrResult(results: any[]): any | null {
+      return results
+        .filter((r: any) => r?.status === 'success')
+        .sort((a: any, b: any) => {
+          const tb = b.created_at ? new Date(b.created_at).getTime() : 0
+          const ta = a.created_at ? new Date(a.created_at).getTime() : 0
+          if (tb !== ta) return tb - ta
+          return Number(b.id || 0) - Number(a.id || 0)
+        })[0] || null
+    }
+
     // --- 批量执行：作用于当前筛选出的检查记录 ---
     const batchAsrModelId = ref<number | undefined>(undefined)
     const batchLlmModelId = ref<number | undefined>(undefined)
@@ -967,6 +1460,9 @@ export default defineComponent({
       success: 0,
       failed: 0,
       current: '',
+      stage: '',
+      asrDone: 0,
+      asrTotal: 0,
     })
     const batchFailures = ref<{ id: number; record_id: string; date: string; stage: string; error: string }[]>([])
 
@@ -976,9 +1472,9 @@ export default defineComponent({
         // 只显示 active 模型
         asrModels.value = (asr as any[]).filter((m: any) => m.status === 'active')
         llmModels.value = (llm as any[]).filter((m: any) => m.status === 'active')
-        if (llm.length > 0) {
-          llmModelId.value = llm.find((m: any) => m.is_default)?.id || llm[0].id
-          batchLlmModelId.value = llm.find((m: any) => m.is_default)?.id || llm[0].id
+        if (llmModels.value.length > 0) {
+          llmModelId.value = llmModels.value.find((m: any) => m.is_default)?.id || llmModels.value[0].id
+          batchLlmModelId.value = llmModels.value.find((m: any) => m.is_default)?.id || llmModels.value[0].id
         }
         // ASR 默认选中第一个 (后续根据当前结果调整)
         if (asrModels.value.length > 0 && !asrModelId.value) {
@@ -999,18 +1495,17 @@ export default defineComponent({
         asrResultsAll.value = h || []
       } catch { asrResultsAll.value = [] }
 
-      // 自动选择最佳模型
+      // 自动选择最佳模型：默认展示最新一次成功 ASR 记录本身，而不是历史 is_current。
       const map = asrResultByModelId.value
-      // 优先 is_current + success
+      const latestSuccess = pickLatestSuccessfulAsrResult(asrResultsAll.value)
       let bestMid: number | undefined
-      for (const mid of Object.keys(map)) {
-        const r = map[mid]
-        if (r.is_current && r.status === 'success') {
-          bestMid = Number(mid)
-          break
-        }
+      if (latestSuccess) {
+        bestMid = latestSuccess.asr_model_id
+        asrModelId.value = bestMid
+        selectedAsrResult.value = latestSuccess
+        return
       }
-      // 其次第一个 success
+      // 其次从每个模型代表结果里找 success
       if (!bestMid) {
         for (const mid of Object.keys(map)) {
           if (map[mid].status === 'success') {
@@ -1188,6 +1683,33 @@ export default defineComponent({
       message.success('正在导出...', 1.5)
     }
 
+    async function exportLatestLlmForFilteredRecords() {
+      const patientIds = filteredRecords.value.map((record) => record.id).filter(Boolean)
+      if (!patientIds.length) {
+        message.warning('当前表格没有可导出的检查记录')
+        return
+      }
+      try {
+        const data: any = await audioApi.exportLatestLlmResults(patientIds)
+        const blob = data instanceof Blob
+          ? data
+          : new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+        const url = window.URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        const batchName = selectedBatch.value ? formatDate(selectedBatch.value).replace(/-/g, '') : 'all'
+        const keyword = searchText.value.trim() ? `_${searchText.value.trim()}` : ''
+        link.href = url
+        link.download = `LLM_latest_${batchName}${keyword}_${patientIds.length}records.xlsx`
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        window.URL.revokeObjectURL(url)
+        message.success(`已导出 ${patientIds.length} 条最新 LLM 记录`)
+      } catch (e: any) {
+        message.error(`导出失败: ${e?.response?.data?.detail || e?.message || ''}`)
+      }
+    }
+
     // 清空当前检查记录的 LLM 历史
     async function confirmClearLlmHistory() {
       if (!selectedRecord.value) return
@@ -1338,23 +1860,64 @@ export default defineComponent({
       batchPromptContent.value = tmpl?.content || ''
     }
 
-    function waitForAsrComplete(record: PatientExamination, modelId: number): Promise<void> {
+    function parseSseError(event?: any): string {
+      if (!event?.data) return 'ASR 请求失败或连接中断'
+      try {
+        const parsed = JSON.parse(String(event.data))
+        return parsed.message || parsed.detail || String(event.data)
+      } catch {
+        return String(event.data)
+      }
+    }
+
+    function isUsableAsrResult(result: any): boolean {
+      return result?.status === 'success' && typeof result.full_transcript === 'string' && result.full_transcript.trim().length > 0
+    }
+
+    function waitForAsrComplete(record: PatientExamination, modelId: number): Promise<any> {
       return new Promise((resolve, reject) => {
         const es = patientApi.runAsrSSE(record.id, modelId)
         let settled = false
+        const segCount = Math.max(record.segs?.length || 0, 1)
+        const timeoutMs = Math.max(120000, segCount * 60000)
         const timeout = window.setTimeout(() => {
           if (settled) return
           settled = true
           es.close()
-          reject(new Error('ASR 超时'))
-        }, 10 * 60 * 1000)
+          reject(new Error(`ASR 超时（${Math.round(timeoutMs / 1000)} 秒）`))
+        }, timeoutMs)
 
-        const finish = () => {
+        const finish = async (event?: any) => {
           if (settled) return
+          let parsed: any = {}
+          try {
+            parsed = event?.data ? JSON.parse(String(event.data)) : {}
+          } catch {
+            parsed = {}
+          }
+          if (!isUsableAsrResult(parsed)) {
+            try {
+              const persisted = await getOrReuseAsrForRecord(record, modelId)
+              if (persisted) {
+                settled = true
+                window.clearTimeout(timeout)
+                es.close()
+                resolve(persisted)
+                return
+              }
+            } catch {
+              // fall through to the explicit failure below
+            }
+            settled = true
+            window.clearTimeout(timeout)
+            es.close()
+            reject(new Error(parsed?.message || 'ASR 执行完成但未返回有效文本'))
+            return
+          }
           settled = true
           window.clearTimeout(timeout)
           es.close()
-          resolve()
+          resolve(parsed)
         }
 
         const fail = (event?: any) => {
@@ -1362,10 +1925,27 @@ export default defineComponent({
           settled = true
           window.clearTimeout(timeout)
           es.close()
-          const detail = event?.data ? String(event.data) : ''
-          reject(new Error(detail || 'ASR 失败'))
+          reject(new Error(parseSseError(event)))
         }
 
+        es.addEventListener('progress', (event: any) => {
+          try {
+            const parsed = JSON.parse(String(event.data || '{}'))
+            batchProgress.stage = 'ASR'
+            batchProgress.asrTotal = parsed.total || batchProgress.asrTotal || segCount
+            if (parsed.stage === 'segment_start') {
+              batchProgress.asrDone = Math.max(0, (parsed.seg_index || 1) - 1)
+            }
+          } catch { /* ignore progress parse errors */ }
+        })
+        es.addEventListener('segment', (event: any) => {
+          try {
+            const parsed = JSON.parse(String(event.data || '{}'))
+            batchProgress.stage = 'ASR'
+            batchProgress.asrTotal = parsed.total || batchProgress.asrTotal || segCount
+            batchProgress.asrDone = parsed.seg_index || batchProgress.asrDone
+          } catch { /* ignore segment parse errors */ }
+        })
         es.addEventListener('complete', finish)
         es.addEventListener('error', fail)
       })
@@ -1386,7 +1966,7 @@ export default defineComponent({
       const results = await patientApi.listAsrResults(record.id)
       const list = Array.isArray(results) ? results : (results?.data || [])
       const candidates = list
-        .filter((r: any) => r.asr_model_id === modelId && r.status === 'success' && r.full_transcript)
+        .filter((r: any) => r.asr_model_id === modelId && isUsableAsrResult(r))
         .sort((a: any, b: any) => {
           const ta = a.updated_at || a.created_at || ''
           const tb = b.updated_at || b.created_at || ''
@@ -1398,28 +1978,29 @@ export default defineComponent({
       return null
     }
 
-    async function runLlmForRecord(record: PatientExamination) {
+    async function ensureAsrForRecord(record: PatientExamination, modelId: number) {
+      const reused = await getOrReuseAsrForRecord(record, modelId)
+      if (reused) return reused
+      if (!record.segs?.length) throw new Error('该检查记录无录音文件')
+      const completed = await waitForAsrComplete(record, modelId)
+      await waitForLatestAsrVisible(record)
+      const persisted = await getOrReuseAsrForRecord(record, modelId)
+      return persisted || completed
+    }
+
+    async function runLlmForRecord(record: PatientExamination, preparedAsrResultId?: number) {
       if (!batchLlmModelId.value) throw new Error('未选择 LLM 模型')
       if (!batchPromptContent.value) throw new Error('未选择提示词模板')
 
-      let asrResultId: number | undefined
+      let asrResultId: number | undefined = preparedAsrResultId
       if (batchAsrModelId.value) {
-        // 批量模式：使用选定的 ASR 模型
-        const reused = await getOrReuseAsrForRecord(record, batchAsrModelId.value)
-        if (reused) {
-          asrResultId = reused.id
-        } else {
-          // 没有可复用结果，调用 ASR
-          await waitForAsrComplete(record, batchAsrModelId.value)
-          await waitForLatestAsrVisible(record)
-          const newAsr = await getOrReuseAsrForRecord(record, batchAsrModelId.value)
-          if (!newAsr?.id) throw new Error('ASR 执行失败，无可用结果')
-          asrResultId = newAsr.id
-        }
+        const asr = asrResultId ? null : await ensureAsrForRecord(record, batchAsrModelId.value)
+        asrResultId = asrResultId || asr?.id
+        if (!asrResultId) throw new Error('ASR 执行失败，无可用结果')
       } else {
         // 非批量模式：使用当前 ASR
         const asr = await getCurrentAsrForRecord(record)
-        if (!asr?.id) throw new Error('该检查记录没有可复用的 ASR 转写结果')
+        if (!asr?.id || !isUsableAsrResult(asr)) throw new Error('该检查记录没有可复用的 ASR 转写结果')
         asrResultId = asr.id
       }
 
@@ -1478,54 +2059,64 @@ export default defineComponent({
       batchProgress.success = 0
       batchProgress.failed = 0
       batchProgress.current = ''
+      batchProgress.stage = ''
+      batchProgress.asrDone = 0
+      batchProgress.asrTotal = 0
       batchFailures.value = []
 
-      for (const record of targets) {
-        batchProgress.current = `${record.record_id} ${formatDate(record.date)}`
-        let stage = 'ASR'
-        try {
-          if (mode === 'asr' || mode === 'both') {
-            stage = 'ASR'
-            const existing = batchAsrModelId.value
-              ? await getOrReuseAsrForRecord(record, batchAsrModelId.value)
-              : null
-            if (!existing) {
-              await waitForAsrComplete(record, batchAsrModelId.value!)
+      try {
+        for (const record of targets) {
+          batchProgress.current = `${record.record_id} ${formatDate(record.date)}`
+          batchProgress.stage = ''
+          batchProgress.asrDone = 0
+          batchProgress.asrTotal = record.segs?.length || 0
+          let stage = 'ASR'
+          let preparedAsrResultId: number | undefined
+          try {
+            if (mode === 'asr' || mode === 'both') {
+              stage = 'ASR'
+              const asr = await ensureAsrForRecord(record, batchAsrModelId.value!)
+              preparedAsrResultId = asr?.id
               await waitForLatestAsrVisible(record)
             }
+            if (mode === 'llm' || mode === 'both') {
+              stage = 'LLM'
+              batchProgress.stage = 'LLM'
+              await runLlmForRecord(record, preparedAsrResultId)
+            }
+            batchProgress.success += 1
+          } catch (e: any) {
+            console.error('[batch run failed]', record.id, record.record_id, stage, e)
+            batchProgress.failed += 1
+            batchFailures.value.push({
+              id: record.id,
+              record_id: record.record_id,
+              date: record.date,
+              stage,
+              error: e?.response?.data?.detail || e?.message || String(e),
+            })
+          } finally {
+            batchProgress.done += 1
           }
-          if (mode === 'llm' || mode === 'both') {
-            stage = 'LLM'
-            await runLlmForRecord(record)
-          }
-          batchProgress.success += 1
-        } catch (e: any) {
-          console.error('[batch run failed]', record.id, record.record_id, stage, e)
-          batchProgress.failed += 1
-          batchFailures.value.push({
-            id: record.id,
-            record_id: record.record_id,
-            date: record.date,
-            stage,
-            error: e?.response?.data?.detail || e?.message || String(e),
-          })
-        } finally {
-          batchProgress.done += 1
         }
-      }
 
-      await store.fetchRecords()
-      if (drawerOpen.value && selectedRecord.value) {
-        await loadAsrResults()
-        await loadCurrentLlmResult()
-      }
-      batchRunning.value = false
-      batchMode.value = ''
-      batchProgress.current = ''
-      if (batchProgress.failed) {
-        message.warning(`批量执行完成：成功 ${batchProgress.success} 条，失败 ${batchProgress.failed} 条`)
-      } else {
-        message.success(`批量执行完成：成功 ${batchProgress.success} 条`)
+        await store.fetchRecords()
+        if (drawerOpen.value && selectedRecord.value) {
+          await loadAsrResults()
+          await loadCurrentLlmResult()
+        }
+        if (batchProgress.failed) {
+          message.warning(`批量执行完成：成功 ${batchProgress.success} 条，失败 ${batchProgress.failed} 条`)
+        } else {
+          message.success(`批量执行完成：成功 ${batchProgress.success} 条`)
+        }
+      } finally {
+        batchRunning.value = false
+        batchMode.value = ''
+        batchProgress.current = ''
+        batchProgress.stage = ''
+        batchProgress.asrDone = 0
+        batchProgress.asrTotal = 0
       }
     }
 
@@ -1637,8 +2228,23 @@ export default defineComponent({
       const llmVal = (normalizedLlmStructured.value as any)[field]
       const gtVal = (selectedRecord.value.result as any)[field]
       if (llmVal == null || gtVal == null) return false
-      const match = String(llmVal).trim() === String(gtVal).trim()
+      const match = normalizeComparableText(llmVal) === normalizeComparableText(gtVal)
       return correct ? match : !match && llmVal !== undefined
+    }
+
+    function detailGroupTextColor(group: 'right_ovary' | 'left_ovary'): string {
+      const fields = group === 'right_ovary'
+        ? ['right_ovary_length', 'right_ovary_width']
+        : ['left_ovary_length', 'left_ovary_width']
+      const statuses = fields.map((field) => {
+        if (compareField(field, true)) return 'match'
+        if (compareField(field, false)) return 'mismatch'
+        return 'empty'
+      }) as MatchStatus[]
+      const status = mergeStatus(statuses)
+      if (status === 'match') return '#52c41a'
+      if (status === 'mismatch') return '#ff4d4f'
+      return 'inherit'
     }
 
     function formatRawJson(llmResult: any): string {
@@ -1736,6 +2342,7 @@ export default defineComponent({
       asrResultsAll.value = []
       llmHistory.value = []
       llmModelId.value = undefined
+      recordNoteDraft.value = rec?.note || ''
       if (rec && drawerOpen.value) {
         await loadAsrResults()
         await loadCurrentLlmResult()
@@ -1756,10 +2363,12 @@ export default defineComponent({
 
     return {
       searchText, drawerOpen, selectedRecord, batches, selectedBatch, loadingTree,
-      allRecords, filteredRecords,
+      allRecords, filteredRecords, tableColumns, resizableColumns,
+      accuracyMode, getAccuracyValue, fieldMatchStats, getFieldColumn,
+      recordNoteDraft, recordNoteSaving, saveRecordNote,
       asrModels, asrModelId, asrRunning, asrProgress, runAsr,
       asrResultByModelId, currentAsrStatus, selectedAsrResult,
-      llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
+      llmModels, llmModelId, llmRunning, llmResult: currentLlmResult, currentLlmResult, llmPrompt, runLlm, compareField, formatRawJson,
       structured, llmDisplayText,
       selectBatch, openDetail, closeDrawer, onRowClick, formatDate, formatShortDateTime, formatFollicles,
       getLlmStatusColor, getLlmStatusText, formatAccuracy, getMatchStatus, matchTagColor, matchTagText,
@@ -1769,19 +2378,89 @@ export default defineComponent({
       promptTemplates, selectedTemplateId, showTemplateModal, showLlmDetailModal, templateTab, llmTab,
       batchAsrModelId, batchLlmModelId, batchTemplateId, batchRunning, batchMode, batchProgress, batchFailures, onBatchTemplateChange, runBatch,
       templateLoading, templateSaving, templateForm, templatePreviewHtml, showClearConfirm, clearing,
-      onTemplateChange, selectTemplate, createNewTemplate, viewLlmHistory, setLlmAsCurrent, exportCurrentLlmHistory, confirmClearLlmHistory, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
+      onTemplateChange, selectTemplate, createNewTemplate, viewLlmHistory, setLlmAsCurrent, exportCurrentLlmHistory, exportLatestLlmForFilteredRecords, confirmClearLlmHistory, applyTemplateToCurrent, resetTemplateForm, saveTemplate, deleteTemplate,
       asrResultsAll, llmHistory,
       // 卵泡逐项对比
-      normalizedLlmStructured, rightFollCompare, leftFollCompare, rightGtFolls, leftGtFolls, gtFollClass,
+      normalizedLlmStructured, rightFollCompare, leftFollCompare, rightGtFolls, leftGtFolls, gtFollClass, detailGroupTextColor,
       // 真实 B 超结果编辑
-      showBUltraModal, bUltraSaving, bUltraForm, openEditBUltra,
+      showBUltraModal, bUltraSaving, bUltraForm, openEditBUltra, saveBUltraResult,
+      // 字段专项对比弹窗
+      compareModalOpen, compareModalRecord, compareModalGroupKey, compareModalGroupTitle, compareModalMarkRefreshKey,
+      getFieldCompareRows, openFieldCompare, getFieldReviewMark, onFieldMarkSaved, onFieldMarkCleared,
+      // 人工标记
+      markSaving, markClearing, markForm, markReasonOptions, handleSaveMark, handleClearMark,
     }
   },
 })
 </script>
 
 <style scoped>
+.page-container {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+.page-container :deep(.ant-card),
+.page-container :deep(.ant-card-body),
+.page-container :deep(.ant-table-wrapper),
+.page-container :deep(.ant-spin-nested-loading),
+.page-container :deep(.ant-spin-container),
+.page-container :deep(.ant-table) {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+.batch-filter {
+  flex: 1;
+  min-width: 0;
+}
+.record-search {
+  width: 320px;
+  flex: 0 0 320px;
+}
+.batch-action-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+.batch-select {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+.batch-buttons {
+  flex: 2 1 420px;
+  min-width: 280px;
+}
+.table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.toolbar-label {
+  color: #666;
+  font-size: 12px;
+}
+@media (max-width: 900px) {
+  .filter-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .record-search {
+    width: 100%;
+    flex-basis: auto;
+  }
+}
 .follicle-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.compare-value-cell { white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; }
 .follicle-item {
   display: inline-block;
   padding: 2px 6px;
@@ -1846,5 +2525,31 @@ export default defineComponent({
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+}
+.match-fields-cell { display: flex; flex-wrap: wrap; gap: 2px; }
+.col-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 1;
+}
+.col-resize-handle:hover {
+  background: #1890ff;
+  opacity: 0.3;
+}
+.match-tag-sm { font-size: 11px; padding: 0 4px; line-height: 18px; margin: 0; }
+.match-tag-sm.clickable { cursor: pointer; transition: transform 0.1s; }
+.match-tag-sm.clickable:hover { transform: scale(1.1); box-shadow: 0 0 4px rgba(0,0,0,0.2); }
+.llm-model-info { font-size: 12px; color: #666; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.llm-model-asr { color: #1890ff; }
+.llm-model-sep { margin: 0 1px; }
+.llm-model-prompt { color: #999; }
+.remark-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
 }
 </style>

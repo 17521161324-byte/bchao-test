@@ -173,7 +173,7 @@ def evaluate_field(identified: any, ground_truth: any, field_type: str = "number
             "identified": identified, "truth": ground_truth, "diff": None}
 
 
-def evaluate_result(identified: dict, ground_truth: dict) -> dict:
+def evaluate_result(identified: dict, ground_truth: dict, include_remark: bool = False) -> dict:
     """
     完整评估：对比识别结果与真实结果
     返回每个字段的对比详情与整体准确率
@@ -196,8 +196,9 @@ def evaluate_result(identified: dict, ground_truth: dict) -> dict:
         ("right_ovary_width", "right_ovary_width", "number", 2.0),
         ("left_ovary_length", "left_ovary_length", "number", 2.0),
         ("left_ovary_width", "left_ovary_width", "number", 2.0),
-        ("remark", "remark", "string", 0),
     ]
+    if include_remark:
+        field_configs.append(("remark", "remark", "string", 0))
 
     correct = 0
     total = 0
@@ -214,6 +215,7 @@ def evaluate_result(identified: dict, ground_truth: dict) -> dict:
     evaluation["total_fields"] = total
     evaluation["correct_fields"] = correct
     evaluation["accuracy"] = round(correct / total, 4) if total > 0 else 0.0
+    evaluation["include_remark"] = include_remark
 
     return evaluation
 
