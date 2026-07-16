@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>B超提示词优化器 v2</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#333;font-size:13px}
+/* 顶部配置栏 */
+.topbar{background:#fff;border-bottom:1px solid #e8e8e8;padding:10px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.topbar .logo{font-size:16px;font-weight:700;color:#1890ff;white-space:nowrap}
+.topbar .sep{width:1px;height:24px;background:#e8e8e8}
+.topbar select,.topbar input{padding:4px 8px;border:1px solid #d9d9d9;border-radius:4px;font-size:12px}
+.topbar .field{display:flex;align-items:center;gap:4px}
+.topbar .field label{font-size:11px;color:#999;white-space:nowrap}
+.btn{padding:5px 14px;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:500;transition:all .2s}
+.btn-primary{background:#1890ff;color:#fff}.btn-primary:hover{background:#40a9ff}
+.btn-success{background:#52c41a;color:#fff}.btn-success:hover{background:#73d13d}
+.btn-danger{background:#ff4d4f;color:#fff}.btn-danger:hover{background:#ff7875}
+.btn-ghost{background:transparent;border:1px solid #d9d9d9;color:#666}.btn-ghost:hover{border-color:#1890ff;color:#1890ff}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.round-badge{background:#1890ff;color:#fff;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600}
+/* 主体 */
+.main{display:grid;grid-template-columns:1fr 340px;gap:0;height:calc(100vh - 52px)}
+.left-panel{overflow-y:auto;padding:16px}
+.right-panel{background:#fff;border-left:1px solid #e8e8e8;overflow-y:auto;padding:16px}
+/* 卡片 */
+.card{background:#fff;border-radius:6px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.06);margin-bottom:12px}
+.card h3{font-size:13px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #f0f0f0;color:#1890ff;display:flex;align-items:center;justify-content:space-between}
+.card h3 .toggle{font-size:11px;color:#999;cursor:pointer;font-weight:normal}
+/* 指标网格 */
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+.metric{background:#fafafa;border:1px solid #f0f0f0;border-radius:6px;padding:10px;text-align:center}
+.metric .val{font-size:20px;font-weight:700;color:#1890ff}
+.metric .lbl{font-size:10px;color:#999;margin-top:2px}
+.metric.green .val{color:#52c41a}.metric.orange .val{color:#faad14}.metric.red .val{color:#ff4d4f}
+/* 字段条 */
+.field-bar{display:flex;align-items:center;margin-bottom:4px;font-size:11px}
+.field-bar .name{width:90px;color:#666;flex-shrink:0}
+.field-bar .bar-wrap{flex:1;background:#f0f0f0;border-radius:3px;height:12px;position:relative;margin:0 6px}
+.field-bar .bar{height:100%;border-radius:3px;transition:width .5s}
+.field-bar .pct{width:40px;text-align:right;color:#999;font-size:10px}
+/* 卵泡统计 */
+.fol-stat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.fol-stat .item{text-align:center;padding:8px;background:#fafafa;border-radius:6px}
+.fol-stat .item .num{font-size:22px;font-weight:700}
+.fol-stat .item .desc{font-size:10px;color:#999}
+/* 错误分布 */
+.error-dist{display:flex;gap:8px;flex-wrap:wrap}
+.error-chip{padding:4px 10px;border-radius:12px;font-size:11px;font-weight:500}
+/* ASR 分组 */
+.asr-cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.asr-card{flex:1;min-width:120px;background:#fafafa;border:1px solid #f0f0f0;border-radius:6px;padding:8px;text-align:center}
+.asr-card .name{font-size:11px;color:#999}
+.asr-card .rate{font-size:18px;font-weight:700}
+.asr-card .cnt{font-size:10px;color:#bbb}
+/* 样本列表 */
+.sample-row{display:grid;grid-template-columns:70px 60px 1fr 1fr 60px;gap:6px;padding:5px 8px;border-bottom:1px solid #f5f5f5;font-size:11px;align-items:start}
+.sample-row:hover{background:#fafafa}
+.sample-row .rid{font-weight:600;color:#1890ff}
+.badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;color:#fff}
+.badge-h{background:#52c41a}.badge-m{background:#faad14}.badge-l{background:#ff4d4f}
+/* 日志 */
+.log{background:#1e1e1e;color:#d4d4d4;border-radius:6px;padding:10px;font-family:monospace;font-size:11px;max-height:200px;overflow-y:auto;line-height:1.5}
+.log .info{color:#569cd6}.log .success{color:#4ec9b0}.log .error{color:#f44747}.log .warn{color:#ce9178}
+/* 提示词折叠 */
+.prompt-collapse{max-height:0;overflow:hidden;transition:max-height .3s}
+.prompt-collapse.open{max-height:2000px}
+.prompt-editor{width:100%;min-height:160px;padding:8px;border:1px solid #d9d9d9;border-radius:4px;font-family:monospace;font-size:11px;line-height:1.4;resize:vertical}
+/* 优化建议 */
+.suggest-box{background:#f6ffed;border:1px solid #b7eb8f;border-radius:6px;padding:10px;margin-bottom:10px}
+.suggest-box h4{font-size:12px;color:#389e0d;margin-bottom:6px}
+.suggest-item{background:#fff;border:1px solid #f0f0f0;border-radius:4px;padding:5px 8px;margin-bottom:4px;font-size:11px}
+.suggest-item .rn{font-weight:600;color:#1890ff;font-size:11px}
+.suggest-item .rt{color:#555;white-space:pre-wrap;font-family:monospace;font-size:10px;max-height:80px;overflow-y:auto}
+/* 进度 */
+.progress-bar{width:100%;height:3px;background:#f0f0f0;border-radius:2px;margin:4px 0;overflow:hidden}
+.progress-bar .fill{height:100%;background:#1890ff;transition:width .3s}
+/* 不匹配明细 */
+.mismatch-table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px}
+.mismatch-table th,.mismatch-table td{padding:3px 6px;border:1px solid #f0f0f0;text-align:left}
+.mismatch-table th{background:#fafafa;font-weight:600}
+.hidden{display:none!important}
+/* tabs */
+.tabs{display:flex;border-bottom:2px solid #f0f0f0;margin-bottom:8px}
+.tab{padding:5px 12px;cursor:pointer;font-size:12px;color:#666;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.active{color:#1890ff;border-bottom-color:#1890ff;font-weight:500}
+.tab-content{display:none}.tab-content.active{display:block}
+/* modal */
+.modal-mask{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100}
+.modal-body{background:#fff;border-radius:8px;padding:20px;max-width:800px;width:92%;max-height:80vh;overflow-y:auto}
+.compare-table{width:100%;border-collapse:collapse;font-size:11px;margin:6px 0}
+.compare-table th,.compare-table td{padding:4px 6px;border:1px solid #f0f0f0;text-align:left}
+.compare-table th{background:#fafafa}
+.match-yes{color:#52c41a;font-weight:600}.match-no{color:#ff4d4f;font-weight:600}
+</style>
+</head>
+<body>
+<!-- 顶部配置栏 -->
+<div class="topbar">
+  <div class="logo">B超提示词优化器</div>
+  <div class="sep"></div>
+  <div class="field"><label>模板</label><select id="templateSelect"><option value="">加载中...</option></select></div>
+  <div class="field"><label>ASR</label><select id="asrFilter"><option value="all">全部</option></select></div>
+  <div class="field"><label>样本</label><input id="sampleSize" type="number" value="0" min="0" style="width:50px"></div>
+  <button class="btn btn-primary" onclick="loadConfig()">加载</button>
+  <button class="btn btn-success" id="runBtn" onclick="startRound()" disabled>▶ 运行一轮</button>
+  <button class="btn btn-danger" id="stopBtn" onclick="stopRun()" disabled>停止</button>
+  <div class="round-badge" id="roundBadge">第 0 轮</div>
+  <div class="sep"></div>
+  <button class="btn btn-ghost" id="togglePatientBtn" onclick="togglePatientPanel()" style="font-size:11px">选择患者 ▼</button>
+  <div id="progressWrap" class="hidden" style="min-width:120px">
+    <div style="font-size:10px;color:#999" id="progressText">0/0</div>
+    <div class="progress-bar"><div class="fill" id="progressFill" style="width:0%"></div></div>
+  </div>
+</div>
+
+<!-- 主体 -->
+<div class="main">
+  <!-- 左侧：评估结果 -->
+  <div class="left-panel">
+    <!-- 患者选择面板 -->
+    <div class="card hidden" id="comparePanel">
+      <h3>
+        选择患者 <span style="font-size:10px;color:#999;font-weight:normal">(选中后只跑选中患者的所有ASR数据)</span>
+        <span class="toggle">
+          <input type="checkbox" id="selectAllPatients" onchange="toggleAllPatients()" style="margin-right:4px">全选
+        </span>
+      </h3>
+      <div style="margin-bottom:8px">
+        <input type="text" id="patientSearch" placeholder="搜索病历号..." style="width:100%;padding:4px 8px;border:1px solid #d9d9d9;border-radius:4px;font-size:11px" oninput="filterPatients()">
+      </div>
+      <div id="patientList" style="max-height:200px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:4px"></div>
+      <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+        <span style="font-size:11px;color:#999" id="selectedCount">已选 0 位患者</span>
+        <button class="btn btn-success" style="font-size:11px;flex:1" onclick="runCompare()" id="compareRunBtn" disabled>▶ 运行对比</button>
+      </div>
+    </div>
+
+    <!-- 患者对比结果 -->
+    <div class="card hidden" id="compareResultPanel">
+      <h3>患者对比结果</h3>
+      <div id="compareResultArea"></div>
+    </div>
+
+    <!-- 综合指标 -->
+    <div class="card">
+      <h3>综合评估指标</h3>
+      <div class="metrics-grid" id="metricsGrid">
+        <div class="metric"><div class="val" id="mAvg">-</div><div class="lbl">总体准确率</div></div>
+        <div class="metric"><div class="val" id="mStruct">-</div><div class="lbl">结构化成功率</div></div>
+        <div class="metric"><div class="val" id="mPass">-</div><div class="lbl">完整通过率</div></div>
+        <div class="metric"><div class="val" id="mFolTotal">-</div><div class="lbl">卵泡总数准确率</div></div>
+        <div class="metric"><div class="val" id="mFolDetail">-</div><div class="lbl">卵泡明细正确率</div></div>
+        <div class="metric"><div class="val" id="mFolF1">-</div><div class="lbl">卵泡F1</div></div>
+        <div class="metric"><div class="val" id="mEndo">-</div><div class="lbl">内膜准确率</div></div>
+        <div class="metric"><div class="val" id="mOvary">-</div><div class="lbl">卵巢准确率</div></div>
+      </div>
+    </div>
+
+
+
+    <!-- ASR 分组 -->
+    <div class="card">
+      <h3>ASR 模型对比</h3>
+      <div class="asr-cards" id="asrCards"></div>
+    </div>
+
+    <!-- 错误分布 -->
+    <div class="card">
+      <h3>错误分布</h3>
+      <div class="error-dist" id="errorDist"></div>
+    </div>
+
+    <!-- 字段匹配率 -->
+    <div class="card">
+      <h3>各字段匹配率</h3>
+      <div id="fieldBars"></div>
+    </div>
+
+    <!-- 详情面板 (Tab) -->
+    <div class="card">
+      <div class="tabs">
+        <div class="tab active" onclick="switchDetailTab('samples')">样本详情</div>
+        <div class="tab" onclick="switchDetailTab('follicle')">卵泡统计</div>
+        <div class="tab" onclick="switchDetailTab('log')">运行日志</div>
+      </div>
+      <div id="dtab-samples" class="tab-content active">
+        <div class="sample-row" style="font-weight:600;background:#fafafa">
+          <div>病历号</div><div>ASR</div><div>LLM结果</div><div>真实值</div><div>准确率</div>
+        </div>
+        <div id="sampleList"><div style="padding:16px;text-align:center;color:#ccc">等待运行...</div></div>
+      </div>
+      <div id="dtab-follicle" class="tab-content">
+        <div class="fol-stat" id="folStat">
+          <div class="item"><div class="num" id="fsReal">-</div><div class="desc">真实卵泡总数</div></div>
+          <div class="item"><div class="num" id="fsPred">-</div><div class="desc">模型输出总数</div></div>
+          <div class="item"><div class="num" id="fsMatch">-</div><div class="desc">尺寸完全匹配</div></div>
+        </div>
+        <div id="mismatchArea"></div>
+      </div>
+      <div id="dtab-log" class="tab-content">
+        <div class="log" id="logArea"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右侧：提示词 + 优化建议 -->
+  <div class="right-panel">
+    <div class="card">
+      <h3>
+        提示词编辑器
+        <span class="toggle" id="promptToggle" onclick="togglePrompt()">展开 ▼</span>
+      </h3>
+      <div class="prompt-collapse" id="promptCollapse">
+        <textarea id="promptEditor" class="prompt-editor" placeholder="请先加载配置..."></textarea>
+        <div style="margin-top:6px;display:flex;gap:6px">
+          <button class="btn btn-ghost" onclick="savePrompt()" style="font-size:11px">保存为模板</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="suggestArea"></div>
+
+    <!-- 轮次对比 -->
+    <div class="card">
+      <h3>轮次对比</h3>
+      <div id="roundHistory" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px"></div>
+      <div id="roundCompare" style="overflow-x:auto"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 详情弹窗 -->
+<div id="detailModal" class="modal-mask hidden" onclick="if(event.target===this)closeDetail()">
+  <div class="modal-body" id="detailContent"></div>
+</div>
+
+<script>
+// ── 状态 ──
+let testData=[],templates={},currentPrompt='',currentRound=0,isRunning=false,roundResults=[],history=[];
+let pendingOptimization=null;
+
+function log(m,c='info'){const e=document.getElementById('logArea');e.innerHTML+=`<div class="${c}">[${new Date().toLocaleTimeString()}] ${m}</div>`;e.scrollTop=e.scrollHeight}
+
+// ── 加载 ──
+async function loadConfig(){
+  log('加载配置...');
+  try{
+    const r=await fetch('/api/config'),d=await r.json();
+    document.getElementById('apiKey').value=d.api_key||'';
+    document.getElementById('endpoint').value=d.endpoint||'';
+    document.getElementById('modelName').value=d.model_name||'';
+    const sel=document.getElementById('templateSelect');sel.innerHTML='';
+    for(const[n,c]of Object.entries(d.templates)){templates[n]=c;const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o)}
+    if(d.templates['DP-v4'])sel.value='DP-v4';
+    sel.onchange=()=>{currentPrompt=templates[sel.value]||'';document.getElementById('promptEditor').value=currentPrompt};
+    currentPrompt=templates[sel.value]||'';document.getElementById('promptEditor').value=currentPrompt;
+    testData=d.test_data||[];
+    // ASR filter
+    const af=document.getElementById('asrFilter');af.innerHTML='<option value="all">全部('+testData.length+')</option>';
+    const ag={};for(const t of testData){const k=t.asr_provider+'|'+t.asr_model_name;ag[k]=(ag[k]||0)+1}
+    for(const[k,c]of Object.entries(ag)){const[,n]=k.split('|');const o=document.createElement('option');o.value=k;o.textContent=`${n}(${c})`;af.appendChild(o)}
+    log(`已加载 ${Object.keys(templates).length} 模板, ${testData.length} 条数据, ${Object.keys(ag).length} 种ASR`,'success');
+    document.getElementById('runBtn').disabled=false;
+  }catch(e){log('加载失败: '+e.message,'error')}
+}
+
+// ── LLM ──
+async function callLLM(transcript,prompt){
+  const up=prompt.includes('{transcript}')?prompt.replace('{transcript}',transcript):prompt+'\n\n## 转写文本\n\n'+transcript;
+  const r=await fetch('/api/llm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    _endpoint:document.getElementById('endpoint').value,_api_key:document.getElementById('apiKey').value,
+    model:document.getElementById('modelName').value,
+    messages:[{role:'system',content:'你是一名医学数据结构化专家。请严格按照用户要求的 JSON 格式返回，不要附加任何解释或 Markdown。'},{role:'user',content:up}],
+    temperature:0.1,stream:false
+  })});
+  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||'LLM 请求失败')}
+  const d=await r.json();let t=d.choices[0].message.content;
+  const m1=t.match(/```(?:json)?\s*([\s\S]*?)\s*```/);if(m1)t=m1[1];
+  const m2=t.match(/\{[\s\S]*\}/);if(m2)t=m2[0];
+  try{return JSON.parse(t)}catch{return null}
+}
+
+// ── 卵泡归一化 ──
+function normFol(f){if(!Array.isArray(f))return[];const m={};for(const i of f){if(!i||typeof i!=='object')continue;let s=parseFloat(i.size);if(isNaN(s))continue;s=Math.round(s*10)/10;let c=parseInt(i.count)||1;if(c<=0)continue;m[s]=(m[s]||0)+c}return Object.entries(m).map(([s,c])=>({size:parseFloat(s),count:c})).sort((a,b)=>b.size-a.size)}
+function folTotal(f){return f.reduce((s,f)=>s+f.count,0)}
+
+// ── 精细化评估 ──
+function evaluateResult(llm,gt){
+  if(!llm)return{accuracy:0,fields:{},correct:0,total:10,structOk:false,
+    folPrecision:0,folRecall:0,folF1:0,realTotal:0,predTotal:0,exactMatch:0,
+    errors:{miss:0,extra:0,wrongSide:0,countErr:0,sizeErr:0}};
+  const fields={};let correct=0;const total=10;
+  const checks=[['right_follicle_total','follicle_total'],['left_follicle_total','follicle_total'],
+    ['right_follicles','follicles'],['left_follicles','follicles'],
+    ['endometrium_thickness','number:0.5'],['endometrium_type','string'],
+    ['right_ovary_length','number:2'],['right_ovary_width','number:2'],
+    ['left_ovary_length','number:2'],['left_ovary_width','number:2']];
+  for(const[key,type]of checks){
+    const id=llm[key],truth=gt[key];let match=false;
+    if(type==='follicle_total')match=parseInt(id)===parseInt(truth);
+    else if(type==='follicles')match=JSON.stringify(normFol(id))===JSON.stringify(normFol(truth));
+    else if(type==='string')match=String(id||'').trim()===String(truth||'').trim();
+    else if(type.startsWith('number:')){const tol=parseFloat(type.split(':')[1]);match=Math.abs(parseFloat(id)-parseFloat(truth))<=tol}
+    fields[key]={match};if(match)correct++;
+  }
+  // 结构化成功率
+  const structOk=correct>=8;
+  // 卵泡 F1 / Precision / Recall
+  let realTotal=0,predTotal=0,exactMatch=0;
+  let tp=0,fp=0,fn=0;
+  const errors={miss:0,extra:0,wrongSide:0,countErr:0,sizeErr:0};
+  for(const side of['right','left']){
+    const rn=normFol(gt[side+'_follicles']||[]);
+    const pn=normFol(llm[side+'_follicles']||[]);
+    const rt=folTotal(rn),pt=folTotal(pn);
+    realTotal+=rt;predTotal+=pt;
+    // 总数匹配
+    if(parseInt(llm[side+'_follicle_total'])!==parseInt(gt[side+'_follicle_total']))errors.countErr++;
+    // 明细匹配
+    const rJson=JSON.stringify(rn),pJson=JSON.stringify(pn);
+    if(rJson===pJson)exactMatch+=rt;
+    // 逐个匹配（按尺寸）
+    const rMap={},pMap={};
+    for(const f of rn)rMap[f.size]=(rMap[f.size]||0)+f.count;
+    for(const f of pn)pMap[f.size]=(pMap[f.size]||0)+f.count;
+    const allSizes=new Set([...Object.keys(rMap),...Object.keys(pMap)]);
+    for(const s of allSizes){
+      const rc=rMap[s]||0,pc=pMap[s]||0;
+      const matched=Math.min(rc,pc);
+      tp+=matched;fn+=Math.max(0,rc-matched);fp+=Math.max(0,pc-matched);
+      if(rc>0&&pc===0)errors.miss+=rc;
+      if(pc>0&&rc===0)errors.extra+=pc;
+      if(rc>0&&pc>0&&rc!==pc)errors.countErr+=Math.abs(rc-pc);
+      if(matched>0&&rJson!==pJson)errors.sizeErr++;
+    }
+  }
+  // 左右混淆检测
+  const rr=normFol(llm.right_follicles||[]),rl=normFol(llm.left_follicles||[]);
+  const gr=normFol(gt.right_follicles||[]),gl=normFol(gt.left_follicles||[]);
+  if(folTotal(rr)>0&&folTotal(gr)===0&&folTotal(rl)>0&&folTotal(gl)>0)errors.wrongSide++;
+  if(folTotal(rl)>0&&folTotal(gl)===0&&folTotal(rr)>0&&folTotal(gr)>0)errors.wrongSide++;
+  const folPrecision=tp+fp>0?tp/(tp+fp):0;
+  const folRecall=tp+fn>0?tp/(tp+fn):0;
+  const folF1=folPrecision+folRecall>0?2*folPrecision*folRecall/(folPrecision+folRecall):0;
+  return{accuracy:correct/total,fields,correct,total,structOk,folPrecision,folRecall,folF1,realTotal,predTotal,exactMatch,errors};
+}
+
+// ── 运行 ──
+async function startRound(){
+  if(isRunning)return;isRunning=true;currentRound++;
+  document.getElementById('roundBadge').textContent=`第 ${currentRound} 轮`;
+  document.getElementById('runBtn').disabled=true;document.getElementById('stopBtn').disabled=false;
+  document.getElementById('progressWrap').classList.remove('hidden');
+  document.getElementById('suggestArea').innerHTML='';pendingOptimization=null;
+  const tplName=document.getElementById('templateSelect').value;
+  const prompt=document.getElementById('promptEditor').value;currentPrompt=prompt;
+  let samples=testData;
+  // 患者筛选（优先）
+  const selectedPatients=getSelectedPatients();
+  if(selectedPatients.length>0){
+    samples=samples.filter(d=>selectedPatients.includes(d.record_id));
+    log(`患者筛选: ${selectedPatients.length}位, ${samples.length}条ASR数据`);
+  } else {
+    const asrKey=document.getElementById('asrFilter').value;
+    if(asrKey!=='all'){const[p,m]=asrKey.split('|');samples=samples.filter(d=>d.asr_provider===p&&d.asr_model_name===m)}
+  }
+  const n=parseInt(document.getElementById('sampleSize').value);
+  if(n>0&&n<samples.length)samples=[...samples].sort(()=>Math.random()-.5).slice(0,n);
+  log(`═══ 第${currentRound}轮 | ${samples.length}条 ═══`);
+  const results=[];
+  for(let i=0;i<samples.length;i++){
+    if(!isRunning){log('已停止','warn');break}
+    const item=samples[i];const pct=((i+1)/samples.length*100).toFixed(0);
+    document.getElementById('progressText').textContent=`${i+1}/${samples.length}`;
+    document.getElementById('progressFill').style.width=pct+'%';
+    try{
+      const llmResult=await callLLM(item.transcript,prompt);
+      const ev=evaluateResult(llmResult,item.ground_truth);
+      results.push({...item,llm_result:llmResult,eval:ev,accuracy:ev.accuracy});
+      log(`${item.record_id}: ${(ev.accuracy*100).toFixed(0)}%`,ev.accuracy>=.8?'success':ev.accuracy<.3?'error':'info');
+    }catch(e){
+      log(`${item.record_id}: 错误 - ${e.message}`,'error');
+      results.push({...item,llm_result:null,eval:evaluateResult(null,item.ground_truth),accuracy:0});
+    }
+  }
+  roundResults=results;
+  // 计算本轮完整指标
+  const _n=results.length;
+  const _fs={};for(const _f of['right_follicle_total','left_follicle_total','right_follicles','left_follicles','endometrium_thickness','endometrium_type','right_ovary_length','right_ovary_width','left_ovary_length','left_ovary_width'])_fs[_f]={m:0,t:0};
+  for(const r of results)for(const _f of Object.keys(_fs)){_fs[_f].t++;if(r.eval.fields[_f]?.match)_fs[_f].m++}
+  const _errS={miss:0,extra:0,wrongSide:0,countErr:0,sizeErr:0};for(const r of results)for(const k of Object.keys(_errS))_errS[k]+=r.eval.errors[k];
+  history.push({round:currentRound,template:tplName,results,
+    metrics:{avg:getAvg(results),structOk:results.filter(r=>r.eval.structOk).length/_n*100,
+      pass:results.filter(r=>r.accuracy===1).length/_n*100,
+      folTotal:results.filter(r=>r.eval.fields.right_follicle_total?.match&&r.eval.fields.left_follicle_total?.match).length/_n*100,
+      folDetail:results.filter(r=>r.eval.fields.right_follicles?.match&&r.eval.fields.left_follicles?.match).length/_n*100,
+      folF1:results.reduce((s,r)=>s+r.eval.folF1,0)/_n*100,
+      endo:results.filter(r=>r.eval.fields.endometrium_thickness?.match&&r.eval.fields.endometrium_type?.match).length/_n*100,
+      ovary:results.filter(r=>['right_ovary_length','right_ovary_width','left_ovary_length','left_ovary_width'].every(k=>r.eval.fields[k]?.match)).length/_n*100,
+      errors:_errS,n:_n}});
+  renderAll(results);
+  isRunning=false;document.getElementById('runBtn').disabled=false;document.getElementById('stopBtn').disabled=true;
+  document.getElementById('progressWrap').classList.add('hidden');
+  log(`═══ 第${currentRound}轮完成 | 平均: ${getAvg(results).toFixed(1)}% ═══`,'success');
+  autoSuggest(results);
+}
+function stopRun(){isRunning=false}
+function getAvg(r){return r.length?r.reduce((s,x)=>s+x.accuracy,0)/r.length*100:0}
+
+// ── 渲染全部 ──
+function renderAll(results){
+  const n=results.length;if(!n)return;
+  // 综合指标
+  const avg=getAvg(results);
+  const structOk=results.filter(r=>r.eval.structOk).length;
+  const perfect=results.filter(r=>r.accuracy===1).length;
+  const folTotalAcc=results.filter(r=>r.eval.fields.right_follicle_total?.match&&r.eval.fields.left_follicle_total?.match).length;
+  const folDetailAcc=results.filter(r=>r.eval.fields.right_follicles?.match&&r.eval.fields.left_follicles?.match).length;
+  const endoAcc=results.filter(r=>r.eval.fields.endometrium_thickness?.match&&r.eval.fields.endometrium_type?.match).length;
+  const ovaryAcc=results.filter(r=>['right_ovary_length','right_ovary_width','left_ovary_length','left_ovary_width'].every(k=>r.eval.fields[k]?.match)).length;
+  const avgF1=results.reduce((s,r)=>s+r.eval.folF1,0)/n;
+  setMetric('mAvg',avg.toFixed(1)+'%',avg>=70?'green':avg>=50?'orange':'red');
+  setMetric('mStruct',(structOk/n*100).toFixed(1)+'%',structOk/n>=.7?'green':'');
+  setMetric('mPass',(perfect/n*100).toFixed(1)+'%',perfect/n>=.5?'green':'');
+  setMetric('mFolTotal',(folTotalAcc/n*100).toFixed(1)+'%',folTotalAcc/n>=.6?'green':'');
+  setMetric('mFolDetail',(folDetailAcc/n*100).toFixed(1)+'%',folDetailAcc/n>=.4?'green':'');
+  setMetric('mFolF1',(avgF1*100).toFixed(1)+'%',avgF1>=.5?'green':'');
+  setMetric('mEndo',(endoAcc/n*100).toFixed(1)+'%',endoAcc/n>=.7?'green':'');
+  setMetric('mOvary',(ovaryAcc/n*100).toFixed(1)+'%',ovaryAcc/n>=.6?'green':'');
+  // 卵泡级别
+  const realT=results.reduce((s,r)=>s+r.eval.realTotal,0);
+  const predT=results.reduce((s,r)=>s+r.eval.predTotal,0);
+  const exactM=results.reduce((s,r)=>s+r.eval.exactMatch,0);
+  document.getElementById('fsReal').textContent=realT;
+  document.getElementById('fsPred').textContent=predT;
+  document.getElementById('fsMatch').textContent=exactM;
+  // 不匹配明细
+  const mismatches=results.filter(r=>!r.eval.fields.right_follicles?.match||!r.eval.fields.left_follicles?.match);
+  let mmHtml='';
+  if(mismatches.length>0){
+    mmHtml=`<div style="font-size:11px;color:#999;margin-bottom:4px">卵泡明细不匹配 (${mismatches.length}条):</div>
+    <table class="mismatch-table"><tr><th>病历号</th><th>ASR</th><th>真实右</th><th>LLM右</th><th>真实左</th><th>LLM左</th></tr>`;
+    for(const r of mismatches.slice(0,15)){
+      const gt=r.ground_truth,llm=r.llm_result||{};
+      mmHtml+=`<tr><td>${r.record_id}</td><td style="font-size:10px">${(r.asr_model_name||'').replace('本地 FunASR','FunASR').replace('豆包 ASR','豆包')}</td>
+        <td>${JSON.stringify(gt.right_follicles||[])}</td><td>${JSON.stringify(llm.right_follicles||[])}</td>
+        <td>${JSON.stringify(gt.left_follicles||[])}</td><td>${JSON.stringify(llm.left_follicles||[])}</td></tr>`;
+    }
+    mmHtml+='</table>';
+    if(mismatches.length>15)mmHtml+=`<div style="font-size:10px;color:#999;margin-top:4px">...还有${mismatches.length-15}条</div>`;
+  }
+  document.getElementById('mismatchArea').innerHTML=mmHtml;
+  // ASR 分组
+  const ag={};for(const r of results){const k=r.asr_model_name||'?';if(!ag[k])ag[k]={n:0,s:0,p:0};ag[k].n++;ag[k].s+=r.accuracy;if(r.accuracy===1)ag[k].p++}
+  let acHtml='';for(const[name,s]of Object.entries(ag)){const a=(s.s/s.n*100).toFixed(1);const c=a>=70?'#52c41a':a>=50?'#faad14':'#ff4d4f';
+    acHtml+=`<div class="asr-card"><div class="name">${name}</div><div class="rate" style="color:${c}">${a}%</div><div class="cnt">${s.n}条 | 完美${s.p}</div></div>`}
+  document.getElementById('asrCards').innerHTML=acHtml;
+  // 错误分布
+  const errSum={miss:0,extra:0,wrongSide:0,countErr:0,sizeErr:0};
+  for(const r of results)for(const k of Object.keys(errSum))errSum[k]+=r.eval.errors[k];
+  let eHtml='';
+  const errLabels={miss:'漏识别',extra:'多识别',wrongSide:'错侧',countErr:'数量偏差',sizeErr:'尺寸偏差'};
+  const errColors={miss:'#ff4d4f',extra:'#faad14',wrongSide:'#722ed1',countErr:'#1890ff',sizeErr:'#13c2c2'};
+  for(const[k,v]of Object.entries(errSum)){if(v>0)eHtml+=`<div class="error-chip" style="background:${errColors[k]}20;color:${errColors[k]};border:1px solid ${errColors[k]}40">${errLabels[k]}: ${v}</div>`}
+  document.getElementById('errorDist').innerHTML=eHtml||'<span style="color:#999;font-size:11px">无错误</span>';
+  // 字段匹配率
+  const fieldNames=['right_follicle_total','left_follicle_total','right_follicles','left_follicles','endometrium_thickness','endometrium_type','right_ovary_length','right_ovary_width','left_ovary_length','left_ovary_width'];
+  const fl={right_follicle_total:'右卵泡总数',left_follicle_total:'左卵泡总数',right_follicles:'右卵泡明细',left_follicles:'左卵泡明细',endometrium_thickness:'内膜厚度',endometrium_type:'内膜类型',right_ovary_length:'右卵巢长',right_ovary_width:'右卵巢宽',left_ovary_length:'左卵巢长',left_ovary_width:'左卵巢宽'};
+  const fs={};for(const f of fieldNames)fs[f]={m:0,t:0};
+  for(const r of results)for(const f of fieldNames){fs[f].t++;if(r.eval.fields[f]?.match)fs[f].m++}
+  let bHtml='';for(const f of fieldNames.sort((a,b)=>fs[a].m/fs[a].t-fs[b].m/fs[b].t)){const s=fs[f];const rate=s.t?(s.m/s.t*100):0;const c=rate>=80?'#52c41a':rate>=50?'#faad14':'#ff4d4f';
+    bHtml+=`<div class="field-bar"><div class="name">${fl[f]}</div><div class="bar-wrap"><div class="bar" style="width:${rate}%;background:${c}"></div></div><div class="pct">${rate.toFixed(0)}%</div></div>`}
+  document.getElementById('fieldBars').innerHTML=bHtml;
+  // 样本列表
+  const sorted=[...results].sort((a,b)=>a.accuracy-b.accuracy);
+  let sHtml='';for(const r of sorted){
+    const cls=r.accuracy>=.8?'badge-h':r.accuracy>=.5?'badge-m':'badge-l';
+    const llmR=r.llm_result?.right_follicles||[],llmL=r.llm_result?.left_follicles||[];
+    const gtR=r.ground_truth.right_follicles||[],gtL=r.ground_truth.left_follicles||[];
+    const asrTag=(r.asr_model_name||'').replace('本地 FunASR','FunASR').replace('豆包 ASR','豆包').replace('MiMo-V2.5-ASR','MiMo');
+    sHtml+=`<div class="sample-row" onclick="showDetail('${r.record_id}')" style="cursor:pointer">
+      <div class="rid">${r.record_id}</div><div style="font-size:10px;color:#aaa">${asrTag}</div>
+      <div>右${llmR.length}左${llmL.length}</div><div>右${gtR.length}左${gtL.length}</div>
+      <div><span class="badge ${cls}">${(r.accuracy*100).toFixed(0)}%</span></div></div>`}
+  document.getElementById('sampleList').innerHTML=sHtml;
+  // 轮次历史
+  let hHtml='';for(const h of history){const a=getAvg(h.results);hHtml+=`<div style="padding:2px 8px;border-radius:10px;font-size:11px;${h.round===currentRound?'background:#1890ff;color:#fff':'background:#f0f0f0'}">第${h.round}轮: ${a.toFixed(1)}%</div>`}
+  document.getElementById('roundHistory').innerHTML=hHtml;
+  // 轮次对比表
+  if(history.length>=1){
+    const rows=['avg','structOk','pass','folTotal','folDetail','folF1','endo','ovary'];
+    const labels=['总体准确率','结构化成功率','完整通过率','卵泡总数','卵泡明细','卵泡F1','内膜','卵巢'];
+    let tHtml='<table style="width:100%;border-collapse:collapse;font-size:11px">';
+    tHtml+='<tr style="background:#fafafa"><th style="padding:4px 6px;text-align:left;border-bottom:1px solid #e8e8e8">指标</th>';
+    for(const h of history)tHtml+=`<th style="padding:4px 6px;text-align:center;border-bottom:1px solid #e8e8e8;${h.round===currentRound?'color:#1890ff;font-weight:700':''}">第${h.round}轮</th>`;
+    tHtml+='<th style="padding:4px 6px;text-align:center;border-bottom:1px solid #e8e8e8;color:#999">趋势</th></tr>';
+    for(let i=0;i<rows.length;i++){
+      const k=rows[i];
+      tHtml+=`<tr><td style="padding:3px 6px;color:#666">${labels[i]}</td>`;
+      let prev=null;const vals=[];
+      for(const h of history){const v=h.metrics?.[k]??0;vals.push(v);
+        const color=v>=70?'#52c41a':v>=50?'#faad14':'#ff4d4f';
+        const arrow=prev!==null?(v>prev?'↑':v<prev?'↓':'→'):'';
+        tHtml+=`<td style="padding:3px 6px;text-align:center;color:${color};font-weight:600">${v.toFixed(1)}%${arrow}</td>`;
+        prev=v;
+      }
+      // 趋势
+      if(vals.length>=2){const diff=vals[vals.length-1]-vals[0];const dc=diff>0?'#52c41a':diff<0?'#ff4d4f':'#999';
+        tHtml+=`<td style="padding:3px 6px;text-align:center;color:${dc};font-weight:700">${diff>0?'+':''}${diff.toFixed(1)}%</td>`}
+      else tHtml+='<td style="padding:3px 6px;text-align:center;color:#ccc">-</td>';
+      tHtml+='</tr>';
+    }
+    // 错误行
+    const errKeys=['miss','extra','wrongSide','countErr','sizeErr'];
+    const errLabels=['漏识别','多识别','错侧','数量偏差','尺寸偏差'];
+    for(let i=0;i<errKeys.length;i++){
+      tHtml+=`<tr><td style="padding:3px 6px;color:#999">${errLabels[i]}</td>`;
+      let prev=null;
+      for(const h of history){const v=h.metrics?.errors?.[errKeys[i]]??0;
+        const arrow=prev!==null?(v<prev?'↓':v>prev?'↑':'→'):'';
+        tHtml+=`<td style="padding:3px 6px;text-align:center">${v}${arrow}</td>`;prev=v}
+      if(vals.length>=2){const diff=(history[history.length-1].metrics?.errors?.[errKeys[i]]??0)-(history[0].metrics?.errors?.[errKeys[i]]??0);
+        const dc=diff<0?'#52c41a':diff>0?'#ff4d4f':'#999';
+        tHtml+=`<td style="padding:3px 6px;text-align:center;color:${dc};font-weight:700">${diff>0?'+':''}${diff}</td>`}
+      else tHtml+='<td style="padding:3px 6px;text-align:center;color:#ccc">-</td>';
+      tHtml+='</tr>';
+    }
+    // 样本数行
+    tHtml+='<tr style="border-top:1px solid #e8e8e8"><td style="padding:3px 6px;color:#999">样本数</td>';
+    for(const h of history)tHtml+=`<td style="padding:3px 6px;text-align:center;color:#999">${h.metrics?.n??h.results.length}</td>`;
+    tHtml+='<td></td></tr>';
+    tHtml+='</table>';
+    document.getElementById('roundCompare').innerHTML=tHtml;
+  }
+  // 如果选中了患者，渲染对比结果
+  const _sp = getSelectedPatients();
+  if (_sp.length > 0) renderCompareResult(results, _sp);
+}
+function setMetric(id,v,c){const e=document.getElementById(id);e.textContent=v;e.parentElement.className='metric'+(c?' '+c:'')}
+
+// ── 详情弹窗 ──
+function showDetail(rid){
+  const r=roundResults.find(x=>x.record_id===rid);if(!r)return;
+  const llm=r.llm_result||{},gt=r.ground_truth,f=r.eval.fields;
+  const fl={right_follicle_total:'右卵泡总数',left_follicle_total:'左卵泡总数',right_follicles:'右卵泡明细',left_follicles:'左卵泡明细',endometrium_thickness:'内膜厚度',endometrium_type:'内膜类型',right_ovary_length:'右卵巢长',right_ovary_width:'右卵巢宽',left_ovary_length:'左卵巢长',left_ovary_width:'左卵巢宽'};
+  let rows='';for(const[k,l]of Object.entries(fl)){const m=f[k]?.match;const c=m?'match-yes':'match-no';
+    let lv=JSON.stringify(llm[k]??'N/A'),gv=JSON.stringify(gt[k]??'N/A');
+    if(lv.length>80)lv=lv.substring(0,80)+'...';if(gv.length>80)gv=gv.substring(0,80)+'...';
+    rows+=`<tr><td>${l}</td><td class="${c}">${m?'✓':'✗'}</td><td style="font-size:10px">${lv}</td><td style="font-size:10px">${gv}</td></tr>`}
+  document.getElementById('detailContent').innerHTML=`
+    <h3 style="margin-bottom:8px">${rid} <span class="badge ${r.accuracy>=.8?'badge-h':r.accuracy>=.5?'badge-m':'badge-l'}">${(r.accuracy*100).toFixed(0)}%</span></h3>
+    <div style="font-size:11px;color:#999;margin-bottom:6px">ASR: ${r.asr_model_name} | F1: ${(r.eval.folF1*100).toFixed(0)}% | 漏${r.eval.errors.miss} 多${r.eval.errors.extra} 错侧${r.eval.errors.wrongSide}</div>
+    <div style="background:#f9f9f9;padding:8px;border-radius:4px;font-size:11px;margin-bottom:8px;max-height:100px;overflow-y:auto">${(r.transcript||'').substring(0,400)}...</div>
+    <table class="compare-table"><tr><th>字段</th><th>匹配</th><th>LLM</th><th>真实</th></tr>${rows}</table>
+    <div style="margin-top:8px;text-align:right"><button class="btn btn-primary" onclick="closeDetail()">关闭</button></div>`;
+  document.getElementById('detailModal').classList.remove('hidden');
+}
+function closeDetail(){document.getElementById('detailModal').classList.add('hidden')}
+
+// ── 提示词折叠 ──
+function togglePrompt(){const c=document.getElementById('promptCollapse');const t=document.getElementById('promptToggle');c.classList.toggle('open');t.textContent=c.classList.contains('open')?'收起 ▲':'展开 ▼'}
+function switchDetailTab(name){document.querySelectorAll('.tabs .tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('[id^="dtab-"]').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.getElementById('dtab-'+name).classList.add('active')}
+
+// ── 保存模板 ──
+function savePrompt(){const n=prompt('模板名称:');if(!n)return;templates[n]=document.getElementById('promptEditor').value;const s=document.getElementById('templateSelect');const o=document.createElement('option');o.value=n;o.textContent=n;s.appendChild(o);log(`已保存: ${n}`,'success')}
+
+// ── 自动优化 ──
+const RULES=[
+  {id:'side',name:'侧别切换',check:r=>{let c=0;for(const x of r){const l=x.llm_result||{},g=x.ground_truth;const lr=normFol(l.right_follicles||[]),ll=normFol(l.left_follicles||[]);const gr=(g.right_follicles||[]).length,gl=(g.left_follicles||[]).length;if(folTotal(lr)>0&&gr>0&&folTotal(lr)>=gr+gl*.5)c++;if(folTotal(ll)>0&&gl>0&&folTotal(ll)>=gl+gr*.5)c++}return c>=2},gen:()=>'## 侧别切换\n- 遇到"换边""对侧""另一边"必须切换归属\n- 听到"换边"后后续数字归另一侧'},
+  {id:'fol',name:'卵泡提取',check:(r,fs)=>{const rr=fs.right_follicles.m/Math.max(fs.right_follicles.t,1);const lr=fs.left_follicles.m/Math.max(fs.left_follicles.t,1);return rr<.4||lr<.4},gen:()=>'## 卵泡提取\n- 先数后归类，小数值(8-14mm)不得遗漏\n- 连续数字必须全部提取'},
+  {id:'empty',name:'防遗漏',check:r=>{let e=0;for(const x of r){const l=x.llm_result||{},g=x.ground_truth;if(folTotal(normFol(l.right_follicles||[]))===0&&(g.right_follicles||[]).length>0)e++;if(folTotal(normFol(l.left_follicles||[]))===0&&(g.left_follicles||[]).length>0)e++}return e>=2},gen:()=>'## 防遗漏\n- 检查两侧是否都有数据\n- 全文搜索"左""右"确认都已提取'},
+  {id:'count',name:'数量校验',check:(r,fs)=>{const rr=fs.right_follicle_total.m/Math.max(fs.right_follicle_total.t,1);const lr=fs.left_follicle_total.m/Math.max(fs.left_follicle_total.t,1);return rr<.5||lr<.5},gen:()=>'## 数量校验\n- 卵泡3-30mm，卵巢20-80mm\n- total=count之和，非数组长度'},
+  {id:'asr',name:'ASR噪声',check:r=>{let c=0;for(const x of r)if(/\d+[:：]\d+/.test(x.transcript||''))c++;return c>=1},gen:()=>'## ASR噪声\n- 冒号转小数点："19:3"→19.3\n- 同音纠正："面膜"→内膜，"脑巢"→卵巢'},
+  {id:'endo',name:'内膜类型',check:(r,fs)=>fs.endometrium_type.m/Math.max(fs.endometrium_type.t,1)<.7,gen:()=>'## 内膜类型\n- 类型紧跟厚度："内膜11.7 B"→thickness=11.7,type="B"\n- 只取A/B/C，忽略"型"字'}
+];
+function autoSuggest(results){
+  const fns=['right_follicle_total','left_follicle_total','right_follicles','left_follicles','endometrium_thickness','endometrium_type','right_ovary_length','right_ovary_width','left_ovary_length','left_ovary_width'];
+  const fs={};for(const f of fns)fs[f]={m:0,t:0};
+  for(const r of results)for(const f of fns){fs[f].t++;if(r.eval.fields[f]?.match)fs[f].m++}
+  const triggered=RULES.filter(r=>r.check(results,fs));
+  const area=document.getElementById('suggestArea');
+  if(!triggered.length){area.innerHTML='<div class="suggest-box"><h4>✓ 未发现明显可优化模式</h4></div>';return}
+  let opt=currentPrompt;const changes=[];
+  for(const rule of triggered){const a=rule.gen();const i=opt.lastIndexOf('---');if(i>0)opt=opt.substring(0,i)+a+'\n\n'+opt.substring(i);else opt+='\n\n'+a;changes.push({name:rule.name,text:a})}
+  pendingOptimization=opt;
+  let h=`<div class="suggest-box"><h4>发现 ${triggered.length} 个优化项</h4>`;
+  for(const c of changes)h+=`<div class="suggest-item"><div class="rn">+ ${c.name}</div><div class="rt">${c.text.replace(/</g,'&lt;')}</div></div>`;
+  h+=`<div style="margin-top:8px;display:flex;gap:6px"><button class="btn btn-success" style="font-size:11px" onclick="applySug()">应用并运行下一轮</button><button class="btn btn-ghost" style="font-size:11px" onclick="document.getElementById('suggestArea').innerHTML=''">忽略</button></div></div>`;
+  area.innerHTML=h;
+  log(`优化: ${triggered.map(r=>r.name).join(', ')}`,'success');
+}
+function applySug(){
+  if(!pendingOptimization)return;
+  const sel=document.getElementById('templateSelect');
+  const base=sel.value||'DP-v4';let bn=base.replace(/-v\d+$/,'');let v=1;const m=base.match(/-v(\d+)$/);if(m)v=parseInt(m[1])+1;
+  let fn=bn+'-v'+v;while(templates[fn]){v++;fn=bn+'-v'+v}
+  templates[fn]=pendingOptimization;
+  const o=document.createElement('option');o.value=fn;o.textContent=fn;sel.appendChild(o);sel.value=fn;
+  currentPrompt=pendingOptimization;document.getElementById('promptEditor').value=currentPrompt;
+  pendingOptimization=null;document.getElementById('suggestArea').innerHTML='';
+  log(`已保存 [${fn}]，开始下一轮...`,'success');startRound();
+}
+
+// ── 患者对比模式 ──
+let patientGroups = {};
+let compareMode = false;
+
+function togglePatientPanel() {
+  const panel = document.getElementById('comparePanel');
+  const btn = document.getElementById('togglePatientBtn');
+  const isOpen = !panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', isOpen);
+  btn.textContent = isOpen ? '选择患者 ▼' : '收起患者 ▲';
+  if (!isOpen && Object.keys(patientGroups).length === 0) loadPatients();
+}
+
+async function loadPatients() {
+  try {
+    const r = await fetch('/api/patients');
+    patientGroups = await r.json();
+    renderPatientList();
+    log(`已加载 ${Object.keys(patientGroups).length} 位患者（有多ASR结果）`, 'success');
+  } catch(e) { log('加载患者列表失败: ' + e.message, 'error'); }
+}
+
+function renderPatientList() {
+  const search = (document.getElementById('patientSearch')?.value || '').toLowerCase();
+  const list = document.getElementById('patientList');
+  let html = '';
+  for (const [rid, pg] of Object.entries(patientGroups)) {
+    if (search && !rid.toLowerCase().includes(search)) continue;
+    const models = pg.asr_results.map(a => a.asr_model_name.replace('本地 FunASR','FunASR').replace('豆包 ASR','豆包')).join(', ');
+    html += `<label style="display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid #f5f5f5;font-size:11px;cursor:pointer">
+      <input type="checkbox" class="patient-cb" value="${rid}" onchange="updateSelectedCount()" style="margin-right:6px">
+      <span style="font-weight:600;color:#1890ff;min-width:70px">${rid}</span>
+      <span style="color:#999;font-size:10px">${pg.asr_results.length}种ASR: ${models}</span>
+    </label>`;
+  }
+  list.innerHTML = html || '<div style="padding:10px;text-align:center;color:#ccc">无匹配患者</div>';
+}
+
+function filterPatients() { renderPatientList(); }
+
+function toggleAllPatients() {
+  const checked = document.getElementById('selectAllPatients').checked;
+  document.querySelectorAll('.patient-cb').forEach(cb => cb.checked = checked);
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  const n = document.querySelectorAll('.patient-cb:checked').length;
+  document.getElementById('selectedCount').textContent = `已选 ${n} 位患者`;
+  document.getElementById('compareRunBtn').disabled = (n === 0);
+}
+
+function getSelectedPatients() {
+  return Array.from(document.querySelectorAll('.patient-cb:checked')).map(cb => cb.value);
+}
+
+function runCompare() {
+  // 患者选择后直接调用 startRound（startRound 内部会检查选中的患者）
+  const selected = getSelectedPatients();
+  if (!selected.length) { log('请先选择患者', 'warn'); return; }
+  log(`已选 ${selected.length} 位患者，开始运行...`);
+  startRound();
+}
+
+function renderCompareResult(results, selectedPatients) {
+  const panel = document.getElementById('compareResultPanel');
+  panel.classList.remove('hidden');
+  // 按患者分组
+  const byPatient = {};
+  for (const r of results) {
+    if (!byPatient[r.record_id]) byPatient[r.record_id] = [];
+    byPatient[r.record_id].push(r);
+  }
+  let html = '';
+  for (const rid of selectedPatients) {
+    const rows = byPatient[rid] || [];
+    if (!rows.length) continue;
+    html += `<div style="margin-bottom:12px;border:1px solid #f0f0f0;border-radius:6px;overflow:hidden">
+      <div style="background:#fafafa;padding:6px 10px;font-weight:600;font-size:12px;color:#1890ff">${rid}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <tr style="background:#fafafa"><th style="padding:4px 6px;text-align:left">ASR模型</th><th style="padding:4px;text-align:center">准确率</th><th style="padding:4px;text-align:center">卵泡F1</th><th style="padding:4px;text-align:center">右卵泡</th><th style="padding:4px;text-align:center">左卵泡</th><th style="padding:4px;text-align:center">内膜</th><th style="padding:4px;text-align:center">卵巢</th><th style="padding:4px;text-align:center">错误</th></tr>`;
+    for (const r of rows) {
+      const m = r.asr_model_name.replace('本地 FunASR','FunASR').replace('豆包 ASR','豆包').replace('MiMo-V2.5-ASR','MiMo');
+      const cls = r.accuracy >= .8 ? 'match-yes' : r.accuracy < .3 ? 'match-no' : '';
+      const e = r.eval.errors;
+      const errStr = [e.miss?'漏'+e.miss:'', e.extra?'多'+e.extra:'', e.wrongSide?'错侧'+e.wrongSide:''].filter(Boolean).join(' ') || '-';
+      html += `<tr>
+        <td style="padding:3px 6px;font-weight:500">${m}</td>
+        <td class="${cls}" style="padding:3px;text-align:center;font-weight:700">${(r.accuracy*100).toFixed(0)}%</td>
+        <td style="padding:3px;text-align:center">${(r.eval.folF1*100).toFixed(0)}%</td>
+        <td style="padding:3px;text-align:center">${r.eval.fields.right_follicles?.match?'✓':'✗'}</td>
+        <td style="padding:3px;text-align:center">${r.eval.fields.left_follicles?.match?'✓':'✗'}</td>
+        <td style="padding:3px;text-align:center">${r.eval.fields.endometrium_thickness?.match?'✓':'✗'}</td>
+        <td style="padding:3px;text-align:center">${['right_ovary_length','right_ovary_width','left_ovary_length','left_ovary_width'].every(k=>r.eval.fields[k]?.match)?'✓':'✗'}</td>
+        <td style="padding:3px;text-align:center;font-size:10px;color:#999">${errStr}</td>
+      </tr>`;
+    }
+    // 最优行
+    const best = rows.reduce((a, b) => a.accuracy > b.accuracy ? a : b);
+    const bestM = best.asr_model_name.replace('本地 FunASR','FunASR').replace('豆包 ASR','豆包').replace('MiMo-V2.5-ASR','MiMo');
+    html += `<tr style="background:#f6ffed;font-size:10px"><td colspan="8" style="padding:3px 6px;color:#52c41a">最佳: ${bestM} (${(best.accuracy*100).toFixed(0)}%)</td></tr>`;
+    html += '</table></div>';
+  }
+  // 汇总：各ASR模型平均
+  const byModel = {};
+  for (const r of results) {
+    const m = r.asr_model_name || '?';
+    if (!byModel[m]) byModel[m] = { n: 0, s: 0, f1: 0 };
+    byModel[m].n++; byModel[m].s += r.accuracy; byModel[m].f1 += r.eval.folF1;
+  }
+  html += '<div style="margin-top:10px;padding:8px;background:#fafafa;border-radius:6px"><div style="font-size:11px;font-weight:600;margin-bottom:4px">ASR模型汇总</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:11px"><tr><th style="padding:3px;text-align:left">模型</th><th style="padding:3px">样本</th><th style="padding:3px">平均准确率</th><th style="padding:3px">平均F1</th></tr>';
+  for (const [m, s] of Object.entries(byModel)) {
+    const avg = (s.s / s.n * 100).toFixed(1);
+    const f1 = (s.f1 / s.n * 100).toFixed(1);
+    const c = avg >= 70 ? '#52c41a' : avg >= 50 ? '#faad14' : '#ff4d4f';
+    html += `<tr><td style="padding:3px">${m}</td><td style="padding:3px;text-align:center">${s.n}</td><td style="padding:3px;text-align:center;color:${c};font-weight:700">${avg}%</td><td style="padding:3px;text-align:center">${f1}%</td></tr>`;
+  }
+  html += '</table></div>';
+  document.getElementById('compareResultArea').innerHTML = html;
+}
+
+window.onload=()=>log('请点击"加载"');
+</script>
+<input type="hidden" id="endpoint" value="https://api.deepseek.com/v1">
+<input type="hidden" id="apiKey" value="">
+<input type="hidden" id="modelName" value="deepseek-chat">
+</body>
+</html>

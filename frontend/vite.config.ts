@@ -3,6 +3,9 @@ import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
 import path from 'path'
 
+const LAN_IP = '127.0.0.1'
+const API_TARGET = process.env.VITE_API_TARGET || `http://${LAN_IP}:8000`
+
 export default defineConfig({
   plugins: [
     vue(),
@@ -24,7 +27,17 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8001',
+        target: API_TARGET,
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    port: 80,
+    host: '0.0.0.0',
+    proxy: {
+      '/api': {
+        target: API_TARGET,
         changeOrigin: true,
       },
     },

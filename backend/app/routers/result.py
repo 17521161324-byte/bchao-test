@@ -1,20 +1,34 @@
 """
-结果管理路由 - xlsx 上传与解析
+结果管理路由 - xlsx 上传与解析、真实 B 超结果读写
 """
 import os
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 import openpyxl
 
 from app.database import get_db
 from app.models import DateFolder, PatientRecord, BUltraResult
 from app.schemas import BUltraResultOut
-from app.services.parser import parse_follicle_string
+from app.services.parser import parse_follicle_string, normalize_follicles
 from app.config import settings
 
 router = APIRouter()
+
+
+def _follicle_total(follicles: list[dict]) -> int:
+    return sum(int(f.get("count") or 0) for f in follicles)
+
+
+def _normalize_b_ultra_obj(obj: BUltraResult | None) -> BUltraResult | None:
+    """兼容历史数据：接口返回前确保卵泡字段是结构化数组。"""
+    if not obj:
+        return obj
+    obj.right_follicles = parse_follicle_string(obj.right_follicles)
+    obj.left_follicles = parse_follicle_string(obj.left_follicles)
+    obj.right_follicle_total = _follicle_total(obj.right_follicles)
+    obj.left_follicle_total = _follicle_total(obj.left_follicles)
+    return obj
 
 
 @router.post("/upload")
@@ -26,13 +40,11 @@ async def upload_result_file(
     if not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="只支持 xlsx/xls 文件")
 
-    # 保存文件
     save_path = os.path.join(settings.UPLOAD_DIR, file.filename)
     with open(save_path, "wb") as f:
         content = await file.read()
         f.write(content)
 
-    # 解析 xlsx
     try:
         parsed = await db.execute(select(DateFolder))
         date_folders = {d.date: d for d in parsed.scalars().all()}
@@ -40,29 +52,25 @@ async def upload_result_file(
         await db.commit()
         return {"message": "上传成功", "imported": count, "filename": file.filename}
     except Exception as e:
-        logger.error(f"xlsx 解析失败: {e}")
+        import logging
+        logging.error(f"xlsx 解析失败: {e}")
         raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
 
 
+# ======= 历史兼容接口（按病历号）=======
+
 @router.get("/{record_id}", response_model=BUltraResultOut | None)
-async def get_result_by_record(
-    record_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """根据病历号获取结果"""
+async def get_result_by_record(record_id: str, db: AsyncSession = Depends(get_db)):
+    """根据病历号获取结果（历史兼容）"""
     result = await db.execute(
         select(BUltraResult).where(BUltraResult.record_id == record_id)
     )
-    return result.scalar_one_or_none()
+    return _normalize_b_ultra_obj(result.scalar_one_or_none())
 
 
 @router.put("/{result_id}")
-async def update_result(
-    result_id: int,
-    data: dict,
-    db: AsyncSession = Depends(get_db),
-):
-    """更新 B 超结果"""
+async def update_result(result_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+    """更新 B 超结果（历史兼容，按 result_id）"""
     result = await db.execute(
         select(BUltraResult).where(BUltraResult.id == result_id)
     )
@@ -70,15 +78,74 @@ async def update_result(
     if not obj:
         raise HTTPException(status_code=404, detail="结果不存在")
 
-    # Update follicles if provided (recalculate totals)
     if "right_follicles" in data:
-        obj.right_follicles = data["right_follicles"]
-        obj.right_follicle_total = sum(f.get("count", 0) for f in data["right_follicles"])
+        obj.right_follicles = parse_follicle_string(data["right_follicles"])
+        obj.right_follicle_total = _follicle_total(obj.right_follicles)
     if "left_follicles" in data:
-        obj.left_follicles = data["left_follicles"]
-        obj.left_follicle_total = sum(f.get("count", 0) for f in data["left_follicles"])
+        obj.left_follicles = parse_follicle_string(data["left_follicles"])
+        obj.left_follicle_total = _follicle_total(obj.left_follicles)
 
-    # Update allowed scalar fields
+    field_map = {
+        "endometrium_thickness": "endometrium_thickness",
+        "endometrium_type": "endometrium_type",
+        "right_ovary_length": "right_ovary_length",
+        "right_ovary_width": "right_ovary_width",
+        "left_ovary_length": "left_ovary_length",
+        "left_ovary_width": "left_ovary_width",
+        "remark": "remark",
+    }
+    for key, field in field_map.items():
+        if key in data:
+            setattr(obj, field, data[key])
+
+    await db.commit()
+    await db.refresh(obj)
+    return _normalize_b_ultra_obj(obj)
+
+
+# ======= 按检查记录 ID（推荐接口）=======
+
+@router.get("/exam/{exam_record_id}/b-ultra")
+async def get_b_ultra_by_exam(exam_record_id: int, db: AsyncSession = Depends(get_db)):
+    """获取指定检查记录的真实 B 超结果"""
+    patient = await db.get(PatientRecord, exam_record_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="检查记录不存在")
+
+    result = await db.execute(
+        select(BUltraResult).where(BUltraResult.patient_id == exam_record_id)
+    )
+    return _normalize_b_ultra_obj(result.scalar_one_or_none())
+
+
+@router.put("/exam/{exam_record_id}/b-ultra")
+async def upsert_b_ultra_by_exam(exam_record_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+    """新建或更新指定检查记录的真实 B 超结果"""
+    patient = await db.get(PatientRecord, exam_record_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="检查记录不存在")
+
+    result = await db.execute(
+        select(BUltraResult).where(BUltraResult.patient_id == exam_record_id)
+    )
+    obj = result.scalar_one_or_none()
+
+    right_source = data["right_follicles"] if "right_follicles" in data else (obj.right_follicles if obj else [])
+    left_source = data["left_follicles"] if "left_follicles" in data else (obj.left_follicles if obj else [])
+    right_follicles = normalize_follicles(parse_follicle_string(right_source))
+    left_follicles = normalize_follicles(parse_follicle_string(left_source))
+
+    r_total = data.get("right_follicle_total")
+    l_total = data.get("left_follicle_total")
+    if right_follicles:
+        r_total = _follicle_total(right_follicles)
+    elif r_total is None:
+        r_total = 0
+    if left_follicles:
+        l_total = _follicle_total(left_follicles)
+    elif l_total is None:
+        l_total = 0
+
     field_map = {
         "endometrium_thickness": "endometrium_thickness",
         "endometrium_type": "endometrium_type",
@@ -89,20 +156,32 @@ async def update_result(
         "remark": "remark",
     }
 
+    update_data = {
+        "right_follicles": right_follicles,
+        "left_follicles": left_follicles,
+        "right_follicle_total": r_total,
+        "left_follicle_total": l_total,
+    }
     for key, field in field_map.items():
         if key in data:
-            setattr(obj, field, data[key])
+            update_data[field] = data[key]
 
-    # Recalculate follicle totals if follicles provided
-    if "right_follicles" in data:
-        obj.right_follicles = data["right_follicles"]
-        obj.right_follicle_total = sum(f.get("count", 0) for f in data["right_follicles"])
-    if "left_follicles" in data:
-        obj.left_follicles = data["left_follicles"]
-        obj.left_follicle_total = sum(f.get("count", 0) for f in data["left_follicles"])
+    if obj:
+        for k, v in update_data.items():
+            setattr(obj, k, v)
+    else:
+        obj = BUltraResult(
+            patient_id=exam_record_id,
+            record_id=patient.record_id,
+            date=patient.date_folder.date if patient.date_folder else "",
+            source_file="manual",
+            **update_data,
+        )
+        db.add(obj)
 
     await db.commit()
-    return {"message": "更新成功", "id": obj.id}
+    await db.refresh(obj)
+    return _normalize_b_ultra_obj(obj)
 
 
 async def parse_xlsx_to_db(filepath: str, date_folders: dict, db: AsyncSession) -> int:

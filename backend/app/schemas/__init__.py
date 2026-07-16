@@ -87,6 +87,7 @@ class ModelConfigCreate(BaseModel):
     endpoint: str
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
+    secret_key: Optional[str] = None
     model_name: Optional[str] = None
     params: dict = Field(default_factory=dict)
     is_default: bool = False
@@ -100,6 +101,7 @@ class ModelConfigUpdate(BaseModel):
     endpoint: Optional[str] = None
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
+    secret_key: Optional[str] = None
     model_name: Optional[str] = None
     params: Optional[dict] = None
     is_default: Optional[bool] = None
@@ -115,6 +117,7 @@ class ModelConfigOut(BaseModel):
     endpoint: str
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
+    secret_key: Optional[str] = None
     model_name: Optional[str] = None
     params: dict
     is_default: bool

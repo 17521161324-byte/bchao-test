@@ -4,6 +4,7 @@
 import time
 from loguru import logger
 from app.services.asr import create_asr
+from app.services.asr_input import build_asr_audio_inputs
 from app.services.llm import create_llm
 from app.services.parser import DEFAULT_PROMPT_TEMPLATE
 
@@ -83,10 +84,11 @@ class TestExecutor:
     ) -> dict:
         """执行 ASR 转写阶段"""
         asr = create_asr(asr_provider, **asr_config)
+        actual_segs = build_asr_audio_inputs(segs, asr_config.get("params") or {})
         asr_results = []
-        total = len(segs)
+        total = len(actual_segs)
 
-        for index, seg in enumerate(segs):
+        for index, seg in enumerate(actual_segs):
             if progress_callback:
                 await progress_callback({
                     "stage": "asr",
@@ -101,6 +103,8 @@ class TestExecutor:
                     "seg_index": seg["seg_index"],
                     "text": text,
                     "duration": seg.get("duration", 0),
+                    "input_mode": seg.get("input_mode", "segments"),
+                    "source_seg_count": seg.get("source_seg_count"),
                 })
                 if progress_callback:
                     await progress_callback({

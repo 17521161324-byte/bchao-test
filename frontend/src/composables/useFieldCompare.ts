@@ -15,7 +15,6 @@ export const FIELD_DEFS: FieldDef[] = [
   { key: 'right_ovary_width', label: '右卵巢宽', unit: 'mm' },
   { key: 'left_ovary_length', label: '左卵巢长', unit: 'mm' },
   { key: 'left_ovary_width', label: '左卵巢宽', unit: 'mm' },
-  { key: 'remark', label: '备注' },
 ]
 
 export function useFieldCompare() {

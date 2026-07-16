@@ -1,20 +1,22 @@
 {
   "version": "0.0.1",
   "configurations": [
-    {
+
+<longcat_arg_value>    {
       "name": "frontend-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "5190", "--strict-port"],
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "E:/bchao-test/frontend",
       "port": 5190,
-      "autoPort": false,
-      "cwd": "frontend"
+      "autoPort": false
     },
     {
       "name": "backend-dev",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--reload", "--host", "0.0.0.0", "--port", "8001"],
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--reload", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"],
+      "cwd": "E:/bchao-test/backend",
       "port": 8001,
-      "cwd": "backend"
+      "autoPort": false
     }
   ]
 }

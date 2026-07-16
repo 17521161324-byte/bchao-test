@@ -30,6 +30,12 @@ export const audioApi = {
   getStatus: () => client.get('/audio/status'),
   verify: (date?: string) => client.get('/audio/verify', { params: date ? { date } : {} }),
   deletePatient: (patientId: number) => client.delete(`/audio/patient/${patientId}`),
+  updatePatientNote: (patientId: number, note: string) => client.put(`/audio/patient/${patientId}/note`, { note }),
+  exportLatestLlmResults: (patientIds: number[]) =>
+    client.post('/audio/records/export-latest', { patient_ids: patientIds }, {
+      responseType: 'blob',
+      timeout: 300000,
+    }),
   scan: () => client.post('/audio/scan'),
   getFileUrl: (path: string) => `${API_BASE}/audio/file?path=${encodeURIComponent(path)}`,
 }
@@ -46,6 +52,9 @@ export const resultApi = {
   },
   getByRecord: (recordId: string) => client.get(`/result/${recordId}`),
   update: (resultId: number, data: any) => client.put(`/result/${resultId}`, data),
+  // 按检查记录 ID 读写真实 B 超结果
+  getBUltraResult: (examRecordId: number) => client.get(`/result/exam/${examRecordId}/b-ultra`),
+  updateBUltraResult: (examRecordId: number, data: any) => client.put(`/result/exam/${examRecordId}/b-ultra`, data),
 }
 
 // ========== 模型配置 ==========
@@ -185,6 +194,11 @@ export const patientApi = {
     return new EventSource(`${API_BASE}/patients/${patientId}/asr/stream?${params.toString()}`)
   },
   listAsrResults: (patientId: number) => client.get(`/patients/${patientId}/asr-results`),
+  listAsrResultsBatch: (patientIds: number[]) =>
+    client.get('/patients/asr-results/batch', {
+      params: { patient_ids: patientIds.join(',') },
+      timeout: 120000,
+    }),
   getAsrCurrent: (patientId: number) => client.get(`/patients/${patientId}/asr-current`),
   setAsrCurrent: (patientId: number, resultId: number) =>
     client.put(`/patients/${patientId}/asr-results/${resultId}/current`),
@@ -198,6 +212,9 @@ export const patientApi = {
   getLlmCurrent: (patientId: number) => client.get(`/patients/${patientId}/llm-current`),
   setLlmCurrent: (patientId: number, resultId: number) =>
     client.put(`/patients/${patientId}/llm-results/${resultId}/current`),
+  // 字段人工标记
+  saveFieldReviewMark: (patientId: number, data: any) => client.post(`/patients/${patientId}/field-review-marks`, data),
+  clearFieldReviewMark: (patientId: number, fieldGroup: string) => client.delete(`/patients/${patientId}/field-review-marks`, { params: { field_group: fieldGroup } }),
   exportLlmResults: (patientId: number) => `${API_BASE}/patients/${patientId}/llm-results/export`,
   clearLlmResults: (patientId: number) => client.delete(`/patients/${patientId}/llm-results`),
 }

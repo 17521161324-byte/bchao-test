@@ -11,6 +11,8 @@ const routes = [
     redirect: '/data',
     children: [
       { path: 'data', component: () => import('@/pages/DataImport/index.vue') },
+      { path: 'asr-compare', component: () => import('@/pages/AsrCompare/index.vue') },
+      { path: 'asr-optimize', component: () => import('@/pages/AsrOptimize/index.vue') },
       { path: 'model', component: () => import('@/pages/ModelConfig/index.vue') },
       { path: 'experiments', component: () => import('@/pages/Experiments/index.vue') },
       { path: 'experiments/:id', component: () => import('@/pages/Experiments/ExperimentDetail.vue') },

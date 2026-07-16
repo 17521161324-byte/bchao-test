@@ -68,6 +68,7 @@ if not exist .env (
 )
 
 echo   - 启动后端服务 (PM2)...
+pm2 delete bchao-backend 2>nul
 pm2 start "uvicorn app.main:app --host 0.0.0.0 --port 8000" --name bchao-backend 2>nul
 pm2 save
 

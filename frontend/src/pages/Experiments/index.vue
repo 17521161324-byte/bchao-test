@@ -2,7 +2,7 @@
   <div class="page-container">
     <div class="page-header">
       <h2>批量实验</h2>
-      <a-button type="primary" @click="showCreateModal"><PlusOutlined />新建实验</a-button>
+      <a-button type="primary" @click="showCreateModal"><PlusOutlined /> 新建实验</a-button>
     </div>
 
     <!-- 实验批次列表 -->
@@ -11,57 +11,56 @@
         :data-source="experiments"
         :loading="loading"
         row-key="id"
-        :scroll="{ x: 1600 }"
+        :scroll="{ x: 1500 }"
+        :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }"
       >
         <a-table-column title="ID" data-index="id" :width="60" />
         <a-table-column title="实验名称" data-index="name" :width="150" />
         <a-table-column title="状态" :width="100">
-          <template #default="{ record }">
-            <a-tag :color="statusColor(record.status)">{{ record.status }}</a-tag>
-          </template>
+          <template #default="scope"><a-tag :color="statusColor(scope?.record?.status)">{{ scope?.record?.status }}</a-tag></template>
+        </a-table-column>
+        <a-table-column title="ASR模型" :width="130">
+          <template #default="scope">{{ scope?.record?.asr_model_name || '-' }}</template>
+        </a-table-column>
+        <a-table-column title="LLM模型" :width="130">
+          <template #default="scope">{{ scope?.record?.llm_model_name || '-' }}</template>
+        </a-table-column>
+        <a-table-column title="提示词模板" :width="140">
+          <template #default="scope">{{ scope?.record?.prompt_template_name || '-' }}</template>
         </a-table-column>
         <a-table-column title="日期批次" :width="180">
-          <template #default="{ record }">
-            {{ record.selected_dates?.join(', ') || '-' }}
-          </template>
+          <template #default="scope">{{ scope?.record?.selected_dates?.join(', ') || '-' }}</template>
         </a-table-column>
         <a-table-column title="患者数" :width="70">
-          <template #default="{ record }">{{ record.patient_count || 0 }}人</template>
+          <template #default="scope">{{ scope?.record?.patient_count || 0 }}人</template>
         </a-table-column>
-        <!-- 各字段准确率 -->
-        <a-table-column title="内膜厚度" :width="90">
-          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.endometrium_thickness) }}</template>
+        <a-table-column title="右卵泡" :width="80">
+          <template #default="scope">{{ formatAcc(scope?.record?.field_accuracy?.right_follicle) }}</template>
         </a-table-column>
-        <a-table-column title="内膜类型" :width="90">
-          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.endometrium_type) }}</template>
+        <a-table-column title="左卵泡" :width="80">
+          <template #default="scope">{{ formatAcc(scope?.record?.field_accuracy?.left_follicle) }}</template>
         </a-table-column>
-        <a-table-column title="卵巢" :width="80">
-          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.ovary_size) }}</template>
+        <a-table-column title="内膜厚度" :width="80">
+          <template #default="scope">{{ formatAcc(scope?.record?.field_accuracy?.endometrium_thickness) }}</template>
         </a-table-column>
-        <a-table-column title="卵泡" :width="80">
-          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.follicle) }}</template>
+        <a-table-column title="内膜类型" :width="80">
+          <template #default="scope">{{ formatAcc(scope?.record?.field_accuracy?.endometrium_type) }}</template>
         </a-table-column>
-        <a-table-column title="备注" :width="80">
-          <template #default="{ record }">{{ formatAcc(record.field_accuracy?.remark) }}</template>
+        <a-table-column title="右卵巢" :width="80">
+          <template #default="scope">{{ formatAcc(scope?.record?.field_accuracy?.right_ovary) }}</template>
         </a-table-column>
-        <!-- 模型信息 -->
-        <a-table-column title="ASR模型" :width="120">
-          <template #default="{ record }">{{ record.asr_models?.join(', ') || '-' }}</template>
-        </a-table-column>
-        <a-table-column title="LLM模型" :width="120">
-          <template #default="{ record }">{{ record.llm_models?.join(', ') || '-' }}</template>
-        </a-table-column>
-        <a-table-column title="提示词模板" :width="120">
-          <template #default="{ record }">{{ record.prompt_templates?.join(', ') || '-' }}</template>
+        <a-table-column title="左卵巢" :width="80">
+          <template #default="scope">{{ formatAcc(scope?.record?.field_accuracy?.left_ovary) }}</template>
         </a-table-column>
         <a-table-column title="总任务" data-index="total_tasks" :width="70" />
         <a-table-column title="成功" data-index="success_count" :width="60" />
         <a-table-column title="失败" data-index="failure_count" :width="60" />
-        <a-table-column title="创建时间" data-index="created_at" :width="160" />
         <a-table-column title="操作" :width="120" fixed="right">
-          <template #default="{ record }">
-            <router-link :to="`/experiments/${record.id}`"><a-button size="small" type="link">详情</a-button></router-link>
-            <a-popconfirm title="确定删除此实验？" @confirm="handleDelete(record.id)">
+          <template #default="scope">
+            <router-link v-if="scope?.record?.id" :to="`/experiments/${scope.record.id}`">
+              <a-button size="small" type="link">详情</a-button>
+            </router-link>
+            <a-popconfirm v-if="scope?.record?.id" title="确定删除此实验？" @confirm="handleDelete(scope.record.id)">
               <a-button size="small" type="link" danger>删除</a-button>
             </a-popconfirm>
           </template>
@@ -69,7 +68,7 @@
       </a-table>
     </a-card>
 
-    <!-- 新建实验弹窗 -->
+    <!-- 新建实验弹窗（单组合设计）-->
     <a-modal
       v-model:open="createModalOpen"
       title="新建实验"
@@ -90,6 +89,37 @@
           <a-textarea v-model:value="createForm.remark" :rows="2" placeholder="可选：补充说明内部可见" />
         </a-form-item>
 
+        <a-row :gutter="12">
+          <a-col :span="12">
+            <a-form-item label="ASR 模型" required>
+              <a-select v-model:value="createForm.asr_model_id" placeholder="选择 ASR 模型" show-search allow-clear>
+                <a-select-option v-for="m in asrModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="LLM 模型">
+              <a-select v-model:value="createForm.llm_model_id" placeholder="不使用 LLM" allow-clear show-search>
+                <a-select-option v-for="m in llmModels" :key="m.id" :value="m.id">{{ m.name }}</a-select-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+        </a-row>
+
+        <a-form-item label="提示词模板">
+          <a-select v-model:value="createForm.prompt_template_id" placeholder="选择提示词模板（可选）" allow-clear show-search @change="onPromptTemplateChange">
+            <a-select-option v-for="t in promptTemplates" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
+          </a-select>
+        </a-form-item>
+
+        <a-form-item label="提示词内容">
+          <a-textarea v-model:value="createForm.prompt_content" :rows="4" placeholder="提示词内容..." />
+        </a-form-item>
+
+        <a-form-item label="热词（每行一个）">
+          <a-textarea v-model:value="hotwordsRaw" :rows="2" placeholder="卵泡&#10;内膜&#10;卵巢" />
+        </a-form-item>
+
         <a-form-item label="选择日期批次" required>
           <a-select v-model:value="createForm.selected_dates" mode="multiple" placeholder="选择日期批次">
             <a-select-option v-for="d in availableDates" :key="d.date" :value="d.date">
@@ -108,23 +138,23 @@
             :loading="loadingPatients"
             size="small"
             :pagination="{ pageSize: 8 }"
-            row-key="record_id"
+            row-key="uid"
           >
             <a-table-column title="选择" :width="60">
-              <template #default="{ record }">
-                <a-checkbox :checked="createForm.selected_patient_ids.includes(record.record_id)" @change="togglePatient(record.record_id)" />
+              <template #default="scope">
+                <a-checkbox :checked="createForm.selected_patient_ids.includes(scope?.record?.uid)" @change="togglePatient(scope?.record?.uid)" />
               </template>
             </a-table-column>
             <a-table-column title="病历号" data-index="record_id" />
             <a-table-column title="日期" data-index="date" :width="120" />
             <a-table-column title="录音" :width="60">
-              <template #default="{ record }">
-                <a-tag :color="record.has_audio ? 'green' : 'red'" size="small">{{ record.has_audio ? '有' : '无' }}</a-tag>
+              <template #default="scope">
+                <a-tag :color="scope?.record?.has_audio ? 'green' : 'red'" size="small">{{ scope?.record?.has_audio ? '有' : '无' }}</a-tag>
               </template>
             </a-table-column>
             <a-table-column title="结果" :width="60">
-              <template #default="{ record }">
-                <a-tag :color="record.has_result ? 'green' : 'default'" size="small">{{ record.has_result ? '有' : '无' }}</a-tag>
+              <template #default="scope">
+                <a-tag :color="scope?.record?.has_result ? 'green' : 'default'" size="small">{{ scope?.record?.has_result ? '有' : '无' }}</a-tag>
               </template>
             </a-table-column>
           </a-table>
@@ -139,7 +169,7 @@ import { defineComponent, ref, reactive, onMounted, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { experimentApi } from '@/api/experiment'
-import { audioApi } from '@/api/client'
+import { audioApi, modelApi, promptTemplateApi } from '@/api/client'
 
 export default defineComponent({
   name: 'Experiments',
@@ -147,15 +177,24 @@ export default defineComponent({
     const loading = ref(false)
     const experiments = ref<any[]>([])
     const availableDates = ref<any[]>([])
+    const asrModels = ref<any[]>([])
+    const llmModels = ref<any[]>([])
+    const promptTemplates = ref<any[]>([])
     const createModalOpen = ref(false)
     const creating = ref(false)
     const loadingPatients = ref(false)
     const availablePatients = ref<any[]>([])
+    const hotwordsRaw = ref('')
 
     const createForm = reactive({
       name: '',
       description: '',
       remark: '',
+      asr_model_id: null as number | null,
+      llm_model_id: null as number | null,
+      prompt_template_id: undefined as number | undefined,
+      prompt_name: '',
+      prompt_content: '',
       selected_dates: [] as string[],
       selected_patient_ids: [] as string[],
     })
@@ -164,14 +203,24 @@ export default defineComponent({
       loading.value = true
       try {
         const res = await experimentApi.list()
-        // 处理多种可能的响应格式
+        let data: any[] = []
         if (Array.isArray(res)) {
-          experiments.value = res
+          data = res
         } else if (res && Array.isArray(res.data)) {
-          experiments.value = res.data
-        } else {
-          experiments.value = []
+          data = res.data
         }
+        experiments.value = data.filter(Boolean).map((e: any) => ({
+          ...e,
+          field_accuracy: e.field_accuracy || {},
+          selected_dates: e.selected_dates || [],
+          asr_model_name: e.asr_model_name || '',
+          llm_model_name: e.llm_model_name || '',
+          prompt_template_name: e.prompt_template_name || '',
+          total_tasks: e.total_tasks || 0,
+          success_count: e.success_count || 0,
+          failure_count: e.failure_count || 0,
+          patient_count: e.patient_count || 0,
+        }))
       } catch (e) {
         experiments.value = []
       } finally {
@@ -179,12 +228,46 @@ export default defineComponent({
       }
     }
 
+    async function loadModels() {
+      try {
+        const [asr, llm] = await Promise.all([modelApi.list('asr'), modelApi.list('llm')])
+        asrModels.value = Array.isArray(asr) ? asr : (asr.data || [])
+        llmModels.value = Array.isArray(llm) ? llm : (llm.data || [])
+      } catch {}
+    }
+
+    async function loadPromptTemplates() {
+      try {
+        const res = await promptTemplateApi.list()
+        promptTemplates.value = Array.isArray(res) ? res : (res.data || [])
+      } catch {}
+    }
+
+    function onPromptTemplateChange(id: number | undefined) {
+      if (id == null) {
+        createForm.prompt_template_id = undefined
+        createForm.prompt_name = ''
+        createForm.prompt_content = ''
+        return
+      }
+
+      createForm.prompt_template_id = id
+
+      const tmpl = promptTemplates.value.find((t: any) => t.id === id)
+      if (tmpl) {
+        createForm.prompt_name = tmpl.name
+        createForm.prompt_content = tmpl.content
+      }
+    }
+
     async function fetchBatches() {
       try {
         const res = await audioApi.getBatches()
-        availableDates.value = res
+        const data = (res as any)?.data || res
+        availableDates.value = Array.isArray(data) ? data : []
       } catch (e) {
         console.error(e)
+        availableDates.value = []
       }
     }
 
@@ -198,8 +281,11 @@ export default defineComponent({
         const patients: any[] = []
         for (const date of dates) {
           const res = await audioApi.getRecords(date)
-          for (const exam of res) {
+          const records = (res as any)?.data || res
+          for (const exam of (Array.isArray(records) ? records : [])) {
+            const uid = `${date}-${exam.record_id}`
             patients.push({
+              uid,
               record_id: exam.record_id,
               date,
               has_audio: exam.has_audio,
@@ -208,7 +294,7 @@ export default defineComponent({
           }
         }
         availablePatients.value = patients
-        createForm.selected_patient_ids = patients.map(p => p.record_id)
+        createForm.selected_patient_ids = patients.map(p => p.uid)
       } finally {
         loadingPatients.value = false
       }
@@ -218,16 +304,25 @@ export default defineComponent({
       createForm.name = ''
       createForm.description = ''
       createForm.remark = ''
+      createForm.asr_model_id = null
+      createForm.llm_model_id = null
+      createForm.prompt_template_id = undefined
+      createForm.prompt_name = ''
+      createForm.prompt_content = ''
       createForm.selected_dates = []
       createForm.selected_patient_ids = []
+      hotwordsRaw.value = ''
       createModalOpen.value = true
       fetchBatches()
+      loadModels()
+      loadPromptTemplates()
     }
 
-    function togglePatient(recordId: string) {
-      const idx = createForm.selected_patient_ids.indexOf(recordId)
+    function togglePatient(uid: string | undefined) {
+      if (!uid) return
+      const idx = createForm.selected_patient_ids.indexOf(uid)
       if (idx >= 0) createForm.selected_patient_ids.splice(idx, 1)
-      else createForm.selected_patient_ids.push(recordId)
+      else createForm.selected_patient_ids.push(uid)
     }
 
     async function handleCreate() {
@@ -239,9 +334,32 @@ export default defineComponent({
         message.error('请选择日期批次')
         return
       }
+      if (!createForm.asr_model_id) {
+        message.error('请选择 ASR 模型')
+        return
+      }
+      // 如果配置了 LLM，必须有提示词
+      if (createForm.llm_model_id && !createForm.prompt_content) {
+        message.error('请选择提示词模板或填写提示词内容')
+        return
+      }
       creating.value = true
       try {
-        await experimentApi.create(createForm)
+        // 提交时把 uid (date-record_id) 还原为 record_id
+        const recordIds = [...new Set(createForm.selected_patient_ids.map(uid => uid.split('-').slice(1).join('-')))]
+        await experimentApi.create({
+          name: createForm.name,
+          description: createForm.description,
+          remark: createForm.remark,
+          selected_dates: createForm.selected_dates,
+          selected_patient_ids: recordIds,
+          asr_model_id: createForm.asr_model_id,
+          llm_model_id: createForm.llm_model_id || null,
+          prompt_template_id: createForm.prompt_template_id,
+          prompt_name: createForm.prompt_name,
+          prompt_template: createForm.prompt_content,
+          hotwords: hotwordsRaw.value.split('\n').map((s: string) => s.trim()).filter(Boolean),
+        })
         message.success('创建成功')
         createModalOpen.value = false
         fetchExperiments()
@@ -280,7 +398,9 @@ export default defineComponent({
 
     return {
       loading, experiments, availableDates, createModalOpen, creating, loadingPatients, availablePatients,
+      asrModels, llmModels, promptTemplates, hotwordsRaw,
       createForm, showCreateModal, togglePatient, handleCreate, handleDelete, statusColor, formatAcc,
+      onPromptTemplateChange,
       PlusOutlined,
     }
   },

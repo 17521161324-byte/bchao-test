@@ -65,6 +65,7 @@ class VolcengineBigModelASR:
     def __init__(self, api_key: str = None, endpoint: str = None, **kwargs):
         self.api_key = api_key or os.environ.get("VOLC_API_KEY", "")
         self.endpoint = endpoint or "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+        self._params = kwargs
         self._resource_id = kwargs.get("resource_id") or "volc.seedasr.sauc.duration"
         # 默认 200ms 分包 (6400 bytes), 符合文档 100~200ms 建议
         self._frame_size = kwargs.get("frame_size", 6400)
@@ -109,10 +110,10 @@ class VolcengineBigModelASR:
         """
         request_params = {
             "model_name": "bigmodel",
-            "result_type": "full",  # 每次返回全量识别结果, 避免增量拼接
-            "enable_itn": True,
-            "enable_punc": True,
-            "enable_ddc": False,
+            "result_type": self._params.get("result_type") or "full",  # 每次返回全量识别结果, 避免增量拼接
+            "enable_itn": bool(self._params.get("enable_itn", True)),
+            "enable_punc": bool(self._params.get("enable_punc", True)),
+            "enable_ddc": bool(self._params.get("enable_ddc", False)),
             "show_utterances": self._show_utterances,
         }
         # 只有存在热词时才注入 context 字段
@@ -124,6 +125,15 @@ class VolcengineBigModelASR:
                     ensure_ascii=False,
                 )
                 request_params["context"] = context_str
+
+        # 火山自学习平台热词表 / 替换词表。
+        # 文档字段名:
+        # - boosting_table_name / boosting_table_id
+        # - correct_table_name / correct_table_id
+        for key in ("boosting_table_name", "boosting_table_id", "correct_table_name", "correct_table_id"):
+            value = getattr(self, "_params", {}).get(key)
+            if value is not None and str(value).strip():
+                request_params[key] = str(value).strip()
 
         audio = {
             "format": "pcm",

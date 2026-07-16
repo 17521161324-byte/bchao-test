@@ -108,12 +108,27 @@ def create_asr(provider: str, **kwargs) -> BaseASR:
             return LocalFunASR(url=kwargs.get("endpoint", settings.LOCAL_ASR_URL))
         case "mimo":
             from app.services.asr.mimo_asr import MiMoASR
-            return MiMoASR(api_key=kwargs.get("api_key"), endpoint=kwargs.get("endpoint"))
+            return MiMoASR(
+                api_key=kwargs.get("api_key"),
+                endpoint=kwargs.get("endpoint"),
+                model_name=kwargs.get("model_name") or "mimo-v2.5-asr",
+                params=kwargs.get("params") or {},
+            )
         case "iflytek":
             return IFlytekASR(
                 api_key=kwargs.get("api_key", ""),
                 api_secret=kwargs.get("api_secret", ""),
                 endpoint=kwargs.get("endpoint", ""),
+            )
+        case "iflytek_rtasr_llm" | "xfyun_rtasr_llm":
+            from app.services.asr.iflytek_rtasr_llm import IFlytekRealtimeLLMASR
+            params = kwargs.get("params") or {}
+            return IFlytekRealtimeLLMASR(
+                endpoint=kwargs.get("endpoint"),
+                access_key_id=kwargs.get("api_key"),
+                access_key_secret=kwargs.get("api_secret"),
+                app_id=kwargs.get("secret_key") or params.get("app_id"),
+                params=params,
             )
         case "tencent":
             return TencentASR(
@@ -121,13 +136,25 @@ def create_asr(provider: str, **kwargs) -> BaseASR:
                 api_secret=kwargs.get("api_secret", ""),
                 endpoint=kwargs.get("endpoint", ""),
             )
+        case "tencent_speaker_ws" | "tencent_realtime_speaker":
+            from app.services.asr.tencent_speaker_asr import TencentSpeakerASR
+            params = kwargs.get("params") or {}
+            return TencentSpeakerASR(
+                endpoint=kwargs.get("endpoint"),
+                secret_id=kwargs.get("api_key"),
+                secret_key=kwargs.get("api_secret"),
+                app_id=kwargs.get("secret_key") or params.get("app_id"),
+                params=params,
+            )
         case "volcengine":
             from app.services.asr.volcengine_asr import VolcengineBigModelASR
+            params = kwargs.get("params") or {}
             return VolcengineBigModelASR(
                 api_key=kwargs.get("api_key"),
                 endpoint=kwargs.get("endpoint"),
                 access_key=kwargs.get("api_secret"),  # api_secret 存的是 access_token
                 secret_key=kwargs.get("secret_key"),  # 真正的签名密钥
+                **params,
             )
         case _:
             raise ValueError(f"未知的 ASR provider: {provider}")

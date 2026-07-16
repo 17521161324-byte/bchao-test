@@ -32,6 +32,7 @@ class PatientRecord(Base):
     record_id = Column(String(50), index=True)  # 病历号 A017750
     date_folder_id = Column(Integer, ForeignKey("date_folders.id"))
     timestamp_folder = Column(String(50))  # 时间戳文件夹名
+    note = Column(Text, nullable=True)  # 检查记录人工标注备注（不参与真实 B 超结果/准确率）
     created_at = Column(DateTime, default=datetime.utcnow)
 
     date_folder = relationship("DateFolder", back_populates="patients")
@@ -85,6 +86,23 @@ class BUltraResult(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("PatientRecord", back_populates="result")
+
+
+class FieldReviewMark(Base):
+    """字段人工标记（排除统计/异常说明）"""
+    __tablename__ = "field_review_marks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patient_records.id"), nullable=False, index=True)
+    field_group = Column(String(50), nullable=False)  # right_follicle/left_follicle/endometrium_thickness/endometrium_type/right_ovary/left_ovary
+    field_key = Column(String(50), nullable=True)  # 可为空，表示按字段组标记
+    mark_type = Column(String(20), nullable=False)  # exclude / mismatch_note
+    reason = Column(String(100), nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    patient = relationship("PatientRecord")
 
 
 class ModelConfig(Base):

@@ -17,7 +17,7 @@ def create_app():
 
     from app.config import settings
     from app.database import init_db
-    from app.routers import audio, result, model_config, test, experiment, prompt_template, patients
+    from app.routers import audio, result, model_config, test, experiment, prompt_template, patients, field_review
 
     _worker = None
     _worker_task = None
@@ -76,6 +76,7 @@ def create_app():
     app.include_router(experiment.router, prefix="/api/experiments", tags=["批量实验"])
     app.include_router(prompt_template.router, prefix="/api/prompt-templates", tags=["提示词模版"])
     app.include_router(patients.router, prefix="/api/patients", tags=["患者结果"])
+    app.include_router(field_review.router, prefix="/api/patients", tags=["字段标记"])
 
     @app.get("/api/health")
     async def health_check():

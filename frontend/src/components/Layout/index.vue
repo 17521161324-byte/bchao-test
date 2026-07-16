@@ -6,12 +6,14 @@
       </div>
       <a-menu theme="dark" mode="inline" :selected-keys="[route.path]" @click="onMenuClick">
         <a-menu-item key="/data"><FolderOutlined />数据管理</a-menu-item>
+        <a-menu-item key="/asr-compare"><ExperimentOutlined />ASR 对比</a-menu-item>
+        <a-menu-item key="/asr-optimize"><ExperimentOutlined />ASR 优化评估</a-menu-item>
         <a-menu-item key="/model"><SettingOutlined />模型配置</a-menu-item>
         <a-menu-item key="/experiments"><ExperimentOutlined />批量实验</a-menu-item>
       </a-menu>
     </a-layout-sider>
 
-    <a-layout>
+    <a-layout class="main-layout">
       <a-layout-header class="header">
         <a-space>
           <span style="color: #666">数据状态：</span>
@@ -23,7 +25,7 @@
         </a-space>
       </a-layout-header>
 
-      <a-layout-content style="background: #f5f5f5; min-height: calc(100vh - 64px)">
+      <a-layout-content class="content">
         <router-view />
       </a-layout-content>
     </a-layout>
@@ -31,7 +33,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores'
 import {
@@ -43,13 +45,18 @@ const router = useRouter()
 const store = useAppStore()
 const dataStatus = computed(() => store.dataStatus)
 
+onMounted(() => {
+  store.fetchDataStatus()
+})
+
 function onMenuClick({ key }: { key: string }) {
   router.push(key)
 }
 </script>
 
 <style scoped>
-.layout { min-height: 100vh; }
+.layout { min-height: 100vh; width: 100%; }
+.main-layout { min-width: 0; width: 100%; flex: 1; }
 .logo {
   height: 56px; display: flex; align-items: center; justify-content: center;
   color: #fff; font-size: 16px; font-weight: 600;
@@ -58,5 +65,12 @@ function onMenuClick({ key }: { key: string }) {
 .header {
   background: #fff; padding: 0 24px; display: flex; align-items: center;
   justify-content: space-between; border-bottom: 1px solid #f0f0f0;
+}
+.content {
+  background: #f5f5f5;
+  min-height: calc(100vh - 64px);
+  width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 </style>

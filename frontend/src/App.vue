@@ -16,7 +16,7 @@ body {
   background: #f5f5f5;
 }
 #app { min-height: 100vh; }
-.page-container { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.page-container { padding: 24px; width: 100%; max-width: none; margin: 0; box-sizing: border-box; }
 .page-header { margin-bottom: 24px; }
 .page-header h2 { font-size: 20px; font-weight: 600; color: #1f1f1f; }
 </style>

@@ -96,7 +96,9 @@ async def test_model_connection(
     try:
         if model.model_type == "asr":
             asr = create_asr(model.provider, endpoint=model.endpoint,
-                            api_key=model.api_key or "", api_secret=model.api_secret or "")
+                            api_key=model.api_key or "", api_secret=model.api_secret or "",
+                            secret_key=model.secret_key or "", model_name=model.model_name or "",
+                            params=model.params or {})
             # 仅当实现了 health_check 时才测试
             ok = await asr.health_check() if hasattr(asr, 'health_check') else False
         elif model.model_type == "llm":
@@ -149,6 +151,14 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
             provider="mimo",
             endpoint="https://api.xiaomimimo.com/v1/chat/completions",
             api_key="",
+            model_name="mimo-v2.5-asr",
+            params={
+                "audio_input_mode": "segments",
+                "language": "auto",
+                "stream": True,
+                "merge_group_size": 3,
+                "max_base64_mb": 9.8,
+            },
             is_default=False,
             status="active",
         )
@@ -164,8 +174,8 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
             endpoint="https://api.xiaomimimo.com/v1",
             api_key="",
             model_name="mimo-v2.5",
-            is_default=True,
-            status="active",
+            is_default=False,  # 默认不启用，需配置 API Key 后手动启用
+            status="inactive",  # 未配置 Key 前设为 inactive
         )
         db.add(mimo_llm)
 
@@ -199,6 +209,59 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
             status="active",
         )
         db.add(volc_asr)
+
+    # 检查讯飞实时语音转写大模型 ASR
+    result = await db.execute(select(ModelConfig).where(
+        ModelConfig.provider == "iflytek_rtasr_llm", ModelConfig.model_type == "asr"
+    ))
+    if not result.scalars().all():
+        iflytek_rtasr = ModelConfig(
+            name="讯飞实时转写大模型",
+            model_type="asr",
+            provider="iflytek_rtasr_llm",
+            endpoint="wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1",
+            api_key="",
+            api_secret="",
+            secret_key="",
+            params={
+                "lang": "autodialect",
+                "audio_encode": "pcm_s16le",
+                "samplerate": 16000,
+                "pd": "medical",
+                "eng_vad_mdn": 2,
+                "role_type": 0,
+            },
+            is_default=False,
+            status="inactive",
+        )
+        db.add(iflytek_rtasr)
+
+    # 检查腾讯云实时说话人分离 ASR
+    result = await db.execute(select(ModelConfig).where(
+        ModelConfig.provider == "tencent_speaker_ws", ModelConfig.model_type == "asr"
+    ))
+    if not result.scalars().all():
+        tencent_speaker = ModelConfig(
+            name="腾讯实时说话人分离",
+            model_type="asr",
+            provider="tencent_speaker_ws",
+            endpoint="wss://asr.cloud.tencent.com/asr/v2",
+            api_key="",
+            api_secret="",
+            secret_key="",
+            params={
+                "engine_model_type": "16k_zh_en_speaker",
+                "voice_format": 1,
+                "needvad": 1,
+                "filter_dirty": 0,
+                "filter_modal": 0,
+                "filter_punc": 0,
+                "convert_num_mode": 1,
+            },
+            is_default=False,
+            status="inactive",
+        )
+        db.add(tencent_speaker)
 
     await db.commit()
     return {"message": "初始化成功"}

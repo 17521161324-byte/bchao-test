@@ -15,6 +15,8 @@ from app.config import resolve_hotwords
 from app.database import get_db
 from app.models import PatientRecord, AudioSeg, ModelConfig, TestRun, BUltraResult
 from app.schemas import TestStartRequest, TestResultOut, EvaluationUpdate
+from app.services.asr import create_asr
+from app.services.asr_input import build_asr_audio_inputs
 from app.services.test_executor import TestExecutor
 from app.services.parser import evaluate_result
 
@@ -44,8 +46,6 @@ async def run_asr_only(
     db: AsyncSession = Depends(get_db),
 ):
     """单独运行 ASR（同步返回，不经过 SSE）"""
-    from app.services.asr import create_asr
-
     result = await db.execute(
         select(PatientRecord)
         .options(selectinload(PatientRecord.segs))
@@ -67,7 +67,7 @@ async def run_asr_only(
     if not asr_model:
         raise HTTPException(status_code=404, detail="ASR 模型不存在")
 
-    segs = [
+    raw_segs = [
         {"seg_index": s.seg_index, "file_path": s.file_path, "duration": s.duration}
         for s in sorted(patient.segs, key=lambda x: x.seg_index)
     ]
@@ -78,19 +78,23 @@ async def run_asr_only(
         "api_secret": asr_model.api_secret,
         "secret_key": asr_model.secret_key,
         "model_name": asr_model.model_name,
+        "params": asr_model.params or {},
     })
 
     # 按优先级解析热词: 接口 > 模型配置 > 默认
     parsed_hotwords = hotwords.split(",") if hotwords else None
     resolved_hotwords = resolve_hotwords(parsed_hotwords, asr_model.params)
 
+    actual_segs = build_asr_audio_inputs(raw_segs, asr_model.params or {})
     asr_results = []
-    for seg in segs:
+    for seg in actual_segs:
         text = await asr.transcribe(seg["file_path"], hotwords=resolved_hotwords)
         asr_results.append({
             "seg_index": seg["seg_index"],
             "text": text,
             "duration": seg["duration"],
+            "input_mode": seg.get("input_mode", "segments"),
+            "source_seg_count": seg.get("source_seg_count"),
         })
 
     return {
@@ -117,8 +121,6 @@ async def run_asr_stream(
     - complete: 全部完成, data = {"stage": "complete", "segments": [...], "full_transcript": str}
     - error: 出错, data = {"stage": "error", "message": str}
     """
-    from app.services.asr import create_asr
-
     result = await db.execute(
         select(PatientRecord)
         .options(selectinload(PatientRecord.segs))
@@ -140,7 +142,7 @@ async def run_asr_stream(
     if not asr_model:
         raise HTTPException(status_code=404, detail="ASR 模型不存在")
 
-    segs = [
+    raw_segs = [
         {"seg_index": s.seg_index, "file_path": s.file_path, "duration": s.duration}
         for s in sorted(patient.segs, key=lambda x: x.seg_index)
     ]
@@ -151,6 +153,7 @@ async def run_asr_stream(
         "api_secret": asr_model.api_secret,
         "secret_key": asr_model.secret_key,
         "model_name": asr_model.model_name,
+        "params": asr_model.params or {},
     })
 
     # 解析热词优先级: 接口 > 模型配置 > 默认
@@ -159,9 +162,10 @@ async def run_asr_stream(
 
     async def event_generator():
         asr_results = []
-        total = len(segs)
+        actual_segs = build_asr_audio_inputs(raw_segs, asr_model.params or {})
+        total = len(actual_segs)
         try:
-            for seg in segs:
+            for seg in actual_segs:
                 yield f"event: progress\ndata: {json.dumps({'stage': 'progress', 'seg_index': seg['seg_index'], 'total': total}, ensure_ascii=False)}\n\n"
 
                 text = await asr.transcribe(seg["file_path"], hotwords=resolved_hotwords)
@@ -169,6 +173,8 @@ async def run_asr_stream(
                     "seg_index": seg["seg_index"],
                     "text": text,
                     "duration": seg["duration"],
+                    "input_mode": seg.get("input_mode", "segments"),
+                    "source_seg_count": seg.get("source_seg_count"),
                 })
 
                 yield f"event: segment\ndata: {json.dumps({'stage': 'segment', 'seg_index': seg['seg_index'], 'text': text, 'duration': seg['duration']}, ensure_ascii=False)}\n\n"
@@ -275,7 +281,9 @@ async def start_test(
             "endpoint": asr_model.endpoint,
             "api_key": asr_model.api_key,
             "api_secret": asr_model.api_secret,
+            "secret_key": asr_model.secret_key,
             "model_name": asr_model.model_name,
+            "params": asr_model.params or {},
         }
         llm_config = None
         if llm_model:
