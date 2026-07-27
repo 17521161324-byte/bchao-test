@@ -42,9 +42,9 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, reactive, computed, watch } from 'vue'
+import { defineComponent, reactive, computed, watch, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { audioApi } from '@/api/client'
+import { patientApi } from '@/api/client'
 
 const EXCLUDE_REASONS = ['收音设备问题', '录音缺失/不完整', '真实 B 超数据疑似错误', '非本次评估范围', '暂时排查', '其他']
 const MISMATCH_REASONS = ['ASR 漏识别', 'ASR 错识别', 'LLM 未提取', 'LLM 提取错误', '左右侧混淆', '数量统计错误', '尺寸解析错误', '格式不规范', '其他']
@@ -94,7 +94,7 @@ export default defineComponent({
     async function handleSave() {
       saving.value = true
       try {
-        const res: any = await audioApi.saveFieldReviewMark(props.record.id, {
+        const res: any = await patientApi.saveFieldReviewMark(props.record.id, {
           field_group: props.groupKey,
           field_key: null,
           mark_type: form.markType,
@@ -113,7 +113,7 @@ export default defineComponent({
     async function handleClear() {
       clearing.value = true
       try {
-        await audioApi.clearFieldReviewMark(props.record.id, props.groupKey)
+        await patientApi.clearFieldReviewMark(props.record.id, props.groupKey)
         message.success('标记已清除')
         emit('cleared')
       } catch (e: any) {

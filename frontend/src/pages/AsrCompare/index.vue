@@ -555,39 +555,25 @@ function csvCell(value: any) {
 }
 
 function runOneAsr(record: PatientExamination, modelId: number): Promise<AsrResult> {
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const es = patientApi.runAsrSSE(record.id, modelId)
-
-    const finish = (fn: () => void) => {
-      if (settled) return
-      settled = true
-      es.close()
-      fn()
-    }
-
-    es.addEventListener('complete', (ev: MessageEvent) => {
-      try {
-        const parsed = JSON.parse(ev.data || '{}')
-        finish(() => resolve(parsed as AsrResult))
-      } catch (error) {
-        finish(() => reject(error))
-      }
-    })
-
-    es.addEventListener('error', (ev: any) => {
-      if (settled) return
-      if (ev?.data) {
-        try {
-          const parsed = JSON.parse(ev.data)
-          finish(() => reject(new Error(parsed.message || 'ASR 调用失败')))
-        } catch {
-          finish(() => reject(new Error('ASR 调用失败')))
+  return new Promise(async (resolve, reject) => {
+    try {
+      const started: any = await patientApi.startAsrTask(record.id, { asr_model_id: modelId })
+      const resultId = started?.result_id || started?.id
+      if (!resultId) throw new Error('ASR 任务启动失败')
+      const startedAt = Date.now()
+      while (Date.now() - startedAt < 30 * 60 * 1000) {
+        await new Promise((r) => window.setTimeout(r, 2500))
+        const current: any = await patientApi.getAsrTask(record.id, resultId)
+        if (current?.status === 'success') {
+          resolve(current as AsrResult)
+          return
         }
-      } else {
-        finish(() => reject(new Error('ASR 连接中断')))
+        if (current?.status === 'failed') throw new Error(current.error_message || 'ASR 调用失败')
       }
-    })
+      throw new Error('ASR 后台任务超时')
+    } catch (error) {
+      reject(error)
+    }
   })
 }
 </script>

@@ -46,6 +46,9 @@ def merge_one(
 
     rel_audio_dir = audio_dir.relative_to(recordings_root)
     out_path = merged_root / rel_audio_dir / "full.wav"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    for old_group in out_path.parent.glob("group-*.wav"):
+        old_group.unlink()
     _write_wav(out_path, params, [data for _, data in frames])
 
     # 按固定原始分段数量生成连续合并分组文件；适合 MiMo 这类长音频可能截断的模型。

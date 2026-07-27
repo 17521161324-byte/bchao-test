@@ -141,6 +141,24 @@ class TestParseServerResponse:
         assert parsed["msg_type"] == MessageType.ERROR_RESPONSE
         assert "some non-json error" in parsed["payload"]["error"]
 
+    def test_format_error_payload_supports_volcengine_alias_fields(self):
+        """服务端错误字段不叫 code/message 时，也要保留真实错误内容"""
+        code, message = VolcengineBigModelASR._format_error_payload({
+            "error_code": 45000012,
+            "error_msg": "invalid corpus context",
+            "request_id": "req-123",
+        })
+        assert code == 45000012
+        assert message == "invalid corpus context"
+
+    def test_format_error_payload_falls_back_to_full_payload(self):
+        """未知错误结构时直接输出完整 payload，方便定位接口问题"""
+        code, message = VolcengineBigModelASR._format_error_payload({
+            "detail": {"reason": "bad request"},
+        })
+        assert code is None
+        assert "bad request" in message
+
     def test_too_short_data(self):
         asr = VolcengineBigModelASR(api_key="test_key")
         parsed = asr._parse_server_response(b"\x11\x90\x00\x00")
@@ -479,12 +497,35 @@ class TestFrameBuilding:
         asr = VolcengineBigModelASR(api_key="k")
         payload = json.loads(asr._build_full_client_request_payload(hotwords=[]).decode("utf-8"))
         assert payload["request"]["model_name"] == "bigmodel"
-        assert payload["request"]["show_utterances"] is True
+        assert payload["request"]["show_utterances"] is False
         # 必须显式设置 result_type=full
         assert payload["request"]["result_type"] == "full"
         # 流式分包发送的是 PCM 帧, 不能把 wav 容器文件切片后仍声明为 wav
         assert payload["audio"]["format"] == "pcm"
         assert payload["audio"]["codec"] == "raw"
+
+    def test_default_show_utterances_disabled_to_avoid_nan_confidence_bug(self):
+        """豆包默认不请求 utterances，避免服务端 confidence=NaN 解析失败。"""
+        asr = VolcengineBigModelASR(api_key="k")
+        payload = json.loads(asr._build_full_client_request_payload(hotwords=[]).decode("utf-8"))
+        assert payload["request"]["show_utterances"] is False
+
+    def test_explicit_show_utterances_true_can_still_be_sent(self):
+        """历史方案显式开启 show_utterances 时仍保留可配置能力。"""
+        asr = VolcengineBigModelASR(api_key="k", show_utterances=True)
+        payload = json.loads(asr._build_full_client_request_payload(hotwords=[]).decode("utf-8"))
+        assert payload["request"]["show_utterances"] is True
+
+    def test_nan_confidence_error_is_retryable_without_utterances(self):
+        message = (
+            "豆包 ASR 错误: code=None, message=[Server-side generic error] "
+            "fail to parse big asr response. invalid char confidence: NaN"
+        )
+        assert VolcengineBigModelASR._is_retryable_utterances_error(message) is True
+
+    def test_sanitize_error_message_removes_null_bytes(self):
+        message = "豆包 ASR 错误: code=None, message=\x00\x00bad"
+        assert VolcengineBigModelASR._sanitize_error_message(message) == "豆包 ASR 错误: code=None, message=bad"
 
     def test_load_wav_extracts_pcm_frames_not_container_bytes(self, tmp_path):
         """WAV 输入必须抽取 PCM 帧，避免把 wav header 混入流式音频包。"""
@@ -554,14 +595,15 @@ class TestHotwords:
         assert result is not None
         assert len(result) > 0
 
-    def test_volcengine_payload_includes_context_with_hotwords(self):
-        """豆包 payload 中 request.context 是 JSON 字符串, 包含 hotwords"""
+    def test_volcengine_payload_includes_context_under_corpus_with_hotwords(self):
+        """豆包 payload 中 request.corpus.context 是 JSON 字符串, 包含 hotwords"""
         asr = VolcengineBigModelASR(api_key="test_key")
         payload_bytes = asr._build_full_client_request_payload(hotwords=["卵泡", "子宫内膜"])
         payload = json.loads(payload_bytes.decode("utf-8"))
-        # request.context 必须是 JSON 字符串
-        assert "context" in payload["request"]
-        context_str = payload["request"]["context"]
+        assert "context" not in payload["request"]
+        # request.corpus.context 必须是 JSON 字符串
+        assert "corpus" in payload["request"]
+        context_str = payload["request"]["corpus"]["context"]
         # context 本身能被 JSON 解析
         context = json.loads(context_str)
         assert "hotwords" in context
@@ -575,6 +617,7 @@ class TestHotwords:
         payload_bytes = asr._build_full_client_request_payload(hotwords=None)
         payload = json.loads(payload_bytes.decode("utf-8"))
         assert "context" not in payload["request"]
+        assert "corpus" not in payload["request"]
 
     def test_volcengine_payload_no_context_empty_hotwords(self):
         """空 hotwords 列表时不传 context"""
@@ -582,6 +625,35 @@ class TestHotwords:
         payload_bytes = asr._build_full_client_request_payload(hotwords=[])
         payload = json.loads(payload_bytes.decode("utf-8"))
         assert "context" not in payload["request"]
+        assert "corpus" not in payload["request"]
+
+    def test_volcengine_payload_puts_platform_tables_under_corpus(self):
+        """平台热词表和替换词表按文档放入 request.corpus"""
+        asr = VolcengineBigModelASR(
+            api_key="test_key",
+            boosting_table_id="boost-id",
+            correct_table_id="correct-id",
+        )
+        payload_bytes = asr._build_full_client_request_payload(hotwords=None)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        assert "boosting_table_id" not in payload["request"]
+        assert "correct_table_id" not in payload["request"]
+        assert payload["request"]["corpus"]["boosting_table_id"] == "boost-id"
+        assert payload["request"]["corpus"]["correct_table_id"] == "correct-id"
+
+    def test_volcengine_payload_supports_business_context_under_corpus(self):
+        """业务上下文按 dialog_ctx 序列化到 request.corpus.context"""
+        asr = VolcengineBigModelASR(
+            api_key="test_key",
+            context_text="当前录音为辅助生殖阴道B超卵泡监测。",
+        )
+        payload_bytes = asr._build_full_client_request_payload(hotwords=None)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        context = json.loads(payload["request"]["corpus"]["context"])
+        assert context == {
+            "context_type": "dialog_ctx",
+            "context_data": [{"text": "当前录音为辅助生殖阴道B超卵泡监测。"}],
+        }
 
     def test_volcengine_default_hotwords_constant_exists(self):
         """DEFAULT_ASR_HOTWORDS 常量可用且非空"""

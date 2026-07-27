@@ -1,20 +1,20 @@
 /**
  * API 客户端封装
  */
-import axios, { AxiosInstance } from 'axios'
+import axios from 'axios'
 import { message } from 'ant-design-vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
-const client: AxiosInstance = axios.create({
+const client: any = axios.create({
   baseURL: API_BASE,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 })
 
 client.interceptors.response.use(
-  (response) => response.data,
-  (error) => {
+  (response: any) => response.data,
+  (error: any) => {
     const msg = error.response?.data?.detail || error.message || '请求失败'
     message.error(msg)
     return Promise.reject(error)
@@ -65,6 +65,31 @@ export const modelApi = {
   delete: (id: number) => client.delete(`/model/${id}`),
   test: (id: number) => client.post(`/model/${id}/test`),
   initDefaults: () => client.post('/model/init-defaults'),
+}
+
+// ========== ASR 优化评估配置方案 ==========
+export const asrOptimizationApi = {
+  listPlans: () => client.get('/asr-optimization/plans'),
+  savePlan: (data: {
+    name: string
+    asr_model_id: number
+    params: any
+    config_hash: string
+    source?: string
+  }) => client.post('/asr-optimization/plans', data),
+  updatePlan: (id: number, data: any) => client.put(`/asr-optimization/plans/${id}`, data),
+  deletePlan: (id: number) => client.delete(`/asr-optimization/plans/${id}`),
+  deletePlanByHash: (configHash: string) => client.delete(`/asr-optimization/plans/by-hash/${encodeURIComponent(configHash)}`),
+  exportFull: (data: { config_hash: string; dates?: string[] }) =>
+    client.post('/asr-optimization/export-full', data, {
+      responseType: 'blob',
+      timeout: 300000,
+    }),
+  listFieldReviewMarks: (llmResultIds: number[]) =>
+    client.get('/asr-optimization/field-review-marks', { params: { llm_result_ids: llmResultIds.join(',') } }),
+  saveFieldReviewMark: (data: any) => client.post('/asr-optimization/field-review-marks', data),
+  clearFieldReviewMark: (llmResultId: number, fieldGroup: string, fieldKey?: string) =>
+    client.delete('/asr-optimization/field-review-marks', { params: { llm_result_id: llmResultId, field_group: fieldGroup, field_key: fieldKey } }),
 }
 
 // ========== 测试执行 ==========
@@ -187,10 +212,32 @@ export const promptTemplateApi = {
 
 // ========== 患者级 ASR/LLM 持久化结果 ==========
 export const patientApi = {
-  runAsrSSE(patientId: number, asrModelId: number, hotwords?: string): EventSource {
+  startAsrTask(patientId: number, data: {
+    asr_model_id: number
+    hotwords?: string
+    variant_name?: string
+    params_override?: any
+    source?: string
+    experiment_key?: string
+    config_hash?: string
+  }) {
+    return client.post(`/patients/${patientId}/asr/tasks`, data, { timeout: 30000 })
+  },
+  getAsrTask(patientId: number, resultId: number) {
+    return client.get(`/patients/${patientId}/asr/tasks/${resultId}`, { timeout: 30000 })
+  },
+  repairAsrMissingSegments(patientId: number, resultId: number) {
+    return client.post(`/patients/${patientId}/asr-results/${resultId}/repair-missing-segments`, {}, { timeout: 900000 })
+  },
+  runAsrSSE(patientId: number, asrModelId: number, hotwords?: string, extra?: { variant_name?: string; params_override?: any; source?: string; experiment_key?: string; config_hash?: string }): EventSource {
     const params = new URLSearchParams()
     params.set('asr_model_id', String(asrModelId))
     if (hotwords) params.set('hotwords', hotwords)
+    if (extra?.variant_name) params.set('variant_name', extra.variant_name)
+    if (extra?.params_override) params.set('params_override', JSON.stringify(extra.params_override))
+    if (extra?.source) params.set('source', extra.source)
+    if (extra?.experiment_key) params.set('experiment_key', extra.experiment_key)
+    if (extra?.config_hash) params.set('config_hash', extra.config_hash)
     return new EventSource(`${API_BASE}/patients/${patientId}/asr/stream?${params.toString()}`)
   },
   listAsrResults: (patientId: number) => client.get(`/patients/${patientId}/asr-results`),
@@ -199,6 +246,14 @@ export const patientApi = {
       params: { patient_ids: patientIds.join(',') },
       timeout: 120000,
     }),
+  getAsrReference: (patientId: number) => client.get(`/patients/${patientId}/asr-reference`),
+  listAsrReferencesBatch: (patientIds: number[]) =>
+    client.get('/patients/asr-references/batch', {
+      params: { patient_ids: patientIds.join(',') },
+      timeout: 120000,
+    }),
+  saveAsrReference: (patientId: number, data: { base_asr_result_id?: number; reference_text: string; reference_annotations?: any[]; note?: string }) =>
+    client.put(`/patients/${patientId}/asr-reference`, data),
   getAsrCurrent: (patientId: number) => client.get(`/patients/${patientId}/asr-current`),
   setAsrCurrent: (patientId: number, resultId: number) =>
     client.put(`/patients/${patientId}/asr-results/${resultId}/current`),
@@ -207,8 +262,11 @@ export const patientApi = {
     asr_result_id?: number
     prompt_content?: string
     prompt_template_id?: number
+    source?: string
+    experiment_key?: string
   }) => client.post(`/patients/${patientId}/llm/run`, data, { timeout: 300000 }),
-  listLlmResults: (patientId: number) => client.get(`/patients/${patientId}/llm-results`),
+  listLlmResults: (patientId: number, params?: { include_optimization?: boolean }) =>
+    client.get(`/patients/${patientId}/llm-results`, { params }),
   getLlmCurrent: (patientId: number) => client.get(`/patients/${patientId}/llm-current`),
   setLlmCurrent: (patientId: number, resultId: number) =>
     client.put(`/patients/${patientId}/llm-results/${resultId}/current`),

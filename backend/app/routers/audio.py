@@ -5,7 +5,7 @@ import io
 import os
 from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func, delete as sa_delete
+from sqlalchemy import select, func, delete as sa_delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from loguru import logger
@@ -548,7 +548,10 @@ async def get_records_flat(date: str = None, db: AsyncSession = Depends(get_db))
     if patient_ids:
         asr_result = await db.execute(
             select(PatientAsrResult)
-            .where(PatientAsrResult.patient_id.in_(patient_ids))
+            .where(
+                PatientAsrResult.patient_id.in_(patient_ids),
+                or_(PatientAsrResult.source.is_(None), PatientAsrResult.source != "asr_optimization"),
+            )
             .order_by(
                 PatientAsrResult.patient_id.asc(),
                 PatientAsrResult.created_at.desc(),
@@ -561,7 +564,10 @@ async def get_records_flat(date: str = None, db: AsyncSession = Depends(get_db))
 
         llm_result = await db.execute(
             select(PatientLlmResult)
-            .where(PatientLlmResult.patient_id.in_(patient_ids))
+            .where(
+                PatientLlmResult.patient_id.in_(patient_ids),
+                or_(PatientLlmResult.source.is_(None), PatientLlmResult.source != "asr_optimization"),
+            )
             .order_by(
                 PatientLlmResult.patient_id.asc(),
                 PatientLlmResult.created_at.desc(),

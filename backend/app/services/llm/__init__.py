@@ -34,14 +34,16 @@ class OpenAILLM(BaseLLM):
 
     def __init__(self, api_key: str, endpoint: str, model_name: str = "", **kwargs):
         self.api_key = api_key
+        params = kwargs.get("params") or {}
         # 规范化 endpoint：去掉末尾 /chat/completions（如已拼接）和尾部斜杠
         endpoint = endpoint.rstrip("/")
         if endpoint.endswith("/chat/completions"):
             endpoint = endpoint[: -len("/chat/completions")]
         self.endpoint = endpoint
         self.model_name = model_name or kwargs.get("model_name", "")
+        self.params = params
         # DeepSeek 倾向于用大写 Authorization
-        self._use_bearer = kwargs.get("auth_scheme", "bearer").lower() == "bearer"
+        self._use_bearer = (kwargs.get("auth_scheme") or params.get("auth_scheme") or "bearer").lower() == "bearer"
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -56,15 +58,20 @@ class OpenAILLM(BaseLLM):
 
     async def _chat_complete(self, system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
         url = f"{self.endpoint}/chat/completions"
+        payload_temperature = self.params.get("temperature", temperature)
         payload = {
             "model": self.model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": temperature,
+            "temperature": payload_temperature,
             "stream": False,
         }
+        for key in ("thinking", "max_completion_tokens", "max_tokens", "top_p"):
+            value = self.params.get(key)
+            if value is not None and value != "":
+                payload[key] = value
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(url, headers=self._headers(), json=payload)
             resp.raise_for_status()
@@ -108,6 +115,8 @@ class OpenAILLM(BaseLLM):
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 5,
             }
+            if self.params.get("thinking"):
+                payload["thinking"] = self.params["thinking"]
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(url, headers=self._headers(), json=payload)
                 return resp.status_code == 200

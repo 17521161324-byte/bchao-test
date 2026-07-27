@@ -150,7 +150,7 @@
       </a-table>
         </a-tab-pane>
 
-        <a-tab-pane key="attribution" tab="逐字段归因">
+        <a-tab-pane v-if="false" key="attribution" tab="逐字段归因">
           <div class="attribution-stats">
             <a-card size="small" class="attribution-stat-card">
               <div class="stat-label">总字段数</div>
@@ -197,8 +197,18 @@
             <a-select v-model:value="attributionErrorTypeFilter" placeholder="错误类型" allow-clear style="width: 180px">
               <a-select-option v-for="type in attributionErrorTypeOptions" :key="type" :value="type">{{ type }}</a-select-option>
             </a-select>
+            <a-select v-model:value="attributionAsrFilter" placeholder="ASR模型" allow-clear show-search style="width: 190px">
+              <a-select-option v-for="name in attributionAsrOptions" :key="name" :value="name">{{ name }}</a-select-option>
+            </a-select>
+            <a-select v-model:value="attributionLlmFilter" placeholder="LLM模型" allow-clear show-search style="width: 170px">
+              <a-select-option v-for="name in attributionLlmOptions" :key="name" :value="name">{{ name }}</a-select-option>
+            </a-select>
+            <a-select v-model:value="attributionPromptFilter" placeholder="提示词模板" allow-clear show-search style="width: 210px">
+              <a-select-option v-for="name in attributionPromptOptions" :key="name" :value="name">{{ name }}</a-select-option>
+            </a-select>
             <a-checkbox v-model:checked="attributionOnlyMarked">只看人工标记</a-checkbox>
             <a-checkbox v-model:checked="attributionOnlyFollicle">只看卵泡字段</a-checkbox>
+            <a-button size="small" @click="resetAttributionFilters">清空筛选</a-button>
           </div>
 
           <a-table
@@ -810,8 +820,8 @@
         </a-table>
 
         <!-- 人工标记区域 -->
-        <a-divider style="margin-top: 16px">人工标记</a-divider>
-        <div :key="compareModalMarkRefreshKey">
+        <a-divider v-if="false" style="margin-top: 16px">人工标记</a-divider>
+        <div v-if="false" :key="compareModalMarkRefreshKey">
           <template v-if="getFieldReviewMark(compareModalRecord, compareModalGroupKey)">
             <a-alert :type="getFieldReviewMark(compareModalRecord, compareModalGroupKey)?.mark_type === 'exclude' ? 'warning' : 'error'" show-icon style="margin-bottom: 12px">
               <template #message>
@@ -888,6 +898,9 @@ export default defineComponent({
     const attributionStatusFilter = ref<string | undefined>(undefined)
     const attributionLevelFilter = ref<string | undefined>(undefined)
     const attributionErrorTypeFilter = ref<string | undefined>(undefined)
+    const attributionAsrFilter = ref<string | undefined>(undefined)
+    const attributionLlmFilter = ref<string | undefined>(undefined)
+    const attributionPromptFilter = ref<string | undefined>(undefined)
     const attributionOnlyMarked = ref(false)
     const attributionOnlyFollicle = ref(false)
 
@@ -1226,6 +1239,9 @@ export default defineComponent({
         if (attributionStatusFilter.value && row.status !== attributionStatusFilter.value) return false
         if (attributionLevelFilter.value && row.attribution_level !== attributionLevelFilter.value) return false
         if (attributionErrorTypeFilter.value && row.error_type !== attributionErrorTypeFilter.value) return false
+        if (attributionAsrFilter.value && row.asr_model !== attributionAsrFilter.value) return false
+        if (attributionLlmFilter.value && row.llm_model !== attributionLlmFilter.value) return false
+        if (attributionPromptFilter.value && row.prompt_template !== attributionPromptFilter.value) return false
         if (attributionOnlyMarked.value && !row.has_mark) return false
         if (attributionOnlyFollicle.value && !isFollicleGroup(row.group)) return false
         return true
@@ -1234,6 +1250,9 @@ export default defineComponent({
 
     const attributionLevelOptions = computed(() => uniqueOptions(fieldAttributionRows.value.map((row) => row.attribution_level).filter((v) => v && v !== '—')))
     const attributionErrorTypeOptions = computed(() => uniqueOptions(fieldAttributionRows.value.map((row) => row.error_type).filter((v) => v && v !== '—')))
+    const attributionAsrOptions = computed(() => uniqueOptions(fieldAttributionRows.value.map((row) => row.asr_model).filter((v) => v && v !== '-')))
+    const attributionLlmOptions = computed(() => uniqueOptions(fieldAttributionRows.value.map((row) => row.llm_model).filter((v) => v && v !== '-')))
+    const attributionPromptOptions = computed(() => uniqueOptions(fieldAttributionRows.value.map((row) => row.prompt_template).filter((v) => v && v !== '-')))
 
     const attributionOverallStats = computed(() => {
       const rows = filteredFieldAttributionRows.value
@@ -1271,6 +1290,19 @@ export default defineComponent({
 
     function uniqueOptions(values: string[]) {
       return Array.from(new Set(values)).sort()
+    }
+
+    function resetAttributionFilters() {
+      attributionKeyword.value = ''
+      attributionFieldFilter.value = undefined
+      attributionStatusFilter.value = undefined
+      attributionLevelFilter.value = undefined
+      attributionErrorTypeFilter.value = undefined
+      attributionAsrFilter.value = undefined
+      attributionLlmFilter.value = undefined
+      attributionPromptFilter.value = undefined
+      attributionOnlyMarked.value = false
+      attributionOnlyFollicle.value = false
     }
 
     function buildFieldAttributionRow(record: PatientExamination, field: { key: string; label: string; group: string }) {
@@ -1844,7 +1876,7 @@ export default defineComponent({
     const asrModels = ref<any[]>([])          // 所有 active ASR 模型
     const asrModelId = ref<number | undefined>(undefined)  // 当前选中的 ASR 模型
     const asrRunning = ref(false)
-    const asrProgress = ref<{ seg_index: number; total: number } | null>(null)
+    const asrProgress = ref<{ seg_index?: number; total?: number; message?: string } | null>(null)
     const asrPartialSegments = ref<Record<number, string>>({})
     // 当前检查记录的所有 ASR 结果 (按模型分组)
     const asrResultsAll = ref<any[]>([])
@@ -1966,7 +1998,7 @@ export default defineComponent({
       // 其次从每个模型代表结果里找 success
       if (!bestMid) {
         for (const mid of Object.keys(map)) {
-          if (map[mid].status === 'success') {
+          if (map[Number(mid)].status === 'success') {
             bestMid = Number(mid)
             break
           }
@@ -2000,31 +2032,17 @@ export default defineComponent({
       if (!asrModelId.value || !selectedRecord.value) return
       const examRecordId = selectedRecord.value.id
       asrRunning.value = true
-      asrProgress.value = null
+      asrProgress.value = { message: 'ASR 后台任务已启动...' }
       asrPartialSegments.value = {}
       try {
-        const es = patientApi.runAsrSSE(examRecordId, asrModelId.value)
-        es.addEventListener('progress', () => { /* total info */ })
-        es.addEventListener('segment', () => {
-          // 实时预览由 loadAsrResults 刷新
-        })
-        es.addEventListener('complete', async () => {
-          asrProgress.value = null
-          asrRunning.value = false
-          es.close()
-          // 从后端刷新正式结果
-          await loadAsrResults()
-        })
-        es.addEventListener('error', () => {
-          message.error('ASR 失败')
-          asrProgress.value = null
-          asrRunning.value = false
-          es.close()
-          // 刷新以显示失败状态
-          loadAsrResults()
-        })
+        const result = await waitForAsrTask(examRecordId, asrModelId.value)
+        if (!isUsableAsrResult(result)) throw new Error(result?.error_message || 'ASR 未返回有效文本')
+        message.success('ASR 完成')
+        await loadAsrResults()
       } catch (e) {
-        message.error('ASR 启动失败')
+        message.error((e as Error)?.message || 'ASR 失败')
+        await loadAsrResults()
+      } finally {
         asrProgress.value = null
         asrRunning.value = false
       }
@@ -2332,81 +2350,28 @@ export default defineComponent({
       return result?.status === 'success' && typeof result.full_transcript === 'string' && result.full_transcript.trim().length > 0
     }
 
+    async function waitForAsrTask(patientId: number, modelId: number): Promise<any> {
+      const started: any = await patientApi.startAsrTask(patientId, { asr_model_id: modelId })
+      const resultId = started?.result_id || started?.id
+      if (!resultId) throw new Error('ASR 任务启动失败')
+      const startedAt = Date.now()
+      const timeoutMs = 30 * 60 * 1000
+      while (Date.now() - startedAt < timeoutMs) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2500))
+        const current: any = await patientApi.getAsrTask(patientId, resultId)
+        if (current?.status === 'success') return current
+        if (current?.status === 'failed') throw new Error(current.error_message || 'ASR 执行失败')
+        if (current?.segments?.length) {
+          batchProgress.stage = 'ASR'
+          batchProgress.asrDone = current.segments.length
+          batchProgress.asrTotal = Math.max(batchProgress.asrTotal || 0, current.segments.length)
+        }
+      }
+      throw new Error('ASR 后台任务超时')
+    }
+
     function waitForAsrComplete(record: PatientExamination, modelId: number): Promise<any> {
-      return new Promise((resolve, reject) => {
-        const es = patientApi.runAsrSSE(record.id, modelId)
-        let settled = false
-        const segCount = Math.max(record.segs?.length || 0, 1)
-        const timeoutMs = Math.max(120000, segCount * 60000)
-        const timeout = window.setTimeout(() => {
-          if (settled) return
-          settled = true
-          es.close()
-          reject(new Error(`ASR 超时（${Math.round(timeoutMs / 1000)} 秒）`))
-        }, timeoutMs)
-
-        const finish = async (event?: any) => {
-          if (settled) return
-          let parsed: any = {}
-          try {
-            parsed = event?.data ? JSON.parse(String(event.data)) : {}
-          } catch {
-            parsed = {}
-          }
-          if (!isUsableAsrResult(parsed)) {
-            try {
-              const persisted = await getOrReuseAsrForRecord(record, modelId)
-              if (persisted) {
-                settled = true
-                window.clearTimeout(timeout)
-                es.close()
-                resolve(persisted)
-                return
-              }
-            } catch {
-              // fall through to the explicit failure below
-            }
-            settled = true
-            window.clearTimeout(timeout)
-            es.close()
-            reject(new Error(parsed?.message || 'ASR 执行完成但未返回有效文本'))
-            return
-          }
-          settled = true
-          window.clearTimeout(timeout)
-          es.close()
-          resolve(parsed)
-        }
-
-        const fail = (event?: any) => {
-          if (settled) return
-          settled = true
-          window.clearTimeout(timeout)
-          es.close()
-          reject(new Error(parseSseError(event)))
-        }
-
-        es.addEventListener('progress', (event: any) => {
-          try {
-            const parsed = JSON.parse(String(event.data || '{}'))
-            batchProgress.stage = 'ASR'
-            batchProgress.asrTotal = parsed.total || batchProgress.asrTotal || segCount
-            if (parsed.stage === 'segment_start') {
-              batchProgress.asrDone = Math.max(0, (parsed.seg_index || 1) - 1)
-            }
-          } catch { /* ignore progress parse errors */ }
-        })
-        es.addEventListener('segment', (event: any) => {
-          try {
-            const parsed = JSON.parse(String(event.data || '{}'))
-            batchProgress.stage = 'ASR'
-            batchProgress.asrTotal = parsed.total || batchProgress.asrTotal || segCount
-            batchProgress.asrDone = parsed.seg_index || batchProgress.asrDone
-          } catch { /* ignore segment parse errors */ }
-        })
-        es.addEventListener('complete', finish)
-        es.addEventListener('error', fail)
-      })
+      return waitForAsrTask(record.id, modelId)
     }
 
     async function getCurrentAsrForRecord(record: PatientExamination) {
@@ -2872,8 +2837,10 @@ export default defineComponent({
       accuracyMode, getAccuracyValue, fieldMatchStats, follicleAverageStats, getFieldColumn,
       fieldColumns, fieldAttributionRows, filteredFieldAttributionRows, fieldAttributionColumns,
       attributionOverallStats, attributionFieldStats, attributionLevelOptions, attributionErrorTypeOptions,
+      attributionAsrOptions, attributionLlmOptions, attributionPromptOptions,
       attributionKeyword, attributionFieldFilter, attributionStatusFilter, attributionLevelFilter, attributionErrorTypeFilter,
-      attributionOnlyMarked, attributionOnlyFollicle,
+      attributionAsrFilter, attributionLlmFilter, attributionPromptFilter,
+      attributionOnlyMarked, attributionOnlyFollicle, resetAttributionFilters,
       recordNoteDraft, recordNoteSaving, saveRecordNote,
       asrModels, asrModelId, asrRunning, asrProgress, runAsr,
       asrResultByModelId, currentAsrStatus, selectedAsrResult,

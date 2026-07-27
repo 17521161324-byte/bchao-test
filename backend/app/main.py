@@ -2,8 +2,8 @@
 应用入口 - 供 uvicorn 使用
 """
 import sys
+import asyncio
 if sys.platform == "win32":
-    import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
@@ -17,17 +17,23 @@ def create_app():
 
     from app.config import settings
     from app.database import init_db
-    from app.routers import audio, result, model_config, test, experiment, prompt_template, patients, field_review
+    from app.routers import audio, result, model_config, test, experiment, prompt_template, patients, field_review, asr_optimization
 
     _worker = None
     _worker_task = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        global _worker, _worker_task
+        nonlocal _worker, _worker_task
         logger.info(f"🚀 {settings.APP_NAME} 启动中...")
         await init_db()
         logger.info("✅ 数据库初始化完成")
+        try:
+            cleaned_asr = await patients.cleanup_stale_asr_tasks()
+            if cleaned_asr:
+                logger.warning(f"已清理 {cleaned_asr} 条历史 ASR running 残留记录")
+        except Exception as e:
+            logger.warning(f"⚠️ 清理 ASR running 残留失败（非关键）: {e}")
 
         # 启动后台任务 Worker
         try:
@@ -42,10 +48,13 @@ def create_app():
         yield
 
         if _worker:
-            _worker.stop()
+            await _worker.stop()
         if _worker_task:
             try:
                 _worker_task.cancel()
+                await _worker_task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
         logger.info("👋 应用关闭")
@@ -77,6 +86,7 @@ def create_app():
     app.include_router(prompt_template.router, prefix="/api/prompt-templates", tags=["提示词模版"])
     app.include_router(patients.router, prefix="/api/patients", tags=["患者结果"])
     app.include_router(field_review.router, prefix="/api/patients", tags=["字段标记"])
+    app.include_router(asr_optimization.router, prefix="/api/asr-optimization", tags=["ASR优化评估"])
 
     @app.get("/api/health")
     async def health_check():

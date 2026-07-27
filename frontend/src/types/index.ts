@@ -134,6 +134,7 @@ export interface PatientExamination {
   id: number
   record_id: string
   date: string
+  note?: string
   date_folder_id: number
   timestamp_folder: string
   segs: AudioSeg[]

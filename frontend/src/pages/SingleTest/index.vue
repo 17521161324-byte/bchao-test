@@ -13,7 +13,7 @@
                 placeholder="选择日期"
                 :value="selectedDate"
                 @change="handleDateChange"
-                :options="audioTree.map((f) => ({ value: f.date, label: f.date }))"
+                :options="audioTree.map((f: any) => ({ value: f.date, label: f.date }))"
               />
             </div>
 
@@ -170,8 +170,8 @@ watch(asrModels, (list) => {
   if (defaultAsr) asrModelId.value = defaultAsr.id
 })
 
-const currentPatients = computed(() => {
-  const folder = audioTree.value.find((f) => f.date === selectedDate.value)
+const currentPatients = computed<any[]>(() => {
+  const folder = audioTree.find((f: any) => f.date === selectedDate.value)
   return folder?.patients || []
 })
 
@@ -184,8 +184,8 @@ function handleDateChange(date: string) {
 
 function handleRecordChange(recordId: string) {
   selectedRecord.value = recordId
-  const folder = audioTree.value.find((f) => f.date === selectedDate.value)
-  selectedPatient.value = folder?.patients.find((p) => p.record_id === recordId)
+  const folder = audioTree.find((f: any) => f.date === selectedDate.value)
+  selectedPatient.value = folder?.patients.find((p: any) => p.record_id === recordId)
   testResult.value = null
 }
 

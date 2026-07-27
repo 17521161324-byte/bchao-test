@@ -46,7 +46,7 @@
     <a-card>
       <a-table
         :data-source="filteredTasks"
-        :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
+        :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }"
         size="small"
         row-key="id"
         :scroll="{ x: 1800 }"

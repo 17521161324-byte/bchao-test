@@ -261,6 +261,7 @@ class ExperimentRunner:
                             "api_key": llm_model.api_key,
                             "api_secret": llm_model.api_secret,
                             "model_name": llm_model.model_name,
+                            "params": llm_model.params or {},
                         },
                         prompt_template=combo.prompt_template,
                     )

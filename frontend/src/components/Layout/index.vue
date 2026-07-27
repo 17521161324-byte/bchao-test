@@ -6,10 +6,8 @@
       </div>
       <a-menu theme="dark" mode="inline" :selected-keys="[route.path]" @click="onMenuClick">
         <a-menu-item key="/data"><FolderOutlined />数据管理</a-menu-item>
-        <a-menu-item key="/asr-compare"><ExperimentOutlined />ASR 对比</a-menu-item>
-        <a-menu-item key="/asr-optimize"><ExperimentOutlined />ASR 优化评估</a-menu-item>
+        <a-menu-item key="/asr-optimize"><ExperimentOutlined />优化评估</a-menu-item>
         <a-menu-item key="/model"><SettingOutlined />模型配置</a-menu-item>
-        <a-menu-item key="/experiments"><ExperimentOutlined />批量实验</a-menu-item>
       </a-menu>
     </a-layout-sider>
 

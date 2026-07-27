@@ -20,12 +20,13 @@ import asyncio
 import json
 import io
 import time
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from loguru import logger
@@ -34,13 +35,102 @@ from app.config import resolve_hotwords
 from app.database import get_db, AsyncSessionLocal
 from app.models import (
     PatientRecord, AudioSeg, ModelConfig,
-    PatientAsrResult, PatientLlmResult,
+    PatientAsrResult, PatientLlmResult, AsrReferenceTranscript,
 )
 from app.services.asr import create_asr
 from app.services.asr_input import build_asr_audio_inputs
 from app.services.test_executor import TestExecutor
 
 router = APIRouter()
+
+ASR_TRANSCRIBE_TIMEOUT_SECONDS = 600
+ASR_STALE_RUNNING_SECONDS = 30 * 60
+_RUNNING_ASR_TASKS: set[asyncio.Task] = set()
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+ASR_PARAM_OVERRIDE_ALLOWLIST = {
+    "audio_input_mode",
+    "recognition_mode",
+    "endpoint_mode",
+    "language",
+    "stream",
+    "merge_group_size",
+    "max_base64_mb",
+    "result_type",
+    "enable_itn",
+    "enable_punc",
+    "enable_ddc",
+    "show_utterances",
+    "enable_nonstream",
+    "enable_speaker_info",
+    "end_window_size",
+    "vad_segment_duration",
+    "force_to_speech_time",
+    "enable_auto_lang",
+    "hotwords",
+    "context_text",
+    "use_context_hotwords",
+    "context_mode",
+    "use_boosting_table",
+    "use_correct_table",
+    "boosting_table_id",
+    "boosting_table_name",
+    "correct_table_id",
+    "correct_table_name",
+    "frame_size",
+    "send_interval",
+    "resource_id",
+    "task_timeout_seconds",
+    "receive_timeout_seconds",
+    "total_timeout_seconds",
+}
+
+
+def _parse_asr_params_override(raw: Optional[str]) -> dict:
+    """解析 ASR 优化评估传入的临时参数，只允许覆盖非密钥类参数。"""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="params_override 不是合法 JSON") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="params_override 必须是对象")
+
+    cleaned: dict = {}
+    for key, value in parsed.items():
+        if key not in ASR_PARAM_OVERRIDE_ALLOWLIST:
+            continue
+        if value is None or value == "":
+            continue
+        if key == "hotwords":
+            if isinstance(value, str):
+                words = [item.strip() for item in value.replace("，", ",").split(",") if item.strip()]
+                if words:
+                    cleaned[key] = words
+            elif isinstance(value, list):
+                words = [str(item).strip() for item in value if str(item).strip()]
+                if words:
+                    cleaned[key] = words
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _apply_asr_feature_switches(params: dict) -> dict:
+    """按启用开关决定是否把平台词表/上下文热词传给 ASR 服务。"""
+    next_params = dict(params or {})
+    if next_params.get("use_boosting_table", True) is False:
+        next_params.pop("boosting_table_id", None)
+        next_params.pop("boosting_table_name", None)
+    if next_params.get("use_correct_table", True) is False:
+        next_params.pop("correct_table_id", None)
+        next_params.pop("correct_table_name", None)
+    if next_params.get("use_context_hotwords", True) is False:
+        next_params.pop("hotwords", None)
+        next_params.pop("context_text", None)
+    return next_params
 
 
 # ------------------------------------------------------------------
@@ -76,15 +166,524 @@ async def _set_current_llm(db: AsyncSession, patient_id: int, current_id: int):
     await db.commit()
 
 
+def _segments_text(segments) -> str:
+    if not isinstance(segments, list):
+        return ""
+    return "\n".join(str(item.get("text") or "") for item in segments if isinstance(item, dict))
+
+
+def _snapshot_params(config_snapshot) -> dict:
+    if isinstance(config_snapshot, dict):
+        return config_snapshot.get("params") or {}
+    return {}
+
+
+def _build_asr_integrity(record, audio_segment_count: int | None = None) -> dict:
+    """ASR 完整性判断：同时支持分段模式和整段模式。
+
+    分段模式可直接按已保存 seg_index 判断缺段；整段模式不把 1 段结果当缺段，
+    只暴露文本长度/数字数量，供前端继续与历史最佳做横向比较。
+    """
+    if isinstance(record, dict):
+        status = record.get("status")
+        segments = record.get("segments") or []
+        full_transcript = record.get("full_transcript") or ""
+        params = _snapshot_params(record.get("config_snapshot"))
+    else:
+        status = getattr(record, "status", None)
+        segments = getattr(record, "segments", None) or []
+        full_transcript = getattr(record, "full_transcript", None) or ""
+        params = _snapshot_params(getattr(record, "config_snapshot", None))
+
+    text = full_transcript or _segments_text(segments)
+    mode = str(params.get("audio_input_mode") or params.get("recognition_mode") or "segments")
+    valid_segments = [
+        item for item in segments
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ] if isinstance(segments, list) else []
+    processed_segments = [
+        item for item in segments
+        if isinstance(item, dict) and str(item.get("seg_index", "")).isdigit()
+    ] if isinstance(segments, list) else []
+    empty_indices = sorted({
+        int(item.get("seg_index"))
+        for item in processed_segments
+        if not str(item.get("text") or "").strip()
+    })
+    result_seg_count = len(valid_segments)
+    processed_indices = sorted({
+        int(item.get("seg_index"))
+        for item in processed_segments
+    })
+    total = int(audio_segment_count or 0)
+    is_segment_mode = mode in {"segments", "segment", "original_segments"} or not mode
+    missing_indices: list[int] = []
+    if total > 0 and is_segment_mode:
+        missing_indices = [idx for idx in range(1, total + 1) if idx not in processed_indices]
+
+    number_count = len(_NUMBER_RE.findall(text or ""))
+    text_len = len(text or "")
+    level = "complete"
+    label = f"完整 {result_seg_count}/{total}" if total and is_segment_mode else "完整"
+    score = 100
+    reasons: list[str] = []
+    effective_total = max(0, total - len(empty_indices)) if total and is_segment_mode else 0
+
+    if status == "running":
+        level = "running"
+        label = "进行中"
+        score = 0
+    elif missing_indices:
+        processed_count = len(processed_indices)
+        level = "partial"
+        label = f"部分转写 {processed_count}/{total}"
+        score = max(30, round((processed_count / total) * 100))
+        reasons.append(f"缺失分段：{','.join(map(str, missing_indices))}")
+    elif empty_indices:
+        level = "complete_with_empty"
+        label = f"有效转写 {result_seg_count}/{effective_total}，空段 {len(empty_indices)}" if total and is_segment_mode else f"有空段 {len(empty_indices)}"
+        score = 100
+        reasons.append(f"空段/无有效语音：{','.join(map(str, empty_indices))}")
+    elif status != "success":
+        if text_len > 0 or result_seg_count > 0:
+            level = "partial"
+            label = f"部分转写 {result_seg_count}/{total}" if total and is_segment_mode else "部分转写"
+            score = max(10, min(60, round((result_seg_count / total) * 100))) if total and is_segment_mode else 40
+            reasons.append("任务失败但已保存部分分段")
+        else:
+            level = "failed"
+            label = "失败 0/{}".format(total) if total and is_segment_mode else "失败"
+            score = 0
+            reasons.append("任务失败且无有效文本")
+    elif text_len == 0:
+        level = "failed"
+        label = "无文本"
+        score = 0
+        reasons.append("ASR 未返回有效文本")
+
+    return {
+        "level": level,
+        "label": label,
+        "score": score,
+        "audio_segment_count": total or None,
+        "processed_segment_count": len(processed_indices),
+        "result_segment_count": result_seg_count,
+        "empty_segment_count": len(empty_indices),
+        "empty_segment_indices": empty_indices,
+        "missing_segment_indices": missing_indices,
+        "text_length": text_len,
+        "number_count": number_count,
+        "audio_input_mode": mode,
+        "reasons": reasons,
+    }
+
+
+async def cleanup_stale_asr_tasks(max_age_seconds: int = ASR_STALE_RUNNING_SECONDS) -> int:
+    """Mark orphaned ASR running records as failed after app restarts.
+
+    Background ASR tasks live only inside the current Python process. If the
+    server is restarted while a task is running, the DB record can remain in
+    `running` forever. Only records older than the threshold are touched, so a
+    freshly started task in this process won't be changed.
+    """
+    cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            update(PatientAsrResult)
+            .where(
+                PatientAsrResult.status == "running",
+                PatientAsrResult.created_at < cutoff,
+            )
+            .values(
+                status="failed",
+                error_message="ASR后台任务超时/服务重启前卡住，请重新发起识别",
+                updated_at=datetime.utcnow(),
+            )
+        )
+        await db.commit()
+        return result.rowcount or 0
+
+
 # ------------------------------------------------------------------
 # ASR 接口
 # ------------------------------------------------------------------
+
+async def _prepare_asr_snapshot(
+    db: AsyncSession,
+    patient_id: int,
+    asr_model_id: int,
+    hotwords: Optional[str] = None,
+    variant_name: Optional[str] = None,
+    params_override: Optional[str] = None,
+    source: Optional[str] = None,
+    experiment_key: Optional[str] = None,
+    config_hash: Optional[str] = None,
+) -> dict:
+    """读取 ASR 执行所需快照，避免后台任务持有 ORM 对象。"""
+    patient_result = await db.execute(
+        select(PatientRecord)
+        .options(selectinload(PatientRecord.date_folder))
+        .where(PatientRecord.id == patient_id)
+    )
+    patient = patient_result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail=f"患者 {patient_id} 不存在")
+
+    segs_result = await db.execute(
+        select(AudioSeg).where(AudioSeg.patient_id == patient_id).order_by(AudioSeg.seg_index)
+    )
+    raw_segs = [
+        {"seg_index": s.seg_index, "file_path": s.file_path, "duration": s.duration}
+        for s in segs_result.scalars().all()
+    ]
+    if not raw_segs:
+        raise HTTPException(status_code=400, detail="该患者无录音文件")
+
+    asr_model = await db.get(ModelConfig, asr_model_id)
+    if not asr_model:
+        raise HTTPException(status_code=404, detail="ASR 模型不存在")
+
+    model_params = dict(asr_model.params or {})
+    override_params = _parse_asr_params_override(params_override)
+    if override_params:
+        model_params.update(override_params)
+    model_params = _apply_asr_feature_switches(model_params)
+
+    parsed_hotwords = [w.strip() for w in hotwords.split(",")] if hotwords else None
+    resolved_hotwords = resolve_hotwords(parsed_hotwords, model_params) if model_params.get("use_context_hotwords", True) is not False else None
+
+    safe_variant_name = str(variant_name or "").strip()
+    snap_asr_model_name = safe_variant_name[:100] if safe_variant_name else asr_model.name
+    snap_source = (source or "normal").strip()[:50] or "normal"
+    snap_experiment_key = (experiment_key or "").strip()[:100] or None
+    snap_config_hash = (config_hash or "").strip()[:64] or None
+    snap_config_snapshot = {
+        "base_asr_model_id": asr_model_id,
+        "provider": asr_model.provider,
+        "model_name": asr_model.model_name,
+        "params": model_params,
+        "variant_name": snap_asr_model_name,
+    }
+    snap_asr_config = {
+        "endpoint": asr_model.endpoint,
+        "api_key": asr_model.api_key,
+        "api_secret": asr_model.api_secret,
+        "secret_key": asr_model.secret_key,
+        "model_name": asr_model.model_name,
+        "params": model_params,
+    }
+    snap_segs = build_asr_audio_inputs(raw_segs, model_params)
+    logger.info(
+        f"患者 {patient_id} ASR 准备: model={snap_asr_model_name}, "
+        f"provider={asr_model.provider}, source={snap_source}, "
+        f"audio_input_mode={model_params.get('audio_input_mode') or model_params.get('recognition_mode') or 'segments'}, "
+        f"actual_inputs={len(snap_segs)}, "
+        f"input_modes={sorted({str(seg.get('input_mode', 'segments')) for seg in snap_segs})}, "
+        f"hotwords_count={len(resolved_hotwords or [])}, "
+        f"config_hash={snap_config_hash or '-'}"
+    )
+    return {
+        "patient_id": patient_id,
+        "record_id": patient.record_id,
+        "date": patient.date_folder.date if patient.date_folder else None,
+        "asr_model_id": asr_model_id,
+        "asr_model_name": snap_asr_model_name,
+        "provider": asr_model.provider,
+        "source": snap_source,
+        "experiment_key": snap_experiment_key,
+        "config_hash": snap_config_hash,
+        "config_snapshot": snap_config_snapshot,
+        "hotwords": resolved_hotwords or [],
+        "asr_config": snap_asr_config,
+        "segs": snap_segs,
+    }
+
+
+async def _run_asr_task(record_id_internal: int, snap: dict) -> None:
+    """后台执行 ASR。客户端断开不影响任务继续运行。"""
+    async with AsyncSessionLocal() as task_db:
+        try:
+            asr = create_asr(snap["provider"], **snap["asr_config"])
+            start = time.time()
+            asr_results = []
+            timeout_seconds = int(
+                (snap.get("asr_config") or {}).get("params", {}).get(
+                    "task_timeout_seconds",
+                    ASR_TRANSCRIBE_TIMEOUT_SECONDS,
+                )
+            )
+            for seg in snap["segs"]:
+                text = await asyncio.wait_for(
+                    asr.transcribe(seg["file_path"], hotwords=snap["hotwords"]),
+                    timeout=timeout_seconds,
+                )
+                text = text or ""
+                asr_results.append({
+                    "seg_index": seg["seg_index"],
+                    "text": text,
+                    "duration": seg["duration"],
+                    "input_mode": seg.get("input_mode", "segments"),
+                    "source_seg_count": seg.get("source_seg_count"),
+                })
+
+                record = await task_db.get(PatientAsrResult, record_id_internal)
+                if record:
+                    record.segments = list(asr_results)
+                    record.duration_seconds = round(time.time() - start, 2)
+                    await task_db.commit()
+
+            full_transcript = "\n".join(r["text"] for r in asr_results)
+            if not full_transcript.strip():
+                raise ValueError("ASR 未返回有效转写文本")
+
+            record = await task_db.get(PatientAsrResult, record_id_internal)
+            if not record:
+                return
+            record.segments = list(asr_results)
+            record.full_transcript = full_transcript
+            record.duration_seconds = round(time.time() - start, 2)
+            record.status = "success"
+            record.error_message = None
+            record.is_current = snap["source"] != "asr_optimization"
+            await task_db.commit()
+
+            if snap["source"] != "asr_optimization":
+                await task_db.execute(
+                    update(PatientAsrResult)
+                    .where(
+                        PatientAsrResult.patient_id == snap["patient_id"],
+                        PatientAsrResult.id != record_id_internal,
+                    )
+                    .values(is_current=False)
+                )
+                await task_db.commit()
+        except Exception as e:
+            logger.error(f"患者 {snap.get('patient_id')} ASR 后台任务失败: {e}")
+            try:
+                record = await task_db.get(PatientAsrResult, record_id_internal)
+                if record:
+                    partial_text = _segments_text(record.segments)
+                    if partial_text.strip():
+                        record.full_transcript = partial_text
+                        record.status = "partial"
+                    else:
+                        record.status = "failed"
+                    record.error_message = str(e)
+                    record.duration_seconds = round(time.time() - record.created_at.timestamp(), 2) if record.created_at else None
+                    await task_db.commit()
+            except Exception:
+                pass
+
+
+def _schedule_asr_task(record_id_internal: int, snap: dict) -> None:
+    """将 ASR 任务挂到当前事件循环，避免请求断开导致任务生命周期不清晰。"""
+    task = asyncio.create_task(_run_asr_task(record_id_internal, snap))
+    _RUNNING_ASR_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task) -> None:
+        _RUNNING_ASR_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception as exc:
+            logger.error(f"ASR 后台任务未捕获异常: {exc}")
+
+    task.add_done_callback(_cleanup)
+
+
+@router.post("/{patient_id}/asr/tasks")
+async def start_patient_asr_task(
+    patient_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """创建后台 ASR 任务并立即返回 running 记录。"""
+    asr_model_id = body.get("asr_model_id")
+    if not asr_model_id:
+        raise HTTPException(status_code=400, detail="缺少 asr_model_id")
+    snap = await _prepare_asr_snapshot(
+        db=db,
+        patient_id=patient_id,
+        asr_model_id=int(asr_model_id),
+        hotwords=body.get("hotwords"),
+        variant_name=body.get("variant_name"),
+        params_override=json.dumps(body.get("params_override"), ensure_ascii=False) if isinstance(body.get("params_override"), dict) else body.get("params_override"),
+        source=body.get("source"),
+        experiment_key=body.get("experiment_key"),
+        config_hash=body.get("config_hash"),
+    )
+    record = PatientAsrResult(
+        patient_id=snap["patient_id"],
+        record_id=snap["record_id"],
+        date=snap["date"],
+        asr_model_id=snap["asr_model_id"],
+        asr_model_name=snap["asr_model_name"],
+        provider=snap["provider"],
+        source=snap["source"],
+        experiment_key=snap["experiment_key"],
+        config_hash=snap["config_hash"],
+        config_snapshot=snap["config_snapshot"],
+        hotwords=snap["hotwords"],
+        status="running",
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    _schedule_asr_task(record.id, snap)
+    return {"stage": "started", "result_id": record.id, **_asr_response(record)}
+
+
+@router.get("/{patient_id}/asr/tasks/{result_id}")
+async def get_patient_asr_task(
+    patient_id: int,
+    result_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    record = await db.get(PatientAsrResult, result_id)
+    if not record or record.patient_id != patient_id:
+        raise HTTPException(status_code=404, detail="ASR 任务不存在")
+    audio_count = await _get_audio_segment_count(db, patient_id)
+    return _asr_response(record, audio_count)
+
+
+async def _get_audio_segment_count(db: AsyncSession, patient_id: int) -> int:
+    result = await db.execute(select(AudioSeg).where(AudioSeg.patient_id == patient_id))
+    return len(result.scalars().all())
+
+
+async def _build_repair_snapshot(db: AsyncSession, record: PatientAsrResult) -> tuple[dict, list[dict]]:
+    snapshot = record.config_snapshot or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    params = dict((snapshot.get("params") or {}))
+    mode = str(params.get("audio_input_mode") or params.get("recognition_mode") or "segments")
+    if mode not in {"segments", "segment", "original_segments"}:
+        raise HTTPException(status_code=400, detail="当前 ASR 结果不是原始分段模式，不能按缺失段补跑，请使用完整重跑")
+
+    asr_model_id = int(snapshot.get("base_asr_model_id") or record.asr_model_id or 0)
+    asr_model = await db.get(ModelConfig, asr_model_id)
+    if not asr_model:
+        raise HTTPException(status_code=404, detail="原 ASR 模型不存在，无法补跑")
+
+    segs_result = await db.execute(
+        select(AudioSeg).where(AudioSeg.patient_id == record.patient_id).order_by(AudioSeg.seg_index)
+    )
+    raw_segs = [
+        {"seg_index": s.seg_index, "file_path": s.file_path, "duration": s.duration}
+        for s in segs_result.scalars().all()
+    ]
+    existing = {
+        int(item.get("seg_index"))
+        for item in (record.segments or [])
+        if isinstance(item, dict) and str(item.get("seg_index", "")).isdigit()
+    }
+    missing_raw = [seg for seg in raw_segs if int(seg["seg_index"]) not in existing]
+    if not missing_raw:
+        raise HTTPException(status_code=400, detail="没有需要补跑的缺失分段")
+
+    params["audio_input_mode"] = "segments"
+    # 补跑时强制关闭分句，避开豆包 confidence=NaN / utterances 解析问题。
+    if record.provider == "volcengine":
+        params["show_utterances"] = False
+    params = _apply_asr_feature_switches(params)
+    hotwords = record.hotwords or []
+    if params.get("use_context_hotwords", True) is False:
+        hotwords = []
+    snap = {
+        "provider": record.provider,
+        "hotwords": hotwords,
+        "asr_config": {
+            "endpoint": asr_model.endpoint,
+            "api_key": asr_model.api_key,
+            "api_secret": asr_model.api_secret,
+            "secret_key": asr_model.secret_key,
+            "model_name": asr_model.model_name,
+            "params": params,
+        },
+    }
+    return snap, missing_raw
+
+
+@router.post("/{patient_id}/asr-results/{result_id}/repair-missing-segments")
+async def repair_patient_asr_missing_segments(
+    patient_id: int,
+    result_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """补跑分段模式 ASR 的缺失段，并合并回原 ASR 结果。"""
+    record = await db.get(PatientAsrResult, result_id)
+    if not record or record.patient_id != patient_id:
+        raise HTTPException(status_code=404, detail="ASR 记录不存在")
+
+    snap, missing_raw = await _build_repair_snapshot(db, record)
+    asr = create_asr(snap["provider"], **snap["asr_config"])
+    timeout_seconds = int(
+        (snap.get("asr_config") or {}).get("params", {}).get(
+            "task_timeout_seconds",
+            ASR_TRANSCRIBE_TIMEOUT_SECONDS,
+        )
+    )
+    existing_segments = [
+        item for item in (record.segments or [])
+        if isinstance(item, dict) and str(item.get("seg_index", "")).isdigit()
+    ]
+    repaired_segments: list[dict] = []
+    failed_segments: list[dict] = []
+
+    for seg in missing_raw:
+        try:
+            text = await asyncio.wait_for(
+                asr.transcribe(seg["file_path"], hotwords=snap["hotwords"]),
+                timeout=timeout_seconds,
+            )
+            repaired_segments.append({
+                "seg_index": seg["seg_index"],
+                "text": text or "",
+                "duration": seg.get("duration"),
+                "input_mode": "segments",
+                "repaired": True,
+                "empty": not bool((text or "").strip()),
+                "empty_reason": "asr_return_empty" if not (text or "").strip() else None,
+            })
+        except Exception as exc:
+            failed_segments.append({"seg_index": seg["seg_index"], "error": str(exc)})
+
+    merged = existing_segments + repaired_segments
+    merged.sort(key=lambda item: int(item.get("seg_index") or 0))
+    record.segments = merged
+    record.full_transcript = "\n".join(str(item.get("text") or "") for item in merged)
+    audio_count = await _get_audio_segment_count(db, patient_id)
+    existing_indices = {
+        int(item.get("seg_index"))
+        for item in merged
+        if isinstance(item, dict) and str(item.get("seg_index", "")).isdigit()
+    }
+    missing_after = [idx for idx in range(1, audio_count + 1) if idx not in existing_indices]
+    if missing_after:
+        record.status = "partial"
+        record.error_message = f"补跑后仍缺失分段: {','.join(map(str, missing_after))}"
+    else:
+        record.status = "success"
+        record.error_message = None
+    if failed_segments:
+        record.error_message = f"部分分段补跑失败: {json.dumps(failed_segments, ensure_ascii=False)}"
+    await db.commit()
+    await db.refresh(record)
+    return {
+        **_asr_response(record, audio_count),
+        "repaired_segments": [item["seg_index"] for item in repaired_segments],
+        "failed_segments": failed_segments,
+    }
 
 @router.get("/{patient_id}/asr/stream")
 async def patient_asr_stream(
     patient_id: int,
     asr_model_id: int,
     hotwords: Optional[str] = None,
+    variant_name: Optional[str] = Query(None),
+    params_override: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    experiment_key: Optional[str] = Query(None),
+    config_hash: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     """患者级 SSE 流式 ASR, 结果持久化到 patient_asr_results
@@ -116,16 +715,33 @@ async def patient_asr_stream(
     if not asr_model:
         raise HTTPException(status_code=404, detail="ASR 模型不存在")
 
+    model_params = dict(asr_model.params or {})
+    override_params = _parse_asr_params_override(params_override)
+    if override_params:
+        model_params.update(override_params)
+    model_params = _apply_asr_feature_switches(model_params)
+
     parsed_hotwords = [w.strip() for w in hotwords.split(",")] if hotwords else None
-    resolved_hotwords = resolve_hotwords(parsed_hotwords, asr_model.params)
+    resolved_hotwords = resolve_hotwords(parsed_hotwords, model_params) if model_params.get("use_context_hotwords", True) is not False else None
 
     # 快照所有需要的纯数据 (不传 ORM 对象进 generator)
     snap_patient_id = patient_id
     snap_record_id = patient.record_id
     snap_date = patient.date_folder.date if patient.date_folder else None
     snap_asr_model_id = asr_model_id
-    snap_asr_model_name = asr_model.name
+    safe_variant_name = str(variant_name or "").strip()
+    snap_asr_model_name = safe_variant_name[:100] if safe_variant_name else asr_model.name
     snap_provider = asr_model.provider
+    snap_source = (source or "normal").strip()[:50] or "normal"
+    snap_experiment_key = (experiment_key or "").strip()[:100] or None
+    snap_config_hash = (config_hash or "").strip()[:64] or None
+    snap_config_snapshot = {
+        "base_asr_model_id": asr_model_id,
+        "provider": asr_model.provider,
+        "model_name": asr_model.model_name,
+        "params": model_params,
+        "variant_name": snap_asr_model_name,
+    }
     snap_hotwords = resolved_hotwords or []
     snap_asr_config = {
         "endpoint": asr_model.endpoint,
@@ -133,9 +749,18 @@ async def patient_asr_stream(
         "api_secret": asr_model.api_secret,
         "secret_key": asr_model.secret_key,
         "model_name": asr_model.model_name,
-        "params": asr_model.params or {},
+        "params": model_params,
     }
-    snap_segs = build_asr_audio_inputs(raw_segs, asr_model.params or {})
+    snap_segs = build_asr_audio_inputs(raw_segs, model_params)
+    logger.info(
+        f"患者 {snap_patient_id} ASR 准备: model={snap_asr_model_name}, "
+        f"provider={snap_provider}, source={snap_source}, "
+        f"audio_input_mode={model_params.get('audio_input_mode') or model_params.get('recognition_mode') or 'segments'}, "
+        f"actual_inputs={len(snap_segs)}, "
+        f"input_modes={sorted({str(seg.get('input_mode', 'segments')) for seg in snap_segs})}, "
+        f"hotwords_count={len(snap_hotwords)}, "
+        f"config_hash={snap_config_hash or '-'}"
+    )
 
     async def event_generator():
         # === 独立 session, 不依赖请求级 db ===
@@ -150,6 +775,10 @@ async def patient_asr_stream(
                     asr_model_id=snap_asr_model_id,
                     asr_model_name=snap_asr_model_name,
                     provider=snap_provider,
+                    source=snap_source,
+                    experiment_key=snap_experiment_key,
+                    config_hash=snap_config_hash,
+                    config_snapshot=snap_config_snapshot,
                     hotwords=snap_hotwords,
                     status="running",
                 )
@@ -187,23 +816,24 @@ async def patient_asr_stream(
 
                 # 重新获取记录并更新 (避免悬挂 ORM)
                 record = await stream_db.get(PatientAsrResult, record_id_internal)
-                record.segments = asr_results
+                record.segments = list(asr_results)
                 record.full_transcript = full_transcript
                 record.duration_seconds = duration_val
                 record.status = "success"
-                record.is_current = True
+                record.is_current = snap_source != "asr_optimization"
                 await stream_db.commit()
 
-                # 同 patient 其他 ASR 设为 not current
-                await stream_db.execute(
-                    update(PatientAsrResult)
-                    .where(
-                        PatientAsrResult.patient_id == snap_patient_id,
-                        PatientAsrResult.id != record_id_internal,
+                # 普通业务结果才切换 current；优化评估结果不污染数据管理当前结果
+                if snap_source != "asr_optimization":
+                    await stream_db.execute(
+                        update(PatientAsrResult)
+                        .where(
+                            PatientAsrResult.patient_id == snap_patient_id,
+                            PatientAsrResult.id != record_id_internal,
+                        )
+                        .values(is_current=False)
                     )
-                    .values(is_current=False)
-                )
-                await stream_db.commit()
+                    await stream_db.commit()
 
                 # commit 成功后再发送 complete
                 yield f"event: complete\ndata: {json.dumps({'stage': 'complete', 'result_id': record_id_internal, **_asr_response(record)}, ensure_ascii=False)}\n\n"
@@ -226,7 +856,12 @@ async def patient_asr_stream(
                 try:
                     if record_id_internal:
                         record = await stream_db.get(PatientAsrResult, record_id_internal)
-                        record.status = "failed"
+                        partial_text = _segments_text(record.segments)
+                        if partial_text.strip():
+                            record.full_transcript = partial_text
+                            record.status = "partial"
+                        else:
+                            record.status = "failed"
                         record.error_message = str(e)
                         await stream_db.commit()
                 except Exception:
@@ -245,10 +880,14 @@ async def list_patient_asr_results(patient_id: int, db: AsyncSession = Depends(g
     """返回某患者所有 ASR 历史"""
     result = await db.execute(
         select(PatientAsrResult)
-        .where(PatientAsrResult.patient_id == patient_id)
+        .where(
+            PatientAsrResult.patient_id == patient_id,
+            or_(PatientAsrResult.source.is_(None), PatientAsrResult.source != "asr_optimization"),
+        )
         .order_by(PatientAsrResult.created_at.desc())
     )
-    return [_asr_response(r) for r in result.scalars().all()]
+    audio_count = await _get_audio_segment_count(db, patient_id)
+    return [_asr_response(r, audio_count) for r in result.scalars().all()]
 
 
 @router.get("/asr-results/batch")
@@ -270,6 +909,11 @@ async def list_patient_asr_results_batch(
     if not ids:
         return {}
 
+    seg_result = await db.execute(select(AudioSeg.patient_id, AudioSeg.id).where(AudioSeg.patient_id.in_(ids)))
+    audio_counts: dict[int, int] = {}
+    for patient_id, _seg_id in seg_result.all():
+        audio_counts[int(patient_id)] = audio_counts.get(int(patient_id), 0) + 1
+
     result = await db.execute(
         select(PatientAsrResult)
         .where(PatientAsrResult.patient_id.in_(ids))
@@ -283,7 +927,7 @@ async def list_patient_asr_results_batch(
 
     output: dict[str, list[dict]] = {str(i): [] for i in ids}
     for row in result.scalars().all():
-        output.setdefault(str(row.patient_id), []).append(_asr_response(row))
+        output.setdefault(str(row.patient_id), []).append(_asr_response(row, audio_counts.get(int(row.patient_id), 0)))
     return output
 
 
@@ -292,14 +936,18 @@ async def get_patient_asr_current(patient_id: int, db: AsyncSession = Depends(ge
     """返回默认展示的 ASR 结果：以最新一次为准，兼容历史 is_current 字段。"""
     result = await db.execute(
         select(PatientAsrResult)
-        .where(PatientAsrResult.patient_id == patient_id)
+        .where(
+            PatientAsrResult.patient_id == patient_id,
+            or_(PatientAsrResult.source.is_(None), PatientAsrResult.source != "asr_optimization"),
+        )
         .order_by(PatientAsrResult.created_at.desc(), PatientAsrResult.id.desc())
     )
     record = result.scalars().first()
-    return _asr_response(record) if record else None
+    audio_count = await _get_audio_segment_count(db, patient_id) if record else 0
+    return _asr_response(record, audio_count) if record else None
 
 
-def _asr_response(r: PatientAsrResult) -> dict:
+def _asr_response(r: PatientAsrResult, audio_segment_count: int | None = None) -> dict:
     """构建兼容前端旧字段的响应"""
     return {
         "id": r.id,
@@ -311,14 +959,188 @@ def _asr_response(r: PatientAsrResult) -> dict:
         "model_name": r.asr_model_name or "",  # 前端旧字段
         "full_model_name": r.asr_model_name,
         "provider": r.provider,
+        "source": r.source or "normal",
+        "experiment_key": r.experiment_key,
+        "config_hash": r.config_hash,
+        "config_snapshot": r.config_snapshot,
         "segments": r.segments,
         "full_transcript": r.full_transcript,
         "duration_seconds": r.duration_seconds,
         "status": r.status,
         "error_message": r.error_message,
+        "asr_integrity": _build_asr_integrity(r, audio_segment_count),
         "is_current": r.is_current,
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+def _asr_reference_response(r: AsrReferenceTranscript) -> dict:
+    """标准 ASR 文本响应。"""
+    return {
+        "id": r.id,
+        "patient_id": r.patient_id,
+        "record_id": r.record_id,
+        "date": r.date,
+        "base_asr_result_id": r.base_asr_result_id,
+        "base_asr_model_name": r.base_asr_model_name,
+        "base_config_hash": r.base_config_hash,
+        "reference_text": r.reference_text or "",
+        "reference_annotations": r.reference_annotations or [],
+        "note": r.note or "",
+        "is_current": r.is_current,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+def _normalize_reference_annotations(value, text_length: int) -> list[dict]:
+    """清洗标准 ASR 文本标注，避免前端传入越界或无效数据。"""
+    if not isinstance(value, list):
+        return []
+    allowed_types = {"red", "orange", "green"}
+    cleaned: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = int(item.get("start"))
+            end = int(item.get("end"))
+        except (TypeError, ValueError):
+            continue
+        mark_type = str(item.get("type") or "red")
+        if mark_type not in allowed_types:
+            mark_type = "red"
+        start = max(0, min(start, text_length))
+        end = max(0, min(end, text_length))
+        if end <= start:
+            continue
+        note = str(item.get("note") or "").strip()
+        cleaned.append({
+            "start": start,
+            "end": end,
+            "type": mark_type,
+            "note": note,
+        })
+    return sorted(cleaned, key=lambda row: (row["start"], row["end"]))
+
+
+@router.get("/{patient_id}/asr-reference")
+async def get_patient_asr_reference(patient_id: int, db: AsyncSession = Depends(get_db)):
+    """返回检查记录当前标准 ASR 文本。"""
+    result = await db.execute(
+        select(AsrReferenceTranscript)
+        .where(AsrReferenceTranscript.patient_id == patient_id, AsrReferenceTranscript.is_current == True)
+        .order_by(AsrReferenceTranscript.updated_at.desc(), AsrReferenceTranscript.id.desc())
+    )
+    row = result.scalars().first()
+    return _asr_reference_response(row) if row else None
+
+
+@router.get("/asr-references/batch")
+async def list_patient_asr_references_batch(
+    patient_ids: str = Query("", description="逗号分隔的检查记录 ID"),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量返回检查记录标准 ASR 文本，用于优化评估左侧概览。"""
+    ids: list[int] = []
+    for item in patient_ids.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            ids.append(int(item))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"无效检查记录 ID: {item}")
+
+    if not ids:
+        return {}
+
+    result = await db.execute(
+        select(AsrReferenceTranscript)
+        .where(AsrReferenceTranscript.patient_id.in_(ids), AsrReferenceTranscript.is_current == True)
+        .order_by(AsrReferenceTranscript.patient_id.asc(), AsrReferenceTranscript.updated_at.desc(), AsrReferenceTranscript.id.desc())
+    )
+    output: dict[str, dict] = {}
+    for row in result.scalars().all():
+        key = str(row.patient_id)
+        if key not in output:
+            output[key] = _asr_reference_response(row)
+    return output
+
+
+@router.put("/{patient_id}/asr-reference")
+async def upsert_patient_asr_reference(
+    patient_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """保存/更新检查记录标准 ASR 文本。"""
+    reference_text = str(body.get("reference_text") or "").strip()
+    if not reference_text:
+        raise HTTPException(status_code=400, detail="标准 ASR 文本不能为空")
+
+    patient_result = await db.execute(
+        select(PatientRecord)
+        .options(selectinload(PatientRecord.date_folder))
+        .where(PatientRecord.id == patient_id)
+    )
+    patient = patient_result.scalars().first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="检查记录不存在")
+
+    base_asr_result = None
+    base_asr_result_id = body.get("base_asr_result_id")
+    if base_asr_result_id:
+        try:
+            base_asr_result_id = int(base_asr_result_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="base_asr_result_id 无效")
+        base_asr_result = await db.get(PatientAsrResult, base_asr_result_id)
+        if not base_asr_result or base_asr_result.patient_id != patient_id:
+            raise HTTPException(status_code=404, detail="底稿 ASR 结果不存在或不属于该检查记录")
+
+    date = patient.date_folder.date if patient.date_folder else None
+
+    result = await db.execute(
+        select(AsrReferenceTranscript)
+        .where(AsrReferenceTranscript.patient_id == patient_id, AsrReferenceTranscript.is_current == True)
+        .order_by(AsrReferenceTranscript.updated_at.desc(), AsrReferenceTranscript.id.desc())
+    )
+    row = result.scalars().first()
+    now = datetime.utcnow()
+    note = str(body.get("note") or "").strip() or None
+    reference_annotations = _normalize_reference_annotations(body.get("reference_annotations"), len(reference_text))
+
+    if row:
+        row.record_id = patient.record_id
+        row.date = date
+        row.reference_text = reference_text
+        row.reference_annotations = reference_annotations
+        row.note = note
+        row.base_asr_result_id = base_asr_result.id if base_asr_result else row.base_asr_result_id
+        row.base_asr_model_name = (base_asr_result.asr_model_name if base_asr_result else row.base_asr_model_name)
+        row.base_config_hash = (base_asr_result.config_hash if base_asr_result else row.base_config_hash)
+        row.updated_at = now
+    else:
+        row = AsrReferenceTranscript(
+            patient_id=patient_id,
+            record_id=patient.record_id,
+            date=date,
+            base_asr_result_id=base_asr_result.id if base_asr_result else None,
+            base_asr_model_name=base_asr_result.asr_model_name if base_asr_result else None,
+            base_config_hash=base_asr_result.config_hash if base_asr_result else None,
+            reference_text=reference_text,
+            reference_annotations=reference_annotations,
+            note=note,
+            is_current=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(row)
+
+    await db.commit()
+    await db.refresh(row)
+    return _asr_reference_response(row)
 
 
 def _llm_response(r: PatientLlmResult) -> dict:
@@ -349,6 +1171,8 @@ def _llm_response(r: PatientLlmResult) -> dict:
         "prompt_version": r.prompt_version,
         "prompt_content": r.prompt_content,
         "prompt_len": len(r.prompt_content) if r.prompt_content else 0,
+        "source": r.source or "normal",
+        "experiment_key": r.experiment_key,
         "structured": structured_result,        # 前端旧字段
         "structured_result": structured_result,
         "summary": r.summary_text,                # 前端旧字段
@@ -395,6 +1219,8 @@ async def patient_llm_run(
     asr_result_id = body.get("asr_result_id")  # 可选, 默认当前
     prompt_content = body.get("prompt_content")
     prompt_template_id = body.get("prompt_template_id")  # 可选
+    source = (body.get("source") or "normal").strip()[:50] or "normal"
+    experiment_key = (body.get("experiment_key") or "").strip()[:100] or None
 
     # 如果没有传入 prompt_content,尝试从模板加载
     if not prompt_content and prompt_template_id:
@@ -469,6 +1295,8 @@ async def patient_llm_run(
         prompt_template_id=prompt_template_id,
         prompt_template_name=prompt_template_name,
         prompt_content=prompt_content,
+        source=source,
+        experiment_key=experiment_key,
         status="running",
     )
     # 显式设置 asr_result 关系,避免后续 _llm_response 访问时触发懒加载
@@ -488,6 +1316,7 @@ async def patient_llm_run(
                 "api_key": llm_model.api_key,
                 "api_secret": llm_model.api_secret,
                 "model_name": llm_model.model_name,
+                "params": llm_model.params or {},
             },
             prompt_template=prompt_content,
         )
@@ -535,7 +1364,8 @@ async def patient_llm_run(
                 record.accuracy = evaluation.get("accuracy")
 
         await db.commit()
-        await _set_current_llm(db, patient_id, record.id)
+        if source != "asr_optimization":
+            await _set_current_llm(db, patient_id, record.id)
     except Exception as e:
         logger.error(f"患者 {patient_id} LLM 失败: {e}")
         record.status = "failed"
@@ -547,13 +1377,19 @@ async def patient_llm_run(
 
 
 @router.get("/{patient_id}/llm-results")
-async def list_patient_llm_results(patient_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
+async def list_patient_llm_results(
+    patient_id: int,
+    include_optimization: bool = Query(False, description="是否包含优化评估来源的 LLM 结果"),
+    db: AsyncSession = Depends(get_db),
+):
+    query = (
         select(PatientLlmResult)
         .options(selectinload(PatientLlmResult.asr_result))
         .where(PatientLlmResult.patient_id == patient_id)
-        .order_by(PatientLlmResult.created_at.desc())
     )
+    if not include_optimization:
+        query = query.where(or_(PatientLlmResult.source.is_(None), PatientLlmResult.source != "asr_optimization"))
+    result = await db.execute(query.order_by(PatientLlmResult.created_at.desc()))
     return [_llm_response(r) for r in result.scalars().all()]
 
 

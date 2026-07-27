@@ -42,7 +42,7 @@
         :loading="loading"
         :columns="columns"
         :data-source="tests"
-        :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }"
+        :pagination="{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }"
         size="small"
       >
         <template #bodyCell="{ column, record }">

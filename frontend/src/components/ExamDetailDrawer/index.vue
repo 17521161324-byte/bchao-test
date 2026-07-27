@@ -65,6 +65,12 @@
         </a-col>
       </a-row>
 
+      <!-- 录音播放：与数据管理检查详情保持一致 -->
+      <a-card size="small" title="录音播放" style="margin-bottom: 16px">
+        <AudioPlayer v-if="data.segs?.length" :segs="data.segs" />
+        <a-empty v-else description="暂无录音文件" />
+      </a-card>
+
       <!-- 卵泡明细 + B 超并行对比 -->
       <a-divider>结果对比</a-divider>
       <a-row :gutter="16" style="margin-bottom: 16px">
@@ -166,7 +172,11 @@
       <a-table :data-source="fieldCompare" size="small" row-key="field" :pagination="false" bordered>
         <a-table-column title="字段" data-index="field" />
         <a-table-column title="真实值" data-index="truth" />
-        <a-table-column title="LLM 提取值" data-index="extracted" />
+        <a-table-column title="LLM 提取值">
+          <template #default="scope">
+            <span :class="{ 'field-value-mismatch': scope?.record?.result === 'mismatch' }">{{ scope?.record?.extracted }}</span>
+          </template>
+        </a-table-column>
         <a-table-column title="结果" :width="100" align="center">
           <template #default="scope">
             <a-tag v-if="scope?.record?.result === 'match'" color="green">✓</a-tag>
@@ -192,11 +202,14 @@
 <script lang="ts">
 import { computed } from 'vue'
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons-vue'
+import AudioPlayer from '@/components/AudioPlayer/index.vue'
+import type { AudioSeg } from '@/types'
 
 export interface ExamDetailData {
   record_id: string
   date: string
   segs_count: number
+  segs?: AudioSeg[]
   has_ground_truth: boolean
   asr: {
     model_name: string
@@ -291,7 +304,7 @@ function compareFollicles(llmFollicles: any[], gtFollicles: any[]): { size: stri
 
 export default {
   name: 'ExamDetailDrawer',
-  components: { CheckCircleOutlined, CloseCircleOutlined },
+  components: { CheckCircleOutlined, CloseCircleOutlined, AudioPlayer },
   props: {
     visible: { type: Boolean, default: false },
     data: { type: Object as () => ExamDetailData | null, default: null },
@@ -427,5 +440,9 @@ export default {
   background: #fff2f0;
   border-color: #ffccc7;
   text-decoration: line-through;
+}
+.field-value-mismatch {
+  color: #ff4d4f;
+  font-weight: 600;
 }
 </style>

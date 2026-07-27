@@ -103,7 +103,9 @@ async def test_model_connection(
             ok = await asr.health_check() if hasattr(asr, 'health_check') else False
         elif model.model_type == "llm":
             llm = create_llm(model.provider, endpoint=model.endpoint,
-                             api_key=model.api_key or "")
+                             api_key=model.api_key or "",
+                             model_name=model.model_name or "",
+                             params=model.params or {})
             ok = await llm.health_check() if hasattr(llm, 'health_check') else False
         else:
             ok = False
@@ -140,6 +142,31 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
         )
         db.add(default_asr)
 
+    # 检查本地 Qwen ASR（OpenAI 兼容 /v1/audio/transcriptions）
+    result = await db.execute(select(ModelConfig).where(
+        ModelConfig.provider == "qwen_asr", ModelConfig.model_type == "asr"
+    ))
+    if not result.scalars().all():
+        qwen_asr = ModelConfig(
+            name="qwen-asr",
+            model_type="asr",
+            provider="qwen_asr",
+            endpoint="http://172.16.10.142:7100/v1/audio/transcriptions",
+            api_key="",
+            model_name="/llm/audio/models/Qwen/Qwen3-ASR-1___7B/",
+            params={
+                "audio_input_mode": "segments",
+                "language": "zh",
+                "response_format": "json",
+                "temperature": 0,
+                "timeout": 600,
+                "prompt": "请完整、忠实转写辅助生殖 B 超检查中文口述录音。重点保留左右侧、卵泡、内膜、卵巢大小、数字和小数，不要总结，不要省略。",
+            },
+            is_default=False,
+            status="active",
+        )
+        db.add(qwen_asr)
+
     # 检查 MiMo ASR
     result = await db.execute(select(ModelConfig).where(
         ModelConfig.provider == "mimo", ModelConfig.model_type == "asr"
@@ -174,10 +201,37 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
             endpoint="https://api.xiaomimimo.com/v1",
             api_key="",
             model_name="mimo-v2.5",
+            params={
+                "auth_scheme": "api-key",
+                "thinking": {"type": "disabled"},
+                "max_completion_tokens": 4096,
+            },
             is_default=False,  # 默认不启用，需配置 API Key 后手动启用
             status="inactive",  # 未配置 Key 前设为 inactive
         )
         db.add(mimo_llm)
+
+    for name, thinking_type in (
+        ("MiMo-V2.5-Pro-NoThink", "disabled"),
+        ("MiMo-V2.5-Pro-Think", "enabled"),
+    ):
+        result = await db.execute(select(ModelConfig).where(ModelConfig.name == name))
+        if not result.scalars().all():
+            db.add(ModelConfig(
+                name=name,
+                model_type="llm",
+                provider="mimo",
+                endpoint="https://api.xiaomimimo.com/v1",
+                api_key="",
+                model_name="mimo-v2.5-pro",
+                params={
+                    "auth_scheme": "api-key",
+                    "thinking": {"type": thinking_type},
+                    "max_completion_tokens": 4096,
+                },
+                is_default=False,
+                status="inactive",
+            ))
 
     # 检查 DeepSeek (用于结构化提取)
     result = await db.execute(select(ModelConfig).where(ModelConfig.provider == "deepseek"))
@@ -201,10 +255,22 @@ async def init_default_models(db: AsyncSession = Depends(get_db)):
             name="豆包 ASR",
             model_type="asr",
             provider="volcengine",
-            endpoint="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+            endpoint="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
             api_key="",
             api_secret="",
             secret_key="",
+            params={
+                "audio_input_mode": "segments",
+                "endpoint_mode": "bigmodel_nostream",
+                "result_type": "full",
+                "enable_itn": True,
+                "enable_punc": True,
+                "enable_ddc": False,
+                "show_utterances": False,
+                "use_boosting_table": True,
+                "use_correct_table": True,
+                "use_context_hotwords": True,
+            },
             is_default=False,
             status="active",
         )

@@ -57,6 +57,21 @@ async def init_db():
             columns = {row[1] for row in result.fetchall()}
             if "note" not in columns:
                 await conn.execute(text("ALTER TABLE patient_records ADD COLUMN note TEXT"))
+            await _ensure_column(conn, "patient_asr_results", "source", "VARCHAR(50) DEFAULT 'normal'")
+            await _ensure_column(conn, "patient_asr_results", "experiment_key", "VARCHAR(100)")
+            await _ensure_column(conn, "patient_asr_results", "config_hash", "VARCHAR(64)")
+            await _ensure_column(conn, "patient_asr_results", "config_snapshot", "JSON")
+            await _ensure_column(conn, "patient_llm_results", "source", "VARCHAR(50) DEFAULT 'normal'")
+            await _ensure_column(conn, "patient_llm_results", "experiment_key", "VARCHAR(100)")
+            await _ensure_column(conn, "asr_optimization_plans", "source", "VARCHAR(30) DEFAULT 'custom'")
+            await _ensure_column(conn, "asr_reference_transcripts", "reference_annotations", "JSON")
+
+
+async def _ensure_column(conn, table: str, column: str, ddl: str):
+    result = await conn.execute(text(f"PRAGMA table_info({table})"))
+    columns = {row[1] for row in result.fetchall()}
+    if column not in columns:
+        await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
 
 
 async def execute_write(statement):

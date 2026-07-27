@@ -106,6 +106,16 @@
           </a-form-item>
         </a-card>
         <a-card v-if="isVolcengineAsr" size="small" title="豆包 ASR 专属配置" class="provider-card">
+          <a-form-item label="接口模式">
+            <a-radio-group v-model:value="form.params.endpoint_mode">
+              <a-radio value="bigmodel_nostream">流式输入 nostream（准确率优先，推荐）</a-radio>
+              <a-radio value="bigmodel">双向流式（速度优先）</a-radio>
+              <a-radio value="bigmodel_async">双向流式优化版</a-radio>
+            </a-radio-group>
+            <div class="form-help">
+              已有录音转写建议使用 nostream；实时上屏可测试 bigmodel_async。
+            </div>
+          </a-form-item>
           <a-form-item label="音频读取方式">
             <a-radio-group v-model:value="form.params.audio_input_mode">
               <a-radio value="segments">原始分段</a-radio>
@@ -128,11 +138,29 @@
             <a-switch v-model:checked="form.params.enable_ddc" />
             <span>分句 show_utterances</span>
             <a-switch v-model:checked="form.params.show_utterances" />
+            <span>二遍识别 enable_nonstream</span>
+            <a-switch v-model:checked="form.params.enable_nonstream" />
           </a-space>
           <div class="form-help">
-            顺滑可能提升可读性，但可能合并/删除重复数字；建议默认关闭，用于 A/B 测试。
+            二遍识别仅 bigmodel_async 支持；顺滑可能提升可读性，但可能合并/删除重复数字，建议默认关闭用于 A/B 测试。
           </div>
+          <a-space class="switch-row" wrap>
+            <span>判停 end_window_size(ms)</span>
+            <a-input-number v-model:value="form.params.end_window_size" :min="200" :max="5000" style="width: 140px" />
+            <span>语义切句 vad_segment_duration(ms)</span>
+            <a-input-number v-model:value="form.params.vad_segment_duration" :min="200" :max="10000" style="width: 140px" />
+            <span>强制语音 force_to_speech_time(ms)</span>
+            <a-input-number v-model:value="form.params.force_to_speech_time" :min="1" :max="10000" style="width: 140px" />
+          </a-space>
           <a-divider orientation="left">平台词表</a-divider>
+          <a-space class="switch-row" wrap>
+            <span>启用平台热词</span>
+            <a-switch v-model:checked="form.params.use_boosting_table" />
+            <span>启用替换词表</span>
+            <a-switch v-model:checked="form.params.use_correct_table" />
+            <span>启用上下文热词</span>
+            <a-switch v-model:checked="form.params.use_context_hotwords" />
+          </a-space>
           <a-form-item label="平台热词表 ID">
             <a-input v-model:value="form.params.boosting_table_id" placeholder="自学习平台上设置的热词表 id，优先推荐填 ID" />
           </a-form-item>
@@ -152,7 +180,17 @@
               placeholder="每行一个热词，例如：&#10;卵泡&#10;左卵巢&#10;右卵巢&#10;内膜厚度&#10;C型"
             />
             <div class="form-help">
-              保存到模型 params.hotwords；调用豆包 ASR 时会写入 request.context。平台热词表字段会直接传 boosting_table_id/name。
+              保存到模型 params.hotwords；调用豆包 ASR 时按“启用上下文热词”开关写入 request.corpus.context。平台词表字段写入 request.corpus。
+            </div>
+          </a-form-item>
+          <a-form-item label="业务上下文">
+            <a-textarea
+              v-model:value="form.params.context_text"
+              :rows="4"
+              placeholder="例如：当前录音为辅助生殖阴道B超卵泡监测，医生会依次口述内膜、左右卵巢大小、左右卵泡尺寸。"
+            />
+            <div class="form-help">
+              当未填写热词列表或关闭热词直传时，可作为 dialog_ctx 业务上下文传入 request.corpus.context。
             </div>
           </a-form-item>
         </a-card>
@@ -305,27 +343,43 @@ async function handleSave(values: any) {
     }
     if (isVolcengineAsr.value) {
       nextParams.audio_input_mode = nextParams.audio_input_mode || 'segments'
+      nextParams.endpoint_mode = nextParams.endpoint_mode || 'bigmodel_nostream'
       nextParams.result_type = nextParams.result_type || 'full'
       nextParams.enable_itn = nextParams.enable_itn !== false
       nextParams.enable_punc = nextParams.enable_punc !== false
       nextParams.enable_ddc = !!nextParams.enable_ddc
-      nextParams.show_utterances = nextParams.show_utterances !== false
+      nextParams.show_utterances = nextParams.show_utterances === true
+      nextParams.enable_nonstream = !!nextParams.enable_nonstream
+      nextParams.use_boosting_table = nextParams.use_boosting_table !== false
+      nextParams.use_correct_table = nextParams.use_correct_table !== false
+      nextParams.use_context_hotwords = nextParams.use_context_hotwords !== false
       const hotwords = hotwordsText.value
         .split(/\r?\n|,|，/)
         .map((word) => word.trim())
         .filter(Boolean)
       if (hotwords.length) nextParams.hotwords = Array.from(new Set(hotwords))
       else delete nextParams.hotwords
-      ;['boosting_table_id', 'boosting_table_name', 'correct_table_id', 'correct_table_name'].forEach((key) => {
+      ;['boosting_table_id', 'boosting_table_name', 'correct_table_id', 'correct_table_name', 'context_text'].forEach((key) => {
         if (nextParams[key] === undefined || nextParams[key] === null || String(nextParams[key]).trim() === '') {
           delete nextParams[key]
         } else {
           nextParams[key] = String(nextParams[key]).trim()
         }
       })
+      ;['end_window_size', 'vad_segment_duration', 'force_to_speech_time'].forEach((key) => {
+        if (nextParams[key] === undefined || nextParams[key] === null || nextParams[key] === '') {
+          delete nextParams[key]
+        } else {
+          nextParams[key] = Number(nextParams[key])
+        }
+      })
+    }
+    const nextValues = { ...values }
+    if (isVolcengineAsr.value) {
+      nextValues.endpoint = volcengineEndpointByMode(nextParams.endpoint_mode)
     }
     const payload = {
-      ...values,
+      ...nextValues,
       params: nextParams,
     }
     if (editing.value) {
@@ -403,15 +457,26 @@ function defaultParams(provider: string, modelType: string) {
   if (modelType === 'asr' && provider === 'volcengine') {
     return {
       audio_input_mode: 'segments',
+      endpoint_mode: 'bigmodel_nostream',
       result_type: 'full',
       enable_itn: true,
       enable_punc: true,
       enable_ddc: false,
-      show_utterances: true,
+      show_utterances: false,
+      enable_nonstream: false,
+      use_boosting_table: true,
+      use_correct_table: true,
+      use_context_hotwords: true,
       hotwords: [],
     }
   }
   return {}
+}
+
+function volcengineEndpointByMode(mode: string) {
+  if (mode === 'bigmodel') return 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel'
+  if (mode === 'bigmodel_async') return 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
+  return 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream'
 }
 
 const columns = [
