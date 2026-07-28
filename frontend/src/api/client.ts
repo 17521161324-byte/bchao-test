@@ -92,6 +92,35 @@ export const asrOptimizationApi = {
     client.delete('/asr-optimization/field-review-marks', { params: { llm_result_id: llmResultId, field_group: fieldGroup, field_key: fieldKey } }),
 }
 
+// ========== ASR 文本转化评估 ==========
+export const conversionEvalApi = {
+  listRecords: (params?: any) => client.get('/conversion-eval/records', { params }),
+  getRecord: (id: number) => client.get(`/conversion-eval/records/${id}`),
+  createFromExam: (examRecordId: number, data: { asr_result_id?: number; converted_text?: string; conversion_version?: string } = {}) =>
+    client.post(`/conversion-eval/records/from-exam/${examRecordId}`, data),
+  batchCreateFromExams: (examRecordIds: number[], data: any = {}) =>
+    client.post('/conversion-eval/records/batch-from-exams', { exam_record_ids: examRecordIds, ...data }),
+  updateRecord: (id: number, data: any) => client.put(`/conversion-eval/records/${id}`, data),
+  deleteRecord: (id: number) => client.delete(`/conversion-eval/records/${id}`),
+  runConversion: (recordId: number) => client.post(`/conversion-eval/records/${recordId}/run-conversion`),
+  batchRunConversion: (recordIds: number[]) => client.post('/conversion-eval/records/batch-run-conversion', { record_ids: recordIds }),
+  addDetail: (recordId: number, data: any) => client.post(`/conversion-eval/records/${recordId}/details`, data),
+  updateDetail: (detailId: number, data: any) => client.put(`/conversion-eval/details/${detailId}`, data),
+  deleteDetail: (detailId: number) => client.delete(`/conversion-eval/details/${detailId}`),
+  autoJudge: (recordId: number) => client.post(`/conversion-eval/records/${recordId}/auto-judge`),
+  calculateMetrics: (recordId: number) => client.post(`/conversion-eval/records/${recordId}/calculate-metrics`),
+  overview: () => client.get('/conversion-eval/stats/overview'),
+  byCategory: () => client.get('/conversion-eval/stats/by-category'),
+  highRisk: () => client.get('/conversion-eval/stats/high-risk'),
+  // 批次评估工作台
+  createBatch: (data: any) => client.post('/conversion-eval/batches', data),
+  listBatches: () => client.get('/conversion-eval/batches'),
+  getBatch: (id: number) => client.get(`/conversion-eval/batches/${id}`),
+  deleteBatch: (id: number) => client.delete(`/conversion-eval/batches/${id}`),
+  batchAutoJudge: (id: number) => client.post(`/conversion-eval/batches/${id}/auto-judge`),
+  batchCalculateMetrics: (id: number) => client.post(`/conversion-eval/batches/${id}/calculate-metrics`),
+}
+
 // ========== 测试执行 ==========
 export const testApi = {
   runAsr: (recordId: string, asrModelId: number) =>

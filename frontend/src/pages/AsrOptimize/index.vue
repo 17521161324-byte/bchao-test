@@ -27,7 +27,7 @@
           :key="slot.key"
           size="small"
           class="asr-plan-card"
-          :class="{ active: activeSlotKey === slot.key }"
+          :class="{ active: activeSlotKey === slot.key, 'no-model': !slot.model_id }"
           @click="activeSlotKey = slot.key"
         >
           <template #title>
@@ -4152,12 +4152,23 @@ function htmlEscape(value: any) {
 }
 .asr-plan-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin-bottom: 10px;
 }
 .asr-plan-card { cursor: pointer; border: 2px solid transparent; }
 .asr-plan-card.active { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22,119,255,0.08); }
+.asr-plan-card.no-model {
+  opacity: 0.55;
+  background: #f5f5f5;
+  filter: grayscale(0.3);
+}
+.asr-plan-card.no-model :deep(.ant-card-head) {
+  background: #fafafa;
+}
+.asr-plan-card.no-model :deep(.ant-card-body) {
+  color: #999;
+}
 .asr-plan-card :deep(.ant-card-head) {
   min-height: 36px;
   padding: 0 10px;
@@ -4169,7 +4180,7 @@ function htmlEscape(value: any) {
   padding: 7px 0;
 }
 .asr-plan-card :deep(.ant-card-body) {
-  padding: 8px 10px 10px;
+  padding: 6px 8px 8px;
 }
 .slot-compact {
   display: flex;
@@ -4181,11 +4192,11 @@ function htmlEscape(value: any) {
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(130px, 1fr));
-  gap: 4px 14px;
+  grid-template-columns: repeat(2, minmax(100px, 1fr));
+  gap: 3px 10px;
   color: #333;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.5;
 }
 .slot-meta span {
   min-width: 0;
@@ -4295,8 +4306,8 @@ function htmlEscape(value: any) {
   color: #999;
 }
 .asr-text-cell {
-  min-height: 120px;
-  max-height: 260px;
+  min-height: 160px;
+  max-height: 360px;
   overflow: auto;
   word-break: break-word;
   line-height: 1.7;
@@ -4803,17 +4814,21 @@ function htmlEscape(value: any) {
   padding: 12px;
 }
 @media (max-width: 1100px) {
-  .asr-plan-grid { grid-template-columns: 1fr; }
+  .asr-plan-grid { grid-template-columns: repeat(2, 1fr); }
   .attribution-stats { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
   .plan-select-grid { grid-template-columns: 1fr; }
   .plan-preview-grid { grid-template-columns: 1fr; }
   .slot-compact { align-items: flex-start; flex-direction: column; }
-  .slot-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); width: 100%; }
+  .slot-meta { grid-template-columns: repeat(2, minmax(100px, 1fr)); width: 100%; }
   .history-card-grid { grid-template-columns: 1fr; }
   .history-compare-grid { grid-template-columns: 1fr; }
   .history-asr-meta { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .history-layout { grid-template-columns: 1fr; }
   .history-patient-panel { position: static; max-height: none; }
   .history-patient-list { max-height: 320px; }
+}
+@media (max-width: 768px) {
+  .asr-plan-grid { grid-template-columns: 1fr; }
+  .slot-meta { grid-template-columns: 1fr; }
 }
 </style>

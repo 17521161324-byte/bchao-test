@@ -65,6 +65,26 @@ async def init_db():
             await _ensure_column(conn, "patient_llm_results", "experiment_key", "VARCHAR(100)")
             await _ensure_column(conn, "asr_optimization_plans", "source", "VARCHAR(30) DEFAULT 'custom'")
             await _ensure_column(conn, "asr_reference_transcripts", "reference_annotations", "JSON")
+            # ASR 转化评估新增字段
+            await _ensure_column(conn, "asr_conversion_records", "warnings", "TEXT")
+            await _ensure_column(conn, "asr_conversion_records", "risk_passed", "INTEGER DEFAULT 1")
+            await _ensure_column(conn, "asr_conversion_records", "risk_blocked", "INTEGER DEFAULT 0")
+            await _ensure_column(conn, "asr_conversion_records", "fields_snapshot", "JSON")
+            await _ensure_column(conn, "asr_conversion_records", "batch_id", "INTEGER")
+            await _ensure_column(conn, "asr_conversion_records", "status", "VARCHAR(30) DEFAULT 'ready'")
+            await _ensure_column(conn, "asr_conversion_records", "error_message", "TEXT")
+            await _ensure_column(conn, "asr_conversion_batches", "success_count", "INTEGER DEFAULT 0")
+            await _ensure_column(conn, "asr_conversion_batches", "failed_count", "INTEGER DEFAULT 0")
+            await conn.execute(text(
+                "UPDATE asr_conversion_records SET status = 'ready' "
+                "WHERE status IS NULL OR status = ''"
+            ))
+            await conn.execute(text(
+                "UPDATE asr_conversion_batches SET "
+                "record_count = (SELECT COUNT(*) FROM asr_conversion_records r WHERE r.batch_id = asr_conversion_batches.id), "
+                "success_count = (SELECT COUNT(*) FROM asr_conversion_records r WHERE r.batch_id = asr_conversion_batches.id AND COALESCE(r.status, 'ready') != 'failed'), "
+                "failed_count = (SELECT COUNT(*) FROM asr_conversion_records r WHERE r.batch_id = asr_conversion_batches.id AND r.status = 'failed')"
+            ))
 
 
 async def _ensure_column(conn, table: str, column: str, ddl: str):

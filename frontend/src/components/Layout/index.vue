@@ -7,6 +7,7 @@
       <a-menu theme="dark" mode="inline" :selected-keys="[route.path]" @click="onMenuClick">
         <a-menu-item key="/data"><FolderOutlined />数据管理</a-menu-item>
         <a-menu-item key="/asr-optimize"><ExperimentOutlined />优化评估</a-menu-item>
+        <a-menu-item key="/conversion-eval"><AuditOutlined />ASR转化评估</a-menu-item>
         <a-menu-item key="/model"><SettingOutlined />模型配置</a-menu-item>
       </a-menu>
     </a-layout-sider>
@@ -35,7 +36,7 @@ import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores'
 import {
-  FolderOutlined, SettingOutlined, ExperimentOutlined, CloudServerOutlined,
+  FolderOutlined, SettingOutlined, ExperimentOutlined, CloudServerOutlined, AuditOutlined,
 } from '@ant-design/icons-vue'
 
 const route = useRoute()

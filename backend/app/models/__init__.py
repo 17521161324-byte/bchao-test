@@ -16,6 +16,13 @@ from app.models.patient_result import (
     OptimizationFieldReviewMark,
     AsrReferenceTranscript,
 )
+from app.models.conversion_eval import (
+    AsrConversionBatch,
+    AsrConversionRecord,
+    AsrConversionDetail,
+    AsrConversionReview,
+    AsrConversionMetric,
+)
 
 
 class DateFolder(Base):

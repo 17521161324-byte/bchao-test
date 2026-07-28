@@ -127,15 +127,16 @@ class QwenASR(BaseASR):
     @staticmethod
     def _clean_text(text: str) -> str:
         cleaned = (text or "").strip()
-        # 提取 <asr_text>...</asr_text> 标签内的内容
+        # 移除所有 "language Chinese<asr_text>" 组合模式（模型输出伪标记）
+        cleaned = re.sub(r'language\s*[:：]?\s*chinese\s*[:：]?\s*<asr_text>', '', cleaned, flags=re.IGNORECASE)
+        # 提取 <asr_text>...</asr_text> 标签内的内容（如有闭合标签）
         m = re.search(r'<asr_text>(.*?)</asr_text>', cleaned, re.DOTALL)
         if m:
             cleaned = m.group(1)
-        elif '<asr_text>' in cleaned:
-            cleaned = cleaned.split('<asr_text>', 1)[1]
-            if '</asr_text>' in cleaned:
-                cleaned = cleaned.split('</asr_text>', 1)[0]
-        # 过滤 "language chinese" 等前缀（大小写不敏感，支持冒号/空格等分隔符）
+        else:
+            # 无闭合标签时，移除所有残留的 <asr_text> 和 </asr_text> 标记
+            cleaned = cleaned.replace('<asr_text>', '').replace('</asr_text>', '')
+        # 兜底：过滤开头的 "language chinese" 前缀
         cleaned = re.sub(r'^language\s*[:：]?\s*chinese\s*[:：]?\s*', '', cleaned, flags=re.IGNORECASE)
         return cleaned.strip()
 
