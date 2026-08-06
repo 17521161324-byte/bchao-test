@@ -80,6 +80,10 @@ RISK_RULES: list[RiskRule] = [
              severity="high", action="REVIEW"),
     RiskRule("R017", "卵巢单维尺寸偏小", "卵巢任一维小于常规下限 10mm，需人工复核",
              severity="high", action="REVIEW"),
+    RiskRule("R019", "卵泡格式异常", "卵泡数值不符合 n.m 格式，需人工复核",
+             severity="high", action="REVIEW"),
+    RiskRule("R020", "文本不可唯一恢复", "ASR 文本与人工结果之间不存在确定性文本转换证据，需回听",
+             severity="highest", action="BLOCK"),
 ]
 
 # 否定词列表
@@ -148,6 +152,12 @@ class RiskInterceptor:
 
         # R017: 卵巢单维尺寸偏小检查
         self._check_r017_ovary_small_dimension(fields)
+
+        # R019: 卵泡格式异常检查
+        self._check_r019_follicle_format(fields)
+
+        # R020: 文本不可唯一恢复检查（仅人工标记触发，不自动触发）
+        self._check_r020_unrecoverable_text(raw_text, fields)
 
         # 判断是否通过
         blocked = any(item.get("action") == "BLOCK" for item in self.risk_items)
@@ -239,16 +249,26 @@ class RiskInterceptor:
     def _check_r005_side_conflict(self, fields: dict, text: str):
         """R005: 左右侧冲突或缺失
 
-        左右侧归属不可猜测：只要有卵巢数据，就必须能从文本中找到明确的
-        左右触发词或换边词；出现“左右卵巢/左右侧”等模糊表述，或全文缺少
-        任何侧别触发词（例如只写“卵巢大小60×35”被默认归属右侧）时，
-        输出 REVIEW 警示，进入人工复核。
+        左右侧归属不可猜测：存在未归属卵巢/卵泡数据、出现"左右卵巢/左右侧"模糊表述，
+        或卵巢数据存在但全文缺少任何侧别触发词时，输出 REVIEW 警示。
         """
         has_right = "right_ovary_size" in fields or "right_follicles" in fields
         has_left = "left_ovary_size" in fields or "left_follicles" in fields
+        has_unassigned = (
+            "unassigned_ovary_sizes" in fields
+            or "unassigned_follicle_values" in fields
+        )
 
-        if not has_right and not has_left:
+        if not has_right and not has_left and not has_unassigned:
             # 没有检测到任何卵巢数据，不适用侧别归属检查
+            return
+
+        if has_unassigned:
+            self._add_risk(
+                "R005", "存在未归属的卵巢/卵泡数据，缺少明确左右侧，需人工复核",
+                action="REVIEW", severity="highest",
+                details={"unassigned_fields": [key for key in ("unassigned_ovary_sizes", "unassigned_follicle_values") if key in fields]}
+            )
             return
 
         if re.search(r"左\s*右", text):
@@ -267,17 +287,25 @@ class RiskInterceptor:
             )
 
     def _check_r006_dimension_complete(self, fields: dict):
-        """R006: 卵巢大小不足两个数值"""
+        """R006: 卵巢大小不足两个数值 / 存在无法确认的维度（??×N）"""
         for field_code in ["right_ovary_size", "left_ovary_size"]:
-            if field_code in fields:
-                size = fields[field_code]
-                # 检查是否包含两个数值
-                if "×" not in str(size) and "*" not in str(size):
-                    self._add_risk(
-                        "R006", f"卵巢尺寸不完整：{field_code}={size}",
-                        action="BLOCK", severity="highest",
-                        details={"field_code": field_code, "value": size}
-                    )
+            if field_code not in fields:
+                continue
+            size = str(fields[field_code])
+            if "??" in size:
+                self._add_risk(
+                    "R006", f"卵巢尺寸存在无法确认的维度：{field_code}={size}，必须回听或人工确认",
+                    action="BLOCK", severity="highest",
+                    details={"field_code": field_code, "value": size}
+                )
+                continue
+            # 检查是否包含两个数值
+            if "×" not in size and "*" not in size:
+                self._add_risk(
+                    "R006", f"卵巢尺寸不完整：{field_code}={size}",
+                    action="BLOCK", severity="highest",
+                    details={"field_code": field_code, "value": size}
+                )
 
     def _check_r007_digit_boundary(self, text: str):
         """R007: 同一数字片段存在两种以上合理拆分"""
@@ -419,6 +447,36 @@ class RiskInterceptor:
                         details={"field_code": field_code, "value": str(size), "dimension": dim}
                     )
                     break
+
+    def _check_r019_follicle_format(self, fields: dict):
+        """R019: 卵泡数值不符合 n.m 格式（字段解析已写入 unparsed_follicle_values）。"""
+        values = fields.get("unparsed_follicle_values")
+        if not isinstance(values, list) or not values:
+            return
+        for item in values:
+            raw_text = item.get("raw_text", "") if isinstance(item, dict) else str(item)
+            side = item.get("side", "") if isinstance(item, dict) else ""
+            self._add_risk(
+                "R019", f"卵泡数值 '{raw_text}' 不符合 n.m 格式（{side}），需人工复核",
+                action="REVIEW", severity="high",
+                details={"raw_text": raw_text, "side": side}
+            )
+
+    def _check_r020_unrecoverable_text(self, raw_text: str, fields: dict):
+        """R020: 文本不可唯一恢复。
+
+        只由人工标记或明确 manual_review_required 候选触发（fields 中带
+        manual_review_required=True 或文本含该标记），不得靠模型猜测自动触发。
+        """
+        manual_flag = fields.get("manual_review_required") if isinstance(fields, dict) else None
+        flagged = bool(manual_flag) or "manual_review_required" in (raw_text or "")
+        if not flagged:
+            return
+        self._add_risk(
+            "R020", "ASR 文本与人工结果之间不存在确定性文本转换证据，必须回听确认",
+            action="BLOCK", severity="highest",
+            details={"raw_text": raw_text}
+        )
 
 
 def check_risks(

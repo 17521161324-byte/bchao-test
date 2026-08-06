@@ -231,6 +231,26 @@
             :pagination="false"
           />
           <a-empty v-else description="未定位到业务片段" :image-style="{ height: '48px' }" />
+
+          <template v-if="previewResult.steps?.length">
+            <a-divider orientation="left">处理步骤（{{ previewResult.steps.length }}）</a-divider>
+            <a-collapse class="preview-steps" :bordered="false">
+              <a-collapse-panel v-for="(step, idx) in previewResult.steps" :key="`pstep-${idx}`">
+                <template #header>
+                  <span>{{ step.step_order }}. {{ step.step_name }}</span>
+                  <a-tag :color="stepStatusColor(step.status)" class="step-status-tag">{{ step.status }}</a-tag>
+                  <span v-if="step.duration_ms != null" class="muted">{{ step.duration_ms }}ms</span>
+                  <span v-if="step.conversions?.length" class="muted">{{ step.conversions.length }} 次命中</span>
+                </template>
+                <div class="step-box">
+                  <div class="step-box-title">输入</div>
+                  <pre>{{ step.input_text || '-' }}</pre>
+                  <div class="step-box-title">输出</div>
+                  <pre>{{ step.output_text || '-' }}</pre>
+                </div>
+              </a-collapse-panel>
+            </a-collapse>
+          </template>
         </template>
       </a-tab-pane>
     </a-tabs>
@@ -277,20 +297,77 @@
     <a-modal v-model:open="ruleModalOpen" title="参数规则" width="760px" @ok="saveRule">
       <a-form layout="vertical">
         <a-row :gutter="12">
-          <a-col :span="8"><a-form-item label="规则编码"><a-input v-model:value="ruleForm.rule_code" /></a-form-item></a-col>
-          <a-col :span="8"><a-form-item label="规则类型"><a-input v-model:value="ruleForm.rule_type" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="规则编码" required><a-input v-model:value="ruleForm.rule_code" placeholder="如 P001" /></a-form-item></a-col>
+          <a-col :span="8">
+            <a-form-item label="处理器类型" required>
+              <a-select
+                v-model:value="ruleForm.system_handler"
+                placeholder="选择处理器类型"
+                :options="handlerOptions"
+                @change="onHandlerChange"
+              />
+            </a-form-item>
+          </a-col>
           <a-col :span="8"><a-form-item label="风险"><a-select v-model:value="ruleForm.risk_level" :options="riskOptions" /></a-form-item></a-col>
         </a-row>
         <a-form-item label="名称"><a-input v-model:value="ruleForm.name" /></a-form-item>
         <a-form-item label="说明"><a-textarea v-model:value="ruleForm.description" :rows="2" /></a-form-item>
+
+        <!-- 文本正则替换 regex_replace -->
+        <template v-if="ruleForm.system_handler === 'regex_replace'">
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-item label="正则表达式" required><a-input v-model:value="handlerFields.pattern" placeholder="如：放边" /></a-form-item></a-col>
+            <a-col :span="12"><a-form-item label="替换值" required><a-input v-model:value="handlerFields.replacement" placeholder="如：换边" /></a-form-item></a-col>
+          </a-row>
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-item label="必要上下文"><a-select v-model:value="handlerFields.required_terms" mode="tags" :options="[]" placeholder="命中任一即执行，回车添加" /></a-form-item></a-col>
+            <a-col :span="12"><a-form-item label="排除上下文"><a-select v-model:value="handlerFields.excluded_terms" mode="tags" :options="[]" placeholder="命中任一即跳过，回车添加" /></a-form-item></a-col>
+          </a-row>
+        </template>
+
+        <!-- 字段阈值校验 field_threshold -->
+        <template v-else-if="ruleForm.system_handler === 'field_threshold'">
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-item label="目标字段" required><a-select v-model:value="handlerFields.field_codes" mode="multiple" :options="fieldCodeOptions" placeholder="选择或输入字段编码" /></a-form-item></a-col>
+            <a-col :span="12"><a-form-item label="比较方式"><a-select v-model:value="handlerFields.operator" :options="operatorOptions" /></a-form-item></a-col>
+          </a-row>
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-item label="阈值"><a-input-number v-model:value="handlerFields.threshold" class="full" /></a-form-item></a-col>
+            <a-col :span="12"><a-form-item label="警示编码"><a-input v-model:value="handlerFields.warning_code" placeholder="如 OVARY_SIZE_BELOW_10" /></a-form-item></a-col>
+          </a-row>
+        </template>
+
+        <!-- 字段格式校验 field_format -->
+        <template v-else-if="ruleForm.system_handler === 'field_format'">
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-item label="目标字段" required><a-select v-model:value="handlerFields.field_codes" mode="multiple" :options="fieldCodeOptions" placeholder="选择或输入字段编码" /></a-form-item></a-col>
+            <a-col :span="12"><a-form-item label="格式正则" required><a-input v-model:value="handlerFields.pattern" placeholder="如 ^\d{1,2}\.\d$" /></a-form-item></a-col>
+          </a-row>
+          <a-form-item label="警示编码"><a-input v-model:value="handlerFields.warning_code" placeholder="如 FOLLICLE_FORMAT_INVALID" /></a-form-item>
+        </template>
+
+        <!-- 字段重新归类 field_reclassify -->
+        <template v-else-if="ruleForm.system_handler === 'field_reclassify'">
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-item label="来源字段" required><a-input v-model:value="handlerFields.source_field" placeholder="如 unassigned_ovary_sizes" /></a-form-item></a-col>
+            <a-col :span="12"><a-form-item label="目标字段" required><a-input v-model:value="handlerFields.target_field" placeholder="如 ultrasound_findings" /></a-form-item></a-col>
+          </a-row>
+          <a-form-item label="必要后缀"><a-select v-model:value="handlerFields.required_suffixes" mode="tags" :options="[]" placeholder="如：无回声，回车添加" /></a-form-item>
+        </template>
+
+        <a-alert
+          v-if="!ruleForm.system_handler"
+          type="info"
+          show-icon
+          message="请先选择处理器类型，系统将按类型展示对应配置字段"
+          class="handler-hint"
+        />
+
         <a-row :gutter="12">
-          <a-col :span="12"><a-form-item label="匹配模式"><a-textarea v-model:value="ruleForm.pattern" :rows="2" /></a-form-item></a-col>
-          <a-col :span="12"><a-form-item label="替换/动作"><a-textarea v-model:value="ruleForm.replacement" :rows="2" /></a-form-item></a-col>
-        </a-row>
-        <a-row :gutter="12">
-          <a-col :span="8"><a-form-item label="优先级"><a-input-number v-model:value="ruleForm.priority" class="full" /></a-form-item></a-col>
-          <a-col :span="8"><a-form-item label="启用"><a-switch v-model:checked="ruleEnabled" /></a-form-item></a-col>
-          <a-col :span="8"><a-form-item label="可编辑"><a-switch v-model:checked="ruleEditable" /></a-form-item></a-col>
+          <a-col :span="6"><a-form-item label="动作"><a-select v-model:value="ruleForm.action" :options="actionOptions" /></a-form-item></a-col>
+          <a-col :span="6"><a-form-item label="优先级"><a-input-number v-model:value="ruleForm.priority" class="full" /></a-form-item></a-col>
+          <a-col :span="6"><a-form-item label="启用"><a-switch v-model:checked="ruleEnabled" /></a-form-item></a-col>
+          <a-col :span="6"><a-form-item label="可编辑"><a-switch v-model:checked="ruleEditable" /></a-form-item></a-col>
         </a-row>
         <a-row :gutter="12">
           <a-col :span="12"><a-form-item label="示例输入"><a-textarea v-model:value="ruleForm.example_input" :rows="2" /></a-form-item></a-col>
@@ -304,7 +381,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { useRoute } from 'vue-router'
 import { conversionConfigApi } from '@/api/client'
+
+const route = useRoute()
 
 const loading = ref(false)
 const previewing = ref(false)
@@ -335,6 +415,63 @@ const editingRuleId = ref<number>()
 const ruleEnabled = ref(true)
 const ruleEditable = ref(true)
 const ruleForm = reactive<any>(defaultRule())
+
+/** 受控处理器类型 → 规则类型映射（与后端 ALLOWED_HANDLERS 白名单一致） */
+const ruleHandlerDefs: Record<string, { label: string; rule_type: string }> = {
+  regex_replace: { label: '文本正则替换', rule_type: 'text_replace' },
+  field_threshold: { label: '字段阈值校验', rule_type: 'field_validation' },
+  field_format: { label: '字段格式校验', rule_type: 'field_validation' },
+  field_reclassify: { label: '字段重新归类', rule_type: 'field_reclassify' },
+}
+
+const handlerOptions = Object.entries(ruleHandlerDefs).map(([value, def]) => ({ value, label: def.label }))
+
+const operatorOptions = [
+  { value: 'lt', label: '小于 <' },
+  { value: 'lte', label: '小于等于 ≤' },
+  { value: 'gt', label: '大于 >' },
+  { value: 'gte', label: '大于等于 ≥' },
+  { value: 'eq', label: '等于 =' },
+]
+
+const fieldCodeOptions = computed(() => Array.from(new Set([
+  ...Object.keys(fieldLabels),
+  'right_ovary_length', 'right_ovary_width', 'left_ovary_length', 'left_ovary_width',
+  'right_follicle_total', 'left_follicle_total',
+])).map(value => ({ value, label: `${fieldLabels[value] || value} (${value})` })))
+
+/** handler 专属字段（保存时由 saveRule 组装成 condition_config，不要求用户手写 JSON） */
+const handlerFields = reactive({
+  pattern: '',
+  replacement: '',
+  required_terms: [] as string[],
+  excluded_terms: [] as string[],
+  field_codes: [] as string[],
+  operator: 'lt',
+  threshold: undefined as number | undefined,
+  warning_code: '',
+  source_field: '',
+  target_field: '',
+  required_suffixes: [] as string[],
+})
+
+function resetHandlerFields() {
+  handlerFields.pattern = ''
+  handlerFields.replacement = ''
+  handlerFields.required_terms = []
+  handlerFields.excluded_terms = []
+  handlerFields.field_codes = []
+  handlerFields.operator = 'lt'
+  handlerFields.threshold = undefined
+  handlerFields.warning_code = ''
+  handlerFields.source_field = ''
+  handlerFields.target_field = ''
+  handlerFields.required_suffixes = []
+}
+
+function onHandlerChange() {
+  // 切换处理器时保留已填内容，避免误删；仅控制字段显隐
+}
 
 const currentVersion = computed(() => versions.value.find(item => item.id === selectedVersionId.value))
 const isPublished = computed(() => currentVersion.value?.status === 'published')
@@ -527,7 +664,10 @@ const segmentColumns = [
   { title: '说明', dataIndex: 'note', key: 'note' },
 ]
 
-onMounted(refreshAll)
+onMounted(async () => {
+  await refreshAll()
+  await applyRuleQuery()
+})
 
 async function refreshAll() {
   loading.value = true
@@ -719,12 +859,93 @@ function openRuleModal(row?: any) {
   Object.assign(ruleForm, row ? { ...row } : defaultRule())
   ruleEnabled.value = row ? Boolean(row.enabled) : true
   ruleEditable.value = row ? Boolean(row.editable) : true
+  resetHandlerFields()
+  if (row) {
+    const condition = row.condition_config || {}
+    let handler = row.system_handler || ''
+    // 兼容历史规则：无 system_handler 但配置了 pattern/replacement 的旧文本规则按 regex_replace 处理
+    if (!handler && (row.pattern || row.replacement) && !String(row.rule_type || '').startsWith('field_')) {
+      handler = 'regex_replace'
+    }
+    ruleForm.system_handler = handler
+    handlerFields.pattern = String(condition.pattern ?? row.pattern ?? '')
+    handlerFields.replacement = String(condition.replacement ?? row.replacement ?? '')
+    handlerFields.required_terms = Array.isArray(condition.required_terms) ? [...condition.required_terms] : []
+    handlerFields.excluded_terms = Array.isArray(condition.excluded_terms) ? [...condition.excluded_terms] : []
+    handlerFields.field_codes = Array.isArray(condition.field_codes) ? [...condition.field_codes] : []
+    handlerFields.operator = condition.operator || 'lt'
+    handlerFields.threshold = condition.threshold
+    handlerFields.warning_code = condition.warning_code || ''
+    handlerFields.source_field = condition.source_field || ''
+    handlerFields.target_field = condition.target_field || ''
+    handlerFields.required_suffixes = Array.isArray(condition.required_suffixes) ? [...condition.required_suffixes] : []
+  } else {
+    ruleForm.system_handler = ''
+  }
   ruleModalOpen.value = true
 }
 
 async function saveRule() {
   if (!selectedVersionId.value) return
-  const payload = { ...ruleForm, enabled: ruleEnabled.value ? 1 : 0, editable: ruleEditable.value ? 1 : 0 }
+  const handler = ruleForm.system_handler || ''
+  if (!handler || !ruleHandlerDefs[handler]) {
+    message.warning('请选择处理器类型')
+    return
+  }
+  const payload: any = {
+    ...ruleForm,
+    rule_type: ruleHandlerDefs[handler].rule_type,
+    system_handler: handler,
+    pattern: '',
+    replacement: '',
+    condition_config: {},
+    enabled: ruleEnabled.value ? 1 : 0,
+    editable: ruleEditable.value ? 1 : 0,
+  }
+  // 按 handler 组装 condition_config，用户无需手写 JSON
+  if (handler === 'regex_replace') {
+    if (!handlerFields.pattern || !handlerFields.replacement) {
+      message.warning('请填写正则表达式和替换值')
+      return
+    }
+    payload.pattern = handlerFields.pattern
+    payload.replacement = handlerFields.replacement
+    payload.condition_config = {
+      required_terms: handlerFields.required_terms,
+      excluded_terms: handlerFields.excluded_terms,
+    }
+  } else if (handler === 'field_threshold') {
+    if (!handlerFields.field_codes.length || handlerFields.threshold === undefined || handlerFields.threshold === null) {
+      message.warning('请填写目标字段和阈值')
+      return
+    }
+    payload.condition_config = {
+      field_codes: handlerFields.field_codes,
+      operator: handlerFields.operator,
+      threshold: handlerFields.threshold,
+      warning_code: handlerFields.warning_code,
+    }
+  } else if (handler === 'field_format') {
+    if (!handlerFields.field_codes.length || !handlerFields.pattern) {
+      message.warning('请填写目标字段和格式正则')
+      return
+    }
+    payload.condition_config = {
+      field_codes: handlerFields.field_codes,
+      pattern: handlerFields.pattern,
+      warning_code: handlerFields.warning_code,
+    }
+  } else if (handler === 'field_reclassify') {
+    if (!handlerFields.source_field || !handlerFields.target_field) {
+      message.warning('请填写来源字段和目标字段')
+      return
+    }
+    payload.condition_config = {
+      source_field: handlerFields.source_field,
+      target_field: handlerFields.target_field,
+      required_suffixes: handlerFields.required_suffixes,
+    }
+  }
   if (editingRuleId.value) {
     await conversionConfigApi.updateRule(editingRuleId.value, payload)
   } else {
@@ -804,6 +1025,30 @@ function actionColor(action: string) {
 
 function riskLevelColor(level: string) {
   return ({ low: 'default', medium: 'blue', high: 'orange', highest: 'red' } as any)[level] || 'default'
+}
+
+function stepStatusColor(status: string) {
+  return ({ success: 'green', failed: 'red', running: 'processing', pending: 'default' } as any)[status] || 'default'
+}
+
+/**
+ * 处理调试台“查看规则”跳转（/conversion-config?version_id=&rule_code=）：
+ * 自动选择版本、切到规则管理，并用规则编码过滤定位对应规则。
+ */
+async function applyRuleQuery() {
+  const versionId = route.query.version_id
+  const ruleCode = route.query.rule_code
+  if (versionId) {
+    const id = Number(versionId)
+    if (Number.isFinite(id) && versions.value.some(item => item.id === id)) {
+      selectedVersionId.value = id
+      await loadVersionData()
+    }
+  }
+  if (ruleCode) {
+    activeTab.value = 'rules'
+    ruleKeyword.value = String(ruleCode)
+  }
 }
 </script>
 
@@ -915,6 +1160,48 @@ function riskLevelColor(level: string) {
 
 .warnings-alert {
   margin-top: 8px;
+}
+
+.handler-hint {
+  margin-bottom: 12px;
+}
+
+.preview-steps {
+  margin-top: 4px;
+  background: #fff;
+}
+
+.preview-steps :deep(.ant-collapse-content-box) {
+  display: grid;
+  gap: 10px;
+}
+
+.step-status-tag {
+  margin-left: 6px;
+}
+
+.step-box {
+  display: grid;
+  gap: 6px;
+}
+
+.step-box-title {
+  color: #666;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.step-box pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  font-family: inherit;
+  line-height: 1.7;
+  background: #fafafa;
+  border-radius: 4px;
+  padding: 8px;
 }
 
 .lexicon-group {

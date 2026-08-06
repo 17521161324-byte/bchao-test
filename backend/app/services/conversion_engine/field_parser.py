@@ -1,23 +1,18 @@
-"""字段解析模块。
+"""字段解析模块（改造版：Task 8）。
 
-对应规则文档 04_字段解析规则 (F001-F014)：
-- F001: 内膜厚度 (endometrium_thickness)
-- F002: 内膜类型 (endometrium_type)
-- F003/F004: 卵巢大小 (right/left_ovary_size)
-- F005/F006: 当前侧状态 (current_side)
-- F007/F008: 卵泡列表 (right/left_follicles)
-- F009: 超声发现 (ultrasound_findings)
-- F010: 操作信息 (procedure_info)
-- F011: 随访医嘱 (followup_orders)
-- F012: 提及数量 (mentioned_count)
-- F013: 噪声片段 (noise_segment)
-- F014: 来源追踪 (source_span)
-
-解析采用状态机模式，按文本顺序扫描，根据触发词切换解析状态。
+对应规则文档 04_字段解析规则 (F001-F014)，本次改造（DeepSeek 计划 Task 8）：
+- 禁止默认右侧：无明确侧别时写入 unassigned_ovary_sizes，不写 right_ovary_size
+- 侧别切换（右边/左边/换边）立即结束前一侧数据段
+- 卵巢大小完成状态按侧别保存（ovary_size_complete）
+- 核心字段锁定（locked_fields），冲突触发 FIELD_VALUE_CONFLICT
+- 卵泡格式校验（n.m 格式，不合规写入 unparsed_follicle_values）
+- "20×19无回声"（无卵巢锚点）归超声备注，不解析为卵巢大小
 """
 import re
 from dataclasses import dataclass, field
 from typing import Optional, Any
+
+from app.services.conversion_pipeline.types import ParserState
 
 
 @dataclass
@@ -74,31 +69,62 @@ RANGE_CHECKS = {
     "ovary_dimension": (10, 100, "mm"),       # 卵巢尺寸 10-100mm/维
 }
 
+# 侧别词
+EXPLICIT_RIGHT = ("右边", "右侧", "右卵巢")
+EXPLICIT_LEFT = ("左边", "左侧", "左卵巢")
+SWITCH_WORDS = ("换边", "放边", "另一边")
+
+# 卵泡有效格式：一位或两位整数 + 一位小数（13.8 / 9.6 / 15.0）
+VALID_FOLLICLE_PATTERN = re.compile(r"(?<!\d)(\d{1,2}\.\d)(?!\d)")
+
+# 卵巢大小尺寸（阿拉伯数字）
+SIZE_PATTERN = re.compile(r'(\d+\.?\d*)\s*[×xX\*]\s*(\d+\.?\d*)')
+
+# 卵巢大小尺寸（中文数字：二零乘以幺九）
+CN_DIMENSION_PATTERN = re.compile(
+    r'([零一二三四五六七八九幺两]{2,4})乘以([零一二三四五六七八九幺两]{2,4})'
+)
+
+CN_DIGIT_MAP = {
+    "零": "0", "一": "1", "幺": "1", "二": "2", "两": "2",
+    "三": "3", "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9",
+}
+
+
+def _cn_digits_to_int(text: str) -> int | None:
+    chars: list[str] = []
+    for char in text:
+        if char not in CN_DIGIT_MAP:
+            return None
+        chars.append(CN_DIGIT_MAP[char])
+    return int("".join(chars)) if chars else None
+
 
 class FieldParser:
     """字段解析器"""
 
     def __init__(self):
-        self.current_side: Optional[str] = None  # RIGHT / LEFT
-        self.ovary_size_started: bool = False
+        self.state = ParserState()
         self.parsed_fields: list[ParsedField] = []
         self.warnings: list[str] = []
         self.source_spans: list[dict] = []
+        self.unassigned_ovary_sizes: list[dict] = []
+        self.unparsed_follicle_values: list[dict] = []
 
     def parse(self, text: str) -> FieldParseResult:
         """解析文本，提取结构化字段"""
         self.parsed_fields = []
         self.warnings = []
         self.source_spans = []
-        self.current_side = None
-        self.ovary_size_started = False
+        self.state = ParserState()
+        self.unassigned_ovary_sizes = []
+        self.unparsed_follicle_values = []
 
         # 按顺序扫描文本
         pos = 0
         while pos < len(text):
-            # 跳过已处理的内容（如候选标记）
+            # 跳过候选标记（兼容旧标记遗留）
             if text[pos:pos + 1] == "【":
-                # 跳过候选标记
                 end_bracket = text.find("】", pos)
                 if end_bracket != -1:
                     pos = end_bracket + 1
@@ -108,31 +134,39 @@ class FieldParser:
             # 检查当前位置是否以"卵巢大小"或"右/左卵巢大小"开头
             ovary_match = re.match(r'(右|左)?卵巢大小', text[pos:pos + 20])
             if ovary_match and ovary_match.start() == 0:
-                # 先检测侧别
-                side = self._detect_side(text, pos)
-                if side:
-                    self.current_side = side
+                # 带明确侧别词时更新侧别（结束前一侧数据段）
+                if ovary_match.group(1) == "右":
+                    self._apply_side("RIGHT", text, pos)
+                elif ovary_match.group(1) == "左":
+                    self._apply_side("LEFT", text, pos)
                 field = self._parse_ovary_size(text, pos)
                 if field:
-                    self.parsed_fields.append(field)
+                    self._register_field(field)
                     pos = field.end
                     continue
+                pos += len(ovary_match.group(0))
+                continue
 
-            # F005/F006: 检测侧别切换（包括"右边/左边"后跟尺寸的情况）
+            # F005/F006: 检测侧别切换（右边/左边/换边，后跟尺寸的情况）
             side = self._detect_side(text, pos)
             if side:
-                self.current_side = side
-                # 计算侧别关键词的长度
-                side_match = re.match(r'(右边|右侧|右卵巢|左边|左侧|左卵巢|换边)', text[pos:pos + 10])
-                side_len = len(side_match.group()) if side_match else 0
+                self._apply_side(side, text, pos)
+                side_len = self._side_word_len(text, pos)
                 pos += side_len
                 # 检查后面是否有尺寸（如 "右边39×30"）
                 size_match = re.match(r'\s*(\d+\.?\d*)\s*[×xX\*]\s*(\d+\.?\d*)', text[pos:pos + 20])
                 if size_match:
                     field = self._parse_ovary_size(text, pos)
                     if field:
-                        self.parsed_fields.append(field)
+                        self._register_field(field)
                         pos = field.end
+                continue
+
+            # 20×19无回声 / 二零乘以幺九无回声：无卵巢锚点时归备注
+            anechoic = self._parse_anechoic_dimension(text, pos)
+            if anechoic:
+                self.parsed_fields.append(anechoic)
+                pos = anechoic.end
                 continue
 
             # F001: 解析内膜厚度
@@ -171,39 +205,75 @@ class FieldParser:
                 pos = order.end
                 continue
 
-            # F007/F008: 解析卵泡数值（在卵巢大小之后）
-            if self.current_side and self.ovary_size_started:
-                follicle = self._parse_follicle_value(text, pos)
-                if follicle:
-                    self.parsed_fields.append(follicle)
-                    pos = follicle.end
-                    continue
+            # F007/F008: 解析卵泡数值（需明确侧别且该侧卵巢大小已完成）
+            follicle = self._parse_follicle_value(text, pos)
+            if follicle:
+                self.parsed_fields.append(follicle)
+                pos = follicle.end
+                continue
 
             pos += 1
 
         # 整理结果
         return self._build_result()
 
+    def _apply_side(self, side: str, text: str, pos: int) -> None:
+        """应用侧别：出现新侧别后结束前一侧数据段。"""
+        previous = self.state.current_side
+        if side == "UNKNOWN":
+            # 换边但无当前侧：保持 UNKNOWN 并警示
+            self.warnings.append("换边词出现但当前侧别未知，数据归属不明确")
+            self.state.current_side = "UNKNOWN"
+            return
+        if previous != side:
+            self.state.current_field = None
+        self.state.current_side = side
+        self.state.last_explicit_side_position = pos
+
     def _detect_side(self, text: str, pos: int) -> Optional[str]:
         """F005/F006: 检测侧别切换"""
         remaining = text[pos:]
-
-        # 右侧
-        if re.match(r'(右边|右侧|右卵巢)', remaining):
-            return "RIGHT"
-        # 左侧
-        if re.match(r'(左边|左侧|左卵巢)', remaining):
-            return "LEFT"
-        # 换边
-        if re.match(r'换边', remaining):
-            # 切换到另一侧
-            return "LEFT" if self.current_side == "RIGHT" else "RIGHT"
-
+        for word in EXPLICIT_RIGHT:
+            if remaining.startswith(word):
+                return "RIGHT"
+        for word in EXPLICIT_LEFT:
+            if remaining.startswith(word):
+                return "LEFT"
+        for word in SWITCH_WORDS:
+            if remaining.startswith(word):
+                if self.state.current_side == "RIGHT":
+                    return "LEFT"
+                if self.state.current_side == "LEFT":
+                    return "RIGHT"
+                return "UNKNOWN"
         return None
+
+    def _side_word_len(self, text: str, pos: int) -> int:
+        remaining = text[pos:]
+        for word in (*EXPLICIT_RIGHT, *EXPLICIT_LEFT, *SWITCH_WORDS):
+            if remaining.startswith(word):
+                return len(word)
+        return 0
+
+    def _register_field(self, field: ParsedField) -> None:
+        """注册字段：核心锚点字段锁定，冲突触发 FIELD_VALUE_CONFLICT。"""
+        if field.field_code in self.state.locked_fields:
+            existing = next(
+                (p.value for p in self.parsed_fields if p.field_code == field.field_code),
+                None,
+            )
+            if existing is not None and str(existing) != str(field.value):
+                self.warnings.append(
+                    f"FIELD_VALUE_CONFLICT: {field.field_code} 已有 {existing}，本次 {field.value}"
+                )
+            return
+        self.parsed_fields.append(field)
+        if field.field_code in ("right_ovary_size", "left_ovary_size",
+                                "endometrium_thickness", "endometrium_type"):
+            self.state.locked_fields.add(field.field_code)
 
     def _parse_endometrium_thickness(self, text: str, pos: int) -> Optional[ParsedField]:
         """F001: 解析内膜厚度"""
-        # 匹配：内膜 + 数字（支持小数）
         pattern = r'内膜\s*(\d+\.?\d*)'
         m = re.match(pattern, text[pos:])
         if not m:
@@ -215,10 +285,8 @@ class FieldParser:
         except ValueError:
             return None
 
-        # 保留原始格式
         value_fmt = str(int(value)) if value == int(value) else value_str
 
-        # 范围检查
         warning = None
         min_val, max_val, unit = RANGE_CHECKS["endometrium_thickness"]
         if value < min_val or value > max_val:
@@ -235,7 +303,6 @@ class FieldParser:
 
     def _parse_endometrium_type(self, text: str, pos: int) -> Optional[ParsedField]:
         """F002: 解析内膜类型"""
-        # 匹配：A型/B型/C型 或 A级/B级/C级
         pattern = r'([ABC])[型级]'
         m = re.match(pattern, text[pos:])
         if not m:
@@ -252,27 +319,37 @@ class FieldParser:
         )
 
     def _parse_ovary_size(self, text: str, pos: int) -> Optional[ParsedField]:
-        """F003/F004: 解析卵巢大小"""
-        # 确定是左侧还是右侧
-        if not self.current_side:
-            # 尝试从上下文推断
-            context = text[max(0, pos - 20):pos + 30]
-            if "右" in context:
-                self.current_side = "RIGHT"
-            elif "左" in context:
-                self.current_side = "LEFT"
-            else:
-                self.current_side = "RIGHT"  # 默认右侧
+        """F003/F004: 解析卵巢大小。
 
-        field_code = "right_ovary_size" if self.current_side == "RIGHT" else "left_ovary_size"
+        无明确侧别时：不写 right/left_ovary_size，记入 unassigned_ovary_sizes。
+        """
+        if self.state.current_side not in ("LEFT", "RIGHT"):
+            # 无侧别：记入未归属
+            m = SIZE_PATTERN.search(text[pos:pos + 30])
+            if not m:
+                return None
+            dim1_str, dim2_str = m.group(1), m.group(2)
+            try:
+                dim1, dim2 = float(dim1_str), float(dim2_str)
+            except ValueError:
+                return None
+            value = f"{str(int(dim1)) if dim1 == int(dim1) else dim1_str}×" \
+                    f"{str(int(dim2)) if dim2 == int(dim2) else dim2_str}"
+            self.unassigned_ovary_sizes.append({
+                "value": value,
+                "raw_text": text[pos:pos + m.end()],
+                "start": pos,
+                "end": pos + m.end(),
+            })
+            return None
 
-        # 匹配：X×Y 或 X*X
+        field_code = "right_ovary_size" if self.state.current_side == "RIGHT" else "left_ovary_size"
+
         pattern = r'(\d+\.?\d*)\s*[×xX\*]\s*(\d+\.?\d*)'
         m = re.search(pattern, text[pos:pos + 30])
         if not m:
             return None
 
-        # 保留原始格式（如 39×30 而不是 39.0×30.0）
         dim1_str = m.group(1)
         dim2_str = m.group(2)
         try:
@@ -281,13 +358,11 @@ class FieldParser:
         except ValueError:
             return None
 
-        # 格式化：整数不保留小数点
         dim1_fmt = str(int(dim1)) if dim1 == int(dim1) else dim1_str
         dim2_fmt = str(int(dim2)) if dim2 == int(dim2) else dim2_str
         value = f"{dim1_fmt}×{dim2_fmt}"
-        self.ovary_size_started = True
+        self.state.ovary_size_complete[self.state.current_side] = True
 
-        # 范围检查
         warning = None
         min_val, max_val, unit = RANGE_CHECKS["ovary_dimension"]
         if dim1 < min_val or dim1 > max_val or dim2 < min_val or dim2 > max_val:
@@ -302,32 +377,92 @@ class FieldParser:
             warning=warning,
         )
 
+    def _parse_anechoic_dimension(self, text: str, pos: int) -> Optional[ParsedField]:
+        """20×19无回声 / 二零乘以幺九无回声：无卵巢锚点 → 超声备注。
+
+        二维尺寸 + 紧邻"无回声/五回声"，且前方无"卵巢大小"锚点 → 整体作为备注候选，
+        不解析为卵巢大小。
+        """
+        before = text[max(0, pos - 20):pos]
+        if "卵巢大小" in before:
+            return None
+
+        raw_size: str | None = None
+        end: int | None = None
+
+        m = SIZE_PATTERN.match(text[pos:pos + 20])
+        if m:
+            raw_size = m.group(0)
+            end = pos + m.end()
+        else:
+            m2 = CN_DIMENSION_PATTERN.match(text[pos:pos + 20])
+            if m2:
+                left = _cn_digits_to_int(m2.group(1))
+                right = _cn_digits_to_int(m2.group(2))
+                if left is not None and right is not None:
+                    raw_size = f"{left}×{right}"
+                    end = pos + m2.end()
+
+        if raw_size is None or end is None:
+            return None
+
+        after = text[end:end + 4]
+        suffix = None
+        for word in ("无回声", "五回声"):
+            if after.startswith(word):
+                suffix = word
+                break
+        if suffix is None:
+            return None
+
+        return ParsedField(
+            field_code="ultrasound_findings",
+            value={"type": f"{raw_size}{suffix}", "negated": False},
+            raw_text=text[pos:end] + suffix,
+            start=pos,
+            end=end + len(suffix),
+        )
+
     def _parse_follicle_value(self, text: str, pos: int) -> Optional[ParsedField]:
-        """F007/F008: 解析卵泡数值"""
-        # 匹配单个数字（卵泡直径）
-        pattern = r'(\d+\.?\d+)'
-        m = re.match(pattern, text[pos:])
+        """F007/F008: 解析卵泡数值（n.m 格式校验）。"""
+        if self.state.current_side not in ("LEFT", "RIGHT"):
+            return None
+
+        if not self.state.ovary_size_complete[self.state.current_side]:
+            # 该侧卵巢大小未完成：可保留为未归属候选，不写入左右卵泡
+            return None
+
+        m = re.match(r'(\d+\.?\d+)', text[pos:])
         if not m:
             return None
 
+        raw = m.group(1)
+
+        # 格式校验：必须 n.m（13/138/13.82 等不合规 → 警示，不塞入正常卵泡）
+        if not VALID_FOLLICLE_PATTERN.fullmatch(raw):
+            self.unparsed_follicle_values.append({
+                "side": self.state.current_side,
+                "raw_text": raw,
+                "warning_code": "FOLLICLE_FORMAT_INVALID",
+            })
+            return None
+
         try:
-            value = float(m.group(1))
+            value = float(raw)
         except ValueError:
             return None
 
         # 先保留超上限卵泡（如 >40mm 可能是真实异常或 ASR 误报），
         # 由风险拦截 R016 生成警示，避免静默丢弃掩盖真实录入问题。
-        # 明显噪声（如 100mm 以上）仍跳过。
         if value < 2 or value > 100:
             return None
 
-        # 范围检查：超出常规范围给出警示，但不丢弃
         warning = None
         min_val, max_val, unit = RANGE_CHECKS["follicle_diameter"]
         if value > max_val:
             warning = f"卵泡直径 {value}{unit} 超出常规范围 {min_val}-{max_val}{unit}，需人工复核"
 
-        field_code = "right_follicles" if self.current_side == "RIGHT" else "left_follicles"
+        field_code = "right_follicles" if self.state.current_side == "RIGHT" else "left_follicles"
 
         return ParsedField(
             field_code=field_code,
@@ -342,7 +477,6 @@ class FieldParser:
         """F009: 解析超声发现"""
         for keyword in ULTRASOUND_KEYWORDS:
             if text[pos:].startswith(keyword):
-                # 检查是否有否定词
                 prefix = text[max(0, pos - 5):pos]
                 negated = any(neg in prefix for neg in ["未见", "无", "不"])
 
@@ -365,7 +499,6 @@ class FieldParser:
         """F010: 解析操作信息"""
         for keyword in PROCEDURE_KEYWORDS:
             if text[pos:].startswith(keyword):
-                # 检查是否有否定/取消修饰
                 prefix = text[max(0, pos - 10):pos]
                 modifier = None
                 if "不" in prefix or "未" in prefix:
@@ -408,7 +541,6 @@ class FieldParser:
         for pf in self.parsed_fields:
             field_code = pf.field_code
 
-            # 卵泡列表需要聚合
             if field_code in ("right_follicles", "left_follicles"):
                 if field_code not in fields:
                     fields[field_code] = []
@@ -426,14 +558,11 @@ class FieldParser:
                     fields[field_code] = []
                 fields[field_code].append(pf.value)
             else:
-                # 对于其他字段，保留最后一个值
                 fields[field_code] = pf.value
 
-            # 收集警告
             if pf.warning:
                 self.warnings.append(pf.warning)
 
-            # 收集来源追踪
             self.source_spans.append({
                 "field_code": pf.field_code,
                 "raw_text": pf.raw_text,
@@ -441,6 +570,11 @@ class FieldParser:
                 "end": pf.end,
                 "confidence": pf.confidence,
             })
+
+        if self.unassigned_ovary_sizes:
+            fields["unassigned_ovary_sizes"] = list(self.unassigned_ovary_sizes)
+        if self.unparsed_follicle_values:
+            fields["unparsed_follicle_values"] = list(self.unparsed_follicle_values)
 
         return FieldParseResult(
             fields=fields,

@@ -150,6 +150,48 @@ export const conversionConfigApi = {
   preview: (data: any) => client.post('/conversion-config/preview', data),
 }
 
+// ========== ASR 结构化处理流水线 ==========
+export const conversionPipelineApi = {
+  createExecution: (data: {
+    source_type?: 'manual' | 'text_validation_run' | 'conversion_preview'
+    source_id?: number
+    input_source?: 'manual' | 'raw_asr_text' | 'corrected_text'
+    text?: string
+    scene?: string
+    model_name?: string
+    rule_version_id?: number
+    run_mode?: 'create_only' | 'run_all'
+  }) => client.post('/conversion-pipeline/executions', data, {
+    timeout: 300000,
+  }),
+
+  getExecution: (id: number) =>
+    client.get(`/conversion-pipeline/executions/${id}`),
+
+  runStep: (id: number, stepCode: string) =>
+    client.post(`/conversion-pipeline/executions/${id}/run-step`, {
+      step_code: stepCode,
+    }, {
+      timeout: 300000,
+    }),
+
+  forkFromStep: (
+    id: number,
+    data: { step_code: string; rule_version_id?: number },
+  ) =>
+    client.post(`/conversion-pipeline/executions/${id}/fork-from-step`, data, {
+      timeout: 300000,
+    }),
+
+  compare: (leftExecutionId: number, rightExecutionId: number) =>
+    client.get('/conversion-pipeline/compare', {
+      params: {
+        left_execution_id: leftExecutionId,
+        right_execution_id: rightExecutionId,
+      },
+    }),
+}
+
 // ========== ASR 文本验证 ==========
 export const textValidationApi = {
   listRuns: (params?: any) => client.get('/text-validation/runs', { params }),

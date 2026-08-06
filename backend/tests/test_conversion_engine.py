@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.conversion_engine import run_conversion, ConversionResult
+from app.services.conversion_engine.field_parser import parse_fields
 from app.services.conversion_engine.base_cleaning import apply_base_cleaning
 from app.services.conversion_engine.number_normalize import apply_number_normalize
 from app.services.conversion_engine.medical_term_correct import apply_medical_term_correct, CONFUSION_RULES
@@ -143,7 +144,12 @@ class TestMedicalTermCorrect:
         """C002: 六碗桥大桥 → 右卵巢大小 (CANDIDATE)"""
         text = "六碗桥大桥六零三五"
         result = apply_medical_term_correct(text)
-        assert "候选" in result.text
+        # CANDIDATE 不修改原文，仅记录候选
+        assert result.text == text
+        assert any(
+            c["rule_id"] == "C002" and c["action"] == "CANDIDATE" and c["converted"] == "右卵巢大小"
+            for c in result.conversions
+        )
 
     def test_review_wu_hui_sheng(self):
         """C005: 五回声 → 无回声 (REVIEW, 高风险)"""
@@ -240,13 +246,17 @@ class TestRunConversion:
         assert "39×30" in result.normalized_text
 
     def test_business_segment_driven_conversion_keeps_remark_separate_from_ovary_size(self):
-        """新版口径：医学名词参与转化；无回声是备注，不拼进卵巢大小。"""
+        """新版口径：医学名词参与转化；无回声是备注，不拼进卵巢大小。
+
+        “五回声 → 无回声”只能由医学词规则（C005 REVIEW）决定，
+        业务片段层不再硬编码归一，原文保留。
+        """
         text = "面膜十一点一B型。左卵巢大小五八乘以三八五回声。"
 
         result = run_conversion(text)
 
         assert "内膜11.1B型" in result.normalized_text
-        assert "左卵巢大小58×38无回声" in result.normalized_text
+        assert "左卵巢大小58×38五回声" in result.normalized_text
         assert any(
             item["raw"] == "面膜" and item["converted"] == "内膜" and item["category"] == "medical_term"
             for item in result.conversions
@@ -255,8 +265,9 @@ class TestRunConversion:
             item["raw"] == "五八乘以三八" and item["converted"] == "58×38" and item["category"] == "medical_data"
             for item in result.conversions
         )
-        assert any(
-            item["raw"] == "五回声" and item["converted"] == "无回声" and item["category"] == "medical_data"
+        # 业务片段层不得再自动把“五回声”归一为“无回声”（REVIEW 不修改原文）
+        assert not any(
+            item["raw"] == "五回声" and item["converted"] == "无回声" and item["action"] == "AUTO"
             for item in result.conversions
         )
         assert not any("五八乘以三八五回声" == item["raw"] for item in result.conversions)
@@ -285,10 +296,11 @@ class TestRiskIntercept:
         assert result.risk_blocked is False
 
     def test_missing_side_trigger_is_flagged(self):
-        """R005: 卵巢数据缺少左右侧触发词（默认归属右侧）时警示复核。"""
+        """R005: 卵巢数据缺少左右侧触发词时警示复核（不默认右侧，记未归属）。"""
         result = run_conversion("卵巢大小60×35，20.1")
 
-        assert result.fields.get("right_ovary_size") == "60×35"
+        assert "right_ovary_size" not in result.fields
+        assert "unassigned_ovary_sizes" in result.fields
         assert "R005" in self._rule_ids(result)
 
     def test_ambiguous_left_right_phrase_is_flagged(self):
@@ -303,6 +315,33 @@ class TestRiskIntercept:
 
         assert result.risk_passed is True
         assert result.risk_result.risk_items == []
+
+
+class TestFieldParserStateMachine:
+    """Task 8：字段解析状态机（禁止默认右侧/侧别切换/卵泡格式/无回声备注）"""
+
+    def test_no_side_does_not_default_to_right(self):
+        result = parse_fields("卵巢大小60×35，20.1")
+        assert "right_ovary_size" not in result.fields
+        assert result.fields["unassigned_ovary_sizes"][0]["value"] == "60×35"
+
+    def test_side_switch_closes_previous_side(self):
+        result = parse_fields(
+            "右卵巢大小39×30，16.4，15.2。左边，左卵巢大小28×27，14.6"
+        )
+        assert result.fields["right_follicles"] == [16.4, 15.2]
+        assert result.fields["left_follicles"] == [14.6]
+
+    def test_invalid_integer_follicle_is_warned_not_silently_accepted(self):
+        result = parse_fields("右卵巢大小39×30，卵泡13")
+        assert 13 not in result.fields.get("right_follicles", [])
+        assert result.fields["unparsed_follicle_values"][0]["warning_code"] == "FOLLICLE_FORMAT_INVALID"
+
+    def test_anechoic_dimension_without_ovary_anchor_goes_to_remark(self):
+        result = parse_fields("左边二零乘以幺九无回声")
+        assert "left_ovary_size" not in result.fields
+        findings = result.fields["ultrasound_findings"]
+        assert any("无回声" in str(item) for item in findings)
 
 
 class TestWarningScope:

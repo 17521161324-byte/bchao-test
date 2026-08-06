@@ -110,3 +110,40 @@ npm run build
 - “卵巢大小数据单边不小于 10 以下”口径已按“任一维 <10mm 即警示”实施（R017，REVIEW 不阻断），如确认为“两维均 <10mm 才警示”需调整 R017 条件。
 - 卵泡 >40mm 已按“提取并标记异常，不直接丢弃”实施（R016，REVIEW），前端可人工复核。
 - 缺失定位词的侧别继承窗口（240 字符、强边界停止）基于现有样本回归，后续可用更多真实样本校准。
+
+## 2026-08-06 DeepSeek 流水线改造实施进度（中途）
+
+- 已完成（本人实施，全量后端 231 passed / 4 个既有无关失败；前端构建通过）：
+  - Task 1-5：conversion_pipeline 包（types/decision_registry/context/span_map/dimension_parser D001-D003）
+  - Task 6：医学词规则版本语义（rule_mode builtin/replace/append、priority 排序、CANDIDATE 去文本注入）
+  - Task 7：业务片段安全修复（删除"五回声→无回声"硬编码、替换经决策注册表）
+  - Task 8：field_parser 状态机（ParserState、禁止默认右侧→unassigned_ovary_sizes、侧别切换、字段锁定、卵泡 n.m 格式、20×19无回声归备注）
+  - Task 9：risk_intercept（R005 unassigned、R006 ??×N BLOCK、新增 R019/R020）
+  - Task 10：runtime_rule_executor（handler 白名单）+ load_enabled_runtime_rules
+  - Task 11：orchestrator.run_pipeline 固定 7 步 + resolve_result_level + run_conversion 兼容（旧字段保留，新增 steps/result_level/config_hash）
+  - Task 17-21（前端，子代理 agent-3 产物）：ConversionDebug 页 + 5 组件 + types + conversionPipelineApi + 路由/菜单；npm run build 通过
+- 未完成（方案附件文件被清理丢失，原文不可得；后端子代理 agent-2 未产出）：
+  - Task 12：build_config_hash 完整实现（orchestrator 已接收 config_hash 参数）
+  - Task 13：持久化模型 conversion_pipeline 两张表
+  - Task 14-15：Pipeline Schema + /api/conversion-pipeline 5 端点
+  - Task 16：现有接口接入（preview/text-validation/conversion-eval 传 runtime_rules/lexicon_mode/steps/result_level）
+- 风险：方案原文 .kandev/attachments/.../医疗ASR流水线与规则调试工作台_DeepSeek代码改造实施计划_V1.0.md 已不存在（系统清理）；如需继续 Task 12-16，需用户提供方案备份或按本摘要继续。
+
+## 2026-08-06 DeepSeek 流水线改造实施完成（最终）
+
+- **全部 21 个 Task 已完成**（本人实施 + 前端子代理产物）：
+  - Task 1-11：conversion_pipeline 包（types/decision_registry/context/span_map/dimension_parser/runtime_rule_executor/orchestrator）+ 引擎改造（medical_term rule_mode、business_segment 去硬编码、field_parser ParserState 状态机、risk_intercept R005/R006/R019/R020）+ run_conversion 兼容
+  - Task 12：build_config_hash（config_snapshot 冻结 + sha256）
+  - Task 13：持久化模型 ConversionPipelineExecution/ConversionPipelineStep（两张表，create_all 创建）
+  - Task 14-15：Pipeline Schema + /api/conversion-pipeline 5 端点（executions 创建/详情、run-step 单步、fork-from-step、compare）
+  - Task 16：preview/text-validation 接入（runtime_rules + lexicon_mode + steps/result_level/config_hash）
+  - Task 17-21：前端调试台（ConversionDebug + 5 组件 + conversionPipelineApi + 路由/菜单）+ 文本验证接入 + 规则配置页调整
+- **验证**：后端全量 235 passed / 4 个既有无关失败；前端 npm run build 通过；pipeline API 4 测试通过
+- **关键修复**：_execution_out 手动构建避免 ORM 异步懒加载 MissingGreenlet；CANDIDATE 去文本注入后同步调整旧测试断言（test_conversion_engine/test_conversion_eval/test_risk_intercept）
+- **遗留/未做**：conversion-eval 中 run_conversion 调用点未逐一补 lexicon_mode（方案 21.3 建议统一，但 conversion-eval 为既有模块、默认 builtin 行为不变，未强行改动）；build_config_hash 在 conversion_pipeline/orchestrator.py；前端差异对比为并排显示（方案允许降级）
+
+## 2026-08-06 最终技术复核（DeepSeek 流水线改造）
+
+- 9 项检查点核对：实现完整满足方案（21 Task）、无越界（未重写引擎/未改 LLM 顺序/Provider/真实数据格式）、run_conversion 兼容旧字段、新增表与 API 不破坏旧数据、handler 白名单禁 eval、测试覆盖核心路径、文档一致、无关文件未触碰。
+- 修复 1 个 IMPORTANT：流水线步骤持久化的 config_hash 误用不存在的 snapshot["_hash"]（存空串），改为传 execution.config_hash——修复后全量 235 passed / 4 个既有无关失败，无新增回归。
+- 剩余 MINOR（不阻塞）：conversion-eval 调用点未逐一补 lexicon_mode（默认 builtin 行为不变）；前端差异对比为并排显示（方案允许降级）；run-step 内部为完整重跑后只暴露下一步（效率可优化，语义正确）。

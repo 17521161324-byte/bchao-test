@@ -16,6 +16,7 @@ const routes = [
       { path: 'conversion-eval', component: () => import('@/pages/ConversionEval/index.vue') },
       { path: 'conversion-eval/batches/:id', component: () => import('@/pages/ConversionEval/BatchDetail.vue') },
       { path: 'text-validation', component: () => import('@/pages/TextValidation/index.vue') },
+      { path: 'conversion-debug/:id?', component: () => import('@/pages/ConversionDebug/index.vue') },
       { path: 'conversion-config', component: () => import('@/pages/ConversionConfig/index.vue') },
       { path: 'model', component: () => import('@/pages/ModelConfig/index.vue') },
       { path: 'experiments', component: () => import('@/pages/Experiments/index.vue') },

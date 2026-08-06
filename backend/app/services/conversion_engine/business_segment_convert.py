@@ -10,17 +10,25 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.conversion_engine.business_segment_locator import locate_business_segments
+from app.services.conversion_pipeline.decision_registry import DecisionRegistry
+from app.services.conversion_pipeline.types import RuleDecision, StepCode
 
 
-def apply_business_segment_conversion(text: str) -> tuple[str, list[dict[str, Any]]]:
+def apply_business_segment_conversion(
+    text: str,
+    *,
+    decision_registry: DecisionRegistry | None = None,
+    rule_version: str = "V1.0",
+) -> tuple[str, list[dict[str, Any]]]:
     """Convert located business segments and return conversion details.
 
     Rules:
     - medical_term participates in conversion, e.g. 面膜 -> 内膜.
     - medical_data participates in conversion, e.g. 十一点一 -> 11.1,
-      五八乘以三八 -> 58×38, 五回声 -> 无回声.
+      五八乘以三八 -> 58×38. “五回声 → 无回声”由医学词规则决定，本层不再自动归一。
     - locator/noise do not mutate text.
     - “无回声” is a global remark, not part of ovary size.
+    - 每个替换生成 RuleDecision 并经决策注册表拦截，防止覆盖医学词层的高风险决策。
     """
     if not text:
         return text, []
@@ -38,6 +46,26 @@ def apply_business_segment_conversion(text: str) -> tuple[str, list[dict[str, An
             # “左/右卵巢大小”本身已经是正确业务表达；locator 中的 normalized
             # 是字段归一名，不应把“大小”删掉。
             continue
+        start = int(segment.get("start") or 0)
+        end = int(segment.get("end") or 0)
+
+        # 决策注册表拦截：若医学词层已有 REVIEW/BLOCK 覆盖同一区间，此处 AUTO 不再执行
+        if decision_registry is not None:
+            decision = RuleDecision(
+                rule_id=_rule_id_for(segment),
+                rule_version=rule_version,
+                step_code=StepCode.BUSINESS_SEGMENT.value,
+                action="AUTO",
+                category=str(segment.get("segment_type") or "business_segment"),
+                raw=raw,
+                converted=converted,
+                start=start,
+                end=end,
+                risk_level="low",
+            )
+            if not decision_registry.register(decision):
+                continue
+
         conversion = {
             "rule_id": _rule_id_for(segment),
             "raw": raw,
@@ -45,8 +73,8 @@ def apply_business_segment_conversion(text: str) -> tuple[str, list[dict[str, An
             "action": "AUTO",
             "category": str(segment.get("segment_type") or "business_segment"),
             "field_code": str(segment.get("field_code") or ""),
-            "start": int(segment.get("start") or 0),
-            "end": int(segment.get("end") or 0),
+            "start": start,
+            "end": end,
             "confidence": 0.98,
             "risk_level": "low",
             "notes": segment.get("note") or "业务片段定位驱动转化",

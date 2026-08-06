@@ -103,6 +103,17 @@
 
           <a-tabs v-model:activeKey="activeTab">
             <a-tab-pane key="current" tab="当前结果">
+              <div v-if="currentRun" class="debug-actions">
+                <a-space>
+                  <span class="muted">调试规则链路（明确区分输入来源，不混用）：</span>
+                  <a-button size="small" :loading="debugging" @click="openPipelineDebug('corrected_text')">
+                    调试规则链路
+                  </a-button>
+                  <a-button size="small" :loading="debugging" @click="openPipelineDebug('raw_asr_text')">
+                    从原始 ASR 调试
+                  </a-button>
+                </a-space>
+              </div>
               <a-alert
                 v-if="currentRun?.status === 'failed'"
                 type="error"
@@ -264,19 +275,24 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { useRouter } from 'vue-router'
 import {
   asrOptimizationApi,
   audioApi,
   conversionConfigApi,
+  conversionPipelineApi,
   modelApi,
   patientApi,
   textValidationApi,
 } from '@/api/client'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
 
+const router = useRouter()
+
 const loading = ref(false)
 const running = ref(false)
 const runningAll = ref(false)
+const debugging = ref(false)
 const selectedDate = ref('全部')
 const keyword = ref('')
 const records = ref<any[]>([])
@@ -645,6 +661,29 @@ async function runBatch(rows: any[]) {
   }
 }
 
+/**
+ * 打开流水线调试台：按输入来源新建一条流水线执行。
+ * corrected_text = 从修正文本继续；raw_asr_text = 从原始 ASR 重新走链路。
+ * 两种来源明确区分，不混用。
+ */
+async function openPipelineDebug(inputSource: 'raw_asr_text' | 'corrected_text') {
+  if (!currentRun.value) return
+  debugging.value = true
+  try {
+    const execution: any = await conversionPipelineApi.createExecution({
+      source_type: 'text_validation_run',
+      source_id: currentRun.value.id,
+      input_source: inputSource,
+      rule_version_id: form.rule_version_id,
+      run_mode: 'run_all',
+    })
+    message.success(`已创建调试执行 #${execution.id}`)
+    router.push(`/conversion-debug/${execution.id}`)
+  } finally {
+    debugging.value = false
+  }
+}
+
 function openTemplateManager() {
   templateModalOpen.value = true
   openTemplateForm(correctionTemplates.value.find((item) => item.id === form.correction_template_id) || correctionTemplates.value[0])
@@ -723,6 +762,12 @@ onMounted(refreshAll)
   margin-bottom: 10px;
 }
 .run-alert { margin-bottom: 12px; }
+.debug-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.debug-actions :deep(.muted) { font-size: 12px; }
 .validation-workbench {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

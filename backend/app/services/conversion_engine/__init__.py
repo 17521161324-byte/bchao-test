@@ -34,6 +34,11 @@ class ConversionResult:
     risk_passed: bool = True  # 风险检查是否通过
     risk_blocked: bool = False  # 是否被阻断
 
+    # 可观测流水线新增字段（兼容：旧调用者不受影响）
+    steps: list[Any] = field(default_factory=list)
+    result_level: Optional[Any] = None
+    config_hash: str = ""
+
 
 @dataclass
 class ConversionDetail:
@@ -59,8 +64,12 @@ def run_conversion(
     conversion_version: str = "V1.0",
     skip_conversion: bool = False,
     extra_confusion_rules: list[dict] | None = None,
+    rule_mode: str = "builtin",
+    runtime_rules: list[dict] | None = None,
+    config_hash: str = "",
+    lexicon_mode: str | None = None,
 ) -> ConversionResult:
-    """执行完整的文本转化流程。
+    """执行完整的文本转化流程（兼容入口，内部调用可观测流水线）。
 
     Args:
         raw_text: ASR 原始文本
@@ -68,9 +77,16 @@ def run_conversion(
         model_name: ASR 模型名称
         conversion_version: 规则版本
         skip_conversion: 是否跳过转化
+        extra_confusion_rules: 额外词库规则（数据库词条）
+        rule_mode: builtin/replace/append（规则版本语义）
+        lexicon_mode: 与 rule_mode 同义（方案命名），优先于 rule_mode
+        runtime_rules: 参数化规则列表（数据库 editable=1 规则）
+        config_hash: 配置快照哈希
 
     Returns:
-        ConversionResult 包含标准化文本、转化记录、字段解析和风险检查结果
+        ConversionResult 保留旧字段（raw_text/normalized_text/conversions/warnings/
+        fields/source_spans/risk_result/risk_passed/risk_blocked），
+        新增 steps/result_level/config_hash。
     """
     if skip_conversion:
         return ConversionResult(
@@ -79,53 +95,40 @@ def run_conversion(
             skipped=True,
         )
 
-    result = ConversionResult(raw_text=raw_text, normalized_text=raw_text)
+    from app.services.conversion_pipeline.orchestrator import run_pipeline
 
-    # 步骤1: 基础清洗
-    cleaning_result = apply_base_cleaning(raw_text)
-    result.normalized_text = cleaning_result.text
-    result.conversions.extend(cleaning_result.conversions)
-    result.warnings.extend(cleaning_result.warnings)
+    effective_mode = lexicon_mode if lexicon_mode is not None else rule_mode
 
-    # 步骤2: 数字标准化
-    number_result = apply_number_normalize(result.normalized_text, scene=scene)
-    result.normalized_text = number_result.text
-    result.conversions.extend(number_result.conversions)
-    result.warnings.extend(number_result.warnings)
-
-    # 步骤3: 医学术语纠错
-    medical_result = apply_medical_term_correct(
-        result.normalized_text,
-        scene=scene,
-        extra_rules=extra_confusion_rules,
-    )
-    result.normalized_text = medical_result.text
-    result.conversions.extend(medical_result.conversions)
-    result.warnings.extend(medical_result.warnings)
-
-    # 步骤4: 业务片段驱动转化
-    # 基于已定位出的 B 超业务片段做精确归一，避免旧规则把尺寸和备注混成一条。
-    business_text, business_conversions = apply_business_segment_conversion(result.normalized_text)
-    result.normalized_text = business_text
-    result.conversions.extend(business_conversions)
-
-    # 步骤5: 字段解析
-    parse_result = parse_fields(result.normalized_text)
-    result.fields = parse_result.fields
-    result.source_spans = parse_result.source_spans
-    result.warnings.extend(parse_result.warnings)
-
-    # 步骤6: 风险拦截
-    risk_result = check_risks(
+    pipeline = run_pipeline(
         raw_text=raw_text,
-        normalized_text=result.normalized_text,
-        conversions=result.conversions,
-        fields=result.fields,
-        source_spans=result.source_spans,
+        scene=scene,
+        model_name=model_name,
+        conversion_version=conversion_version,
+        lexicon_rules=extra_confusion_rules or [],
+        runtime_rules=runtime_rules or [],
+        rule_mode=effective_mode,
+        config_hash=config_hash,
     )
-    result.risk_result = risk_result
-    result.risk_passed = risk_result.passed
-    result.risk_blocked = risk_result.blocked
-    result.warnings.extend(risk_result.warnings)
+
+    result = ConversionResult(
+        raw_text=pipeline.raw_text,
+        normalized_text=pipeline.normalized_text,
+        conversions=pipeline.conversions,
+        warnings=pipeline.warnings,
+        fields=pipeline.fields,
+        source_spans=pipeline.source_spans,
+    )
+    result.risk_result = RiskCheckResult(
+        passed=pipeline.risk_passed,
+        blocked=pipeline.risk_blocked,
+        warnings=pipeline.warnings,
+        risk_items=pipeline.risk_items,
+        actions=[{"rule_id": item.get("rule_id"), "action": item.get("action"), "message": item.get("message")} for item in pipeline.risk_items],
+    )
+    result.risk_passed = pipeline.risk_passed
+    result.risk_blocked = pipeline.risk_blocked
+    result.steps = pipeline.steps
+    result.result_level = pipeline.result_level
+    result.config_hash = pipeline.config_hash
 
     return result

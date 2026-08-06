@@ -130,3 +130,25 @@
 - [x] 开发完成后检查 Git diff：本次改动仅涉及转化引擎、配置/验证接口、验证模型与两个前端页面，未覆盖工作树中的既有无关改动。
 - [x] 开发完成后复跑后端目标测试（71 passed）和前端构建（成功）。
 - [!] 已知项：完整后端测试套件中 4 个与本需求无关的既有失败（`test_experiment_api`、`test_model_schema`、`test_experiment_runner`、`test_patient_asr_result_model`），涉及模型凭证输出、实验执行器变量、ASR 结果关系懒加载，均位于本次改动范围之外，未修改。
+
+## 2026-08-06 DeepSeek 流水线改造（21 Task 全部完成）
+
+### [IMPLEMENT] 开发实现
+- [x] Task 1-5：conversion_pipeline 包（types/decision_registry/context/span_map/dimension_parser D001-D003）
+- [x] Task 6：医学词规则版本语义（rule_mode/priority/CANDIDATE 去注入）
+- [x] Task 7：业务片段安全修复（删硬编码、决策注册表）
+- [x] Task 8：field_parser 状态机（禁止默认右侧/侧别切换/字段锁定/卵泡格式/无回声备注）
+- [x] Task 9：risk_intercept（R005 unassigned、R006 ??、R019/R020）
+- [x] Task 10：runtime_rule_executor（handler 白名单）+ load_enabled_runtime_rules
+- [x] Task 11：orchestrator 7 步 + resolve_result_level + run_conversion 兼容
+- [x] Task 12：build_config_hash
+- [x] Task 13：ConversionPipelineExecution/Step 两张表
+- [x] Task 14：Pipeline Schema
+- [x] Task 15：/api/conversion-pipeline 5 端点
+- [x] Task 16：preview/text-validation 接入
+- [x] Task 17-21：前端调试台 + 类型/API + 文本验证接入 + 规则配置页
+
+### [VERIFY] 构建、测试和回归
+- [x] 后端全量 235 passed / 4 个既有无关失败
+- [x] 前端 npm run build 通过
+- [x] pipeline API 4 测试通过；run_pipeline 7 步链路测试通过

@@ -38,3 +38,6 @@ logs/
 .mimocode/
 .playwright-mcp/
 outputs/
+
+# 工具附件
+.kandev/

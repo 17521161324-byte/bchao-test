@@ -623,7 +623,8 @@ async def test_run_conversion_preserves_and_applies_manual_business_marks(async_
 
     assert response.status_code == 200
     data = response.json()
-    assert "左卵巢大小58×38无回声" in data["converted_text"]
+    # 新口径："五回声→无回声"只由医学词规则（C005 REVIEW）决定，业务片段层不硬编码归一
+    assert "左卵巢大小58×38五回声" in data["converted_text"]
     manual_details = (
         await db_session.execute(
             select(AsrConversionDetail).where(

@@ -31,6 +31,7 @@ from app.services.conversion_config import (
     ensure_default_version,
     get_builtin_rules,
     load_enabled_lexicon_rules,
+    load_enabled_runtime_rules,
     load_version_by_selector,
     publish_version,
 )
@@ -328,6 +329,7 @@ async def preview(data: ConversionPreviewRequest, db: AsyncSession = Depends(get
 
     version = await load_version_by_selector(db, version_id=data.version_id, version_code=data.version_code)
     extra_rules = await load_enabled_lexicon_rules(db, version.id) if version else []
+    runtime_rules = await load_enabled_runtime_rules(db, version.id) if version else []
     result = run_conversion(
         raw_text=data.text,
         scene=data.scene,
@@ -335,6 +337,8 @@ async def preview(data: ConversionPreviewRequest, db: AsyncSession = Depends(get
         conversion_version=version.version_code if version else "manual",
         skip_conversion=data.skip_conversion,
         extra_confusion_rules=extra_rules,
+        runtime_rules=runtime_rules,
+        lexicon_mode="replace" if version else "builtin",
     )
     return ConversionPreviewOut(
         raw_text=result.raw_text,
@@ -348,4 +352,7 @@ async def preview(data: ConversionPreviewRequest, db: AsyncSession = Depends(get
         risk_passed=result.risk_passed,
         risk_blocked=result.risk_blocked,
         version=await _version_out(db, version) if version else None,
+        steps=[step.__dict__ if hasattr(step, "__dict__") else step for step in (result.steps or [])],
+        result_level=(result.result_level.value if hasattr(result.result_level, "value") else str(result.result_level or "AUTO_ACCEPT")),
+        config_hash=result.config_hash or "",
     )

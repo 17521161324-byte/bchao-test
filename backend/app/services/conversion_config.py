@@ -164,6 +164,49 @@ async def load_enabled_lexicon_rules(db: AsyncSession, version_id: int) -> list[
             "confidence": float(row.confidence if row.confidence is not None else 0.95),
             "enabled": bool(row.enabled),
             "notes": row.notes or "",
+            "priority": int(row.priority or 100),
+        }
+        for row in rows
+    ]
+
+
+async def load_enabled_runtime_rules(
+    db: AsyncSession,
+    version_id: int,
+) -> list[dict]:
+    """加载启用中的参数化规则（editable=1），供流水线参数化规则步骤执行。
+
+    对应改造计划 Task 10。handler 白名单校验在 runtime_rule_executor 执行时进行。
+    """
+    rows = (
+        await db.execute(
+            select(ConversionRuleEntry)
+            .where(
+                ConversionRuleEntry.version_id == version_id,
+                ConversionRuleEntry.enabled == 1,
+                ConversionRuleEntry.editable == 1,
+            )
+            .order_by(
+                ConversionRuleEntry.priority.asc(),
+                ConversionRuleEntry.id.asc(),
+            )
+        )
+    ).scalars().all()
+
+    return [
+        {
+            "rule_code": row.rule_code,
+            "rule_type": row.rule_type,
+            "name": row.name,
+            "description": row.description,
+            "pattern": row.pattern,
+            "replacement": row.replacement,
+            "condition_config": row.condition_config or {},
+            "action": row.action,
+            "risk_level": row.risk_level,
+            "priority": row.priority,
+            "enabled": bool(row.enabled),
+            "system_handler": row.system_handler,
         }
         for row in rows
     ]

@@ -25,7 +25,7 @@ from app.schemas.text_validation import (
 )
 from app.services.conversion_engine import run_conversion
 from app.services.conversion_engine.business_segment_locator import locate_business_segments
-from app.services.conversion_config import load_enabled_lexicon_rules
+from app.services.conversion_config import load_enabled_lexicon_rules, load_enabled_runtime_rules
 from app.services.llm import create_llm
 from app.services.parser import evaluate_result, normalize_follicles
 
@@ -374,10 +374,13 @@ async def create_validation_run(
             corrected_text, llm_raw_output = await _run_correction_llm(llm_model, prompt, raw_asr_text)
 
         extra_rules = await load_enabled_lexicon_rules(db, rule_version.id) if rule_version else []
+        runtime_rules = await load_enabled_runtime_rules(db, rule_version.id) if rule_version else []
         conversion = run_conversion(
             corrected_text,
             conversion_version=rule_version.version_code if rule_version else data.rule_version,
             extra_confusion_rules=extra_rules,
+            runtime_rules=runtime_rules,
+            lexicon_mode="replace" if rule_version else "builtin",
         )
         structured = _normalize_rule_structured_result(conversion.fields or {})
         source_spans = _normalize_source_spans(conversion.source_spans or [], corrected_text)

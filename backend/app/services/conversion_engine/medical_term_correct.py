@@ -9,6 +9,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.services.conversion_pipeline.decision_registry import DecisionRegistry
+from app.services.conversion_pipeline.types import RuleDecision
+
 
 @dataclass
 class MedicalTermResult:
@@ -32,6 +35,7 @@ class ConfusionRule:
     confidence: float = 0.95
     enabled: bool = True
     notes: str = ""
+    priority: int = 100  # 数值越小越先评估
 
 
 # ========== 混淆词库 (C001-C032) ==========
@@ -243,6 +247,7 @@ def _rule_from_dict(item: dict) -> ConfusionRule:
         confidence=float(item.get("confidence") if item.get("confidence") is not None else 0.95),
         enabled=bool(item.get("enabled", True)),
         notes=str(item.get("notes") or ""),
+        priority=int(item.get("priority", 100)),
     )
 
 
@@ -250,12 +255,20 @@ def apply_medical_term_correct(
     text: str,
     scene: str = "",
     extra_rules: list[ConfusionRule | dict] | None = None,
+    rule_mode: str = "builtin",
+    decision_registry: DecisionRegistry | None = None,
+    rule_version: str = "V1.0",
 ) -> MedicalTermResult:
     """执行医学术语纠错。
 
     Args:
         text: 输入文本（已经过基础清洗和数字标准化）
         scene: 业务场景，为空时自动推断
+        extra_rules: 额外词库规则（数据库词条等）
+        rule_mode: builtin=只使用硬编码规则；replace=数据库规则完全替代硬编码；
+                   append=数据库规则追加到硬编码（仅测试场景）
+        decision_registry: 决策注册表，防止高风险决策被后续低风险覆盖
+        rule_version: 规则版本号
 
     Returns:
         MedicalTermResult 包含纠错后的文本和转化记录
@@ -265,14 +278,36 @@ def apply_medical_term_correct(
     if not scene:
         scene = _get_scene_context(text)
 
-    runtime_rules = list(CONFUSION_RULES)
+    if rule_mode == "builtin":
+        runtime_rules: list[ConfusionRule] = list(CONFUSION_RULES)
+    elif rule_mode == "replace":
+        runtime_rules = []
+    elif rule_mode == "append":
+        runtime_rules = list(CONFUSION_RULES)
+    else:
+        raise ValueError(f"Unsupported rule_mode: {rule_mode}")
+
     if extra_rules:
         for item in extra_rules:
             runtime_rules.append(item if isinstance(item, ConfusionRule) else _rule_from_dict(item))
 
-    # 按优先级处理：配置词库在服务层已按 priority 排序，这里仍保持风险等级稳定排序
-    risk_order = {"low": 0, "medium": 1, "high": 2, "highest": 3}
-    sorted_rules = sorted(runtime_rules, key=lambda r: risk_order.get(r.risk_level, 0))
+    # 排序：优先级数字小的先评估；同优先级长表达先匹配；
+    # 同位置冲突时高风险动作先评估；最终由 DecisionRegistry 防止降级覆盖。
+    action_weight = {
+        "BLOCK": 0,
+        "REVIEW": 1,
+        "CANDIDATE": 2,
+        "AUTO": 3,
+    }
+    sorted_rules = sorted(
+        runtime_rules,
+        key=lambda rule: (
+            int(rule.priority),
+            -len(rule.asr_error),
+            action_weight.get(rule.action, 9),
+            rule.rule_id,
+        ),
+    )
 
     applied_rules = []  # 记录已应用的规则位置，避免重复
 
@@ -332,6 +367,24 @@ def apply_medical_term_correct(
             else:
                 action = rule.action
 
+            # 决策注册表拦截：防止高风险决策被后续低风险覆盖
+            if decision_registry is not None:
+                decision = RuleDecision(
+                    rule_id=rule.rule_id,
+                    rule_version=rule_version,
+                    step_code="MEDICAL_TERM",
+                    action=action,
+                    category="medical_term",
+                    raw=rule.asr_error,
+                    converted=rule.standard,
+                    start=start,
+                    end=end,
+                    risk_level=rule.risk_level,
+                    confidence=rule.confidence,
+                )
+                if not decision_registry.register(decision):
+                    continue
+
             # 执行替换
             if action == "AUTO":
                 new_text = text[:start] + rule.standard + text[end:]
@@ -352,11 +405,7 @@ def apply_medical_term_correct(
                 applied_rules = [(s + offset if s > start else s, e + offset if e > start else e) for s, e in applied_rules]
                 applied_rules.append((start, start + len(rule.standard)))
             elif action == "CANDIDATE":
-                # 候选：在原文后追加候选标记
-                candidate_marker = f"【候选：{rule.standard}】"
-                # 在错误表达后插入候选
-                insert_pos = end
-                new_text = text[:insert_pos] + candidate_marker + text[insert_pos:]
+                # 候选：不修改原文，仅记录候选（前端单独显示，不再注入文本标记）
                 result.conversions.append({
                     "rule_id": rule.rule_id,
                     "raw": rule.asr_error,
@@ -369,9 +418,6 @@ def apply_medical_term_correct(
                     "confidence": rule.confidence,
                     "notes": rule.notes,
                 })
-                text = new_text
-                offset = len(candidate_marker)
-                applied_rules = [(s + offset if s > start else s, e + offset if e > start else e) for s, e in applied_rules]
                 applied_rules.append((start, end))
             elif action == "REVIEW":
                 # 审核：标记但不修改原文

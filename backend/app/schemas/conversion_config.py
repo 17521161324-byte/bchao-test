@@ -157,6 +157,9 @@ class ConversionPreviewOut(BaseModel):
     risk_passed: bool = True
     risk_blocked: bool = False
     version: ConversionVersionOut | None = None
+    steps: list[dict[str, Any]] = Field(default_factory=list)  # 可观测流水线步骤快照
+    result_level: str = "AUTO_ACCEPT"  # AUTO_ACCEPT / REVIEW_REQUIRED / MANUAL_AUDIO_REVIEW
+    config_hash: str = ""
 
 
 class BuiltinRuleItem(BaseModel):

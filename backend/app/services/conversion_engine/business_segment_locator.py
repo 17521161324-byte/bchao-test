@@ -40,7 +40,8 @@ EXPLICIT_SIDE_LOCATORS = {
     "右侧": "RIGHT",
 }
 REMARK_WORDS = ["无回声", "五回声", "强回声光团", "强回声", "稍高回声", "回声欠均", "回声不均", "连续性欠佳", "管状无回声", "囊性无回声", "排精"]
-REMARK_NORMALIZATION = {"五回声": "无回声"}
+# “五回声 → 无回声”只能由医学词规则决定，不能由 locator 自动决定（避免低风险 AUTO 覆盖高风险 REVIEW）。
+REMARK_NORMALIZATION: dict[str, str] = {}
 NOISE_WORDS = ["嗯", "啊", "哦", "好", "好的", "可以", "等一下", "我看看"]
 ENDOMETRIUM_TYPE_PATTERN = re.compile(r"([ABC])[型级]?|回声欠均|回声不均|连续性欠佳")
 DECIMAL_PATTERN = re.compile(r"\d+\.\d+")
