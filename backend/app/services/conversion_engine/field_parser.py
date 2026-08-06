@@ -315,11 +315,17 @@ class FieldParser:
         except ValueError:
             return None
 
-        # 范围检查
-        min_val, max_val, unit = RANGE_CHECKS["follicle_diameter"]
-        if value < min_val or value > max_val:
-            # 可能是噪声或异常值
+        # 先保留超上限卵泡（如 >40mm 可能是真实异常或 ASR 误报），
+        # 由风险拦截 R016 生成警示，避免静默丢弃掩盖真实录入问题。
+        # 明显噪声（如 100mm 以上）仍跳过。
+        if value < 2 or value > 100:
             return None
+
+        # 范围检查：超出常规范围给出警示，但不丢弃
+        warning = None
+        min_val, max_val, unit = RANGE_CHECKS["follicle_diameter"]
+        if value > max_val:
+            warning = f"卵泡直径 {value}{unit} 超出常规范围 {min_val}-{max_val}{unit}，需人工复核"
 
         field_code = "right_follicles" if self.current_side == "RIGHT" else "left_follicles"
 
@@ -329,6 +335,7 @@ class FieldParser:
             raw_text=m.group(),
             start=pos,
             end=pos + m.end(),
+            warning=warning,
         )
 
     def _parse_ultrasound_finding(self, text: str, pos: int) -> Optional[ParsedField]:

@@ -72,7 +72,7 @@ class OpenAILLM(BaseLLM):
             value = self.params.get(key)
             if value is not None and value != "":
                 payload[key] = value
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             resp = await client.post(url, headers=self._headers(), json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -117,7 +117,7 @@ class OpenAILLM(BaseLLM):
             }
             if self.params.get("thinking"):
                 payload["thinking"] = self.params["thinking"]
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
                 resp = await client.post(url, headers=self._headers(), json=payload)
                 return resp.status_code == 200
         except Exception:

@@ -33,3 +33,8 @@ desktop.ini
 # 日志
 *.log
 logs/
+
+# 工具/输出目录
+.mimocode/
+.playwright-mcp/
+outputs/

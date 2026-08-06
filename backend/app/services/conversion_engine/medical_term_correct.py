@@ -229,7 +229,28 @@ def _get_scene_context(text: str) -> str:
     return "通用"
 
 
-def apply_medical_term_correct(text: str, scene: str = "") -> MedicalTermResult:
+def _rule_from_dict(item: dict) -> ConfusionRule:
+    return ConfusionRule(
+        rule_id=str(item.get("rule_id") or item.get("rule_code") or ""),
+        asr_error=str(item.get("asr_error") or item.get("error_text") or ""),
+        standard=str(item.get("standard") or item.get("standard_text") or ""),
+        scene=str(item.get("scene") or item.get("business_scene") or "通用"),
+        required_context=str(item.get("required_context") or ""),
+        excluded_context=str(item.get("excluded_context") or ""),
+        match_type=str(item.get("match_type") or "exact"),
+        risk_level=str(item.get("risk_level") or "medium"),
+        action=str(item.get("action") or "AUTO"),
+        confidence=float(item.get("confidence") if item.get("confidence") is not None else 0.95),
+        enabled=bool(item.get("enabled", True)),
+        notes=str(item.get("notes") or ""),
+    )
+
+
+def apply_medical_term_correct(
+    text: str,
+    scene: str = "",
+    extra_rules: list[ConfusionRule | dict] | None = None,
+) -> MedicalTermResult:
     """执行医学术语纠错。
 
     Args:
@@ -244,9 +265,14 @@ def apply_medical_term_correct(text: str, scene: str = "") -> MedicalTermResult:
     if not scene:
         scene = _get_scene_context(text)
 
-    # 按风险等级排序：低风险先处理，高风险后处理（高风险可覆盖低风险）
+    runtime_rules = list(CONFUSION_RULES)
+    if extra_rules:
+        for item in extra_rules:
+            runtime_rules.append(item if isinstance(item, ConfusionRule) else _rule_from_dict(item))
+
+    # 按优先级处理：配置词库在服务层已按 priority 排序，这里仍保持风险等级稳定排序
     risk_order = {"low": 0, "medium": 1, "high": 2, "highest": 3}
-    sorted_rules = sorted(CONFUSION_RULES, key=lambda r: risk_order.get(r.risk_level, 0))
+    sorted_rules = sorted(runtime_rules, key=lambda r: risk_order.get(r.risk_level, 0))
 
     applied_rules = []  # 记录已应用的规则位置，避免重复
 

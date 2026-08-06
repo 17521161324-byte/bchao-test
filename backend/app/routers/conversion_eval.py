@@ -1,4 +1,7 @@
 """ASR 文本转化评估 API。"""
+import json
+import re
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,9 +17,11 @@ from app.models import (
     AsrConversionRecord,
     AsrConversionReview,
     AsrReferenceTranscript,
+    BUltraResult,
     PatientAsrResult,
     PatientRecord,
 )
+from app.models.conversion_config import ConversionConfigVersion, ConversionLexiconEntry
 from app.schemas.conversion_eval import (
     ConversionBatchCreate,
     ConversionBatchCreateResult,
@@ -34,9 +39,299 @@ from app.schemas.conversion_eval import (
     ConversionReviewOut,
 )
 from app.services.conversion_judge import apply_auto_judge
+from app.services.conversion_engine.number_normalize import _normalize_multiply_operator
 from app.services.conversion_metrics import calculate_conversion_metrics
+from app.services.parser import compare_follicle_details, evaluate_result, normalize_follicles
 
 router = APIRouter()
+
+MANUAL_BUSINESS_RULE_ID = "manual_business_segment"
+MANUAL_BUSINESS_NOTE_PREFIX = "__manual_business_segment__"
+RULE_CANDIDATE_VERSION_CODE = "manual-candidates"
+
+
+def _parse_manual_business_note(note: str | None) -> dict[str, Any]:
+    text = note or ""
+    if not text.startswith(MANUAL_BUSINESS_NOTE_PREFIX):
+        return {"note": text}
+    line_end = text.find("\n")
+    head = text if line_end < 0 else text[:line_end]
+    body = "" if line_end < 0 else text[line_end + 1 :]
+    try:
+        meta = json.loads(head.replace(MANUAL_BUSINESS_NOTE_PREFIX, "", 1))
+        if isinstance(meta, dict):
+            return {**meta, "note": body}
+    except Exception:
+        pass
+    return {"note": body or text}
+
+
+def _candidate_status(details: list[AsrConversionDetail]) -> str:
+    judgements = {item.final_judgement or item.manual_judgement or "pending" for item in details}
+    if judgements and judgements <= {"approved"}:
+        return "approved"
+    if judgements and judgements <= {"ignored"}:
+        return "ignored"
+    return "pending"
+
+
+_MIXED_OVARY_SIZE_REMARK_PATTERN = re.compile(
+    r"(?P<size>[零一二三四五六七八九十幺\d]+(?:乘以?|叉|[xX*])[零一二三四五六七八九十幺\d]+)(?P<remark>五回声|无回声)"
+)
+
+
+def _candidate_recommendation(raw: str, standard: str, segment_type: str, field_code: str) -> dict[str, Any]:
+    """给人工候选加审核建议。
+
+    这里只做提示，不直接改变正式规则。典型场景：
+    “五八乘以三八五回声”实际包含两个业务事实：
+    - 卵巢大小：五八乘以三八 -> 58×38
+    - 备注：五回声/无回声 -> 无回声
+    这类候选如果整体入规则，后续会把尺寸和备注粘成一条错误规则。
+    """
+    raw_match = _MIXED_OVARY_SIZE_REMARK_PATTERN.search(raw)
+    standard_match = _MIXED_OVARY_SIZE_REMARK_PATTERN.search(standard)
+    if segment_type == "medical_data" and field_code == "remark" and raw_match and standard_match:
+        raw_size = raw_match.group("size")
+        raw_remark = raw_match.group("remark")
+        standard_size = standard_match.group("size")
+        standard_remark = standard_match.group("remark").replace("五回声", "无回声")
+        normalized_size, _ = _normalize_multiply_operator(standard_size)
+        return {
+            "recommendation": "split_required",
+            "recommendation_note": "该候选同时包含卵巢大小和全局备注，建议拆成两条候选后再审核。",
+            "suggested_splits": [
+                {
+                    "raw_fragment": raw_size,
+                    "standard_text": normalized_size,
+                    "segment_type": "medical_data",
+                    "field_code": "ovary_size",
+                },
+                {
+                    "raw_fragment": raw_remark,
+                    "standard_text": standard_remark,
+                    "segment_type": "medical_data",
+                    "field_code": "remark",
+                },
+            ],
+        }
+    return {
+        "recommendation": "normal",
+        "recommendation_note": "",
+        "suggested_splits": [],
+    }
+
+
+def _manual_business_details(record: AsrConversionRecord) -> list[AsrConversionDetail]:
+    return [detail for detail in (record.details or []) if detail.rule_id == MANUAL_BUSINESS_RULE_ID]
+
+
+def _apply_manual_business_overrides(converted_text: str, manual_details: list[AsrConversionDetail]) -> str:
+    """Apply user-reviewed business segment corrections to converted ASR text.
+
+    Manual marks are the user's explicit corrections. They should survive a
+    rerun and, when possible, be reflected in the right-side converted ASR.
+    The conservative rule is string replacement by raw fragment; if the auto
+    engine already produced the same converted value, no change is needed.
+    """
+    text = converted_text or ""
+    for detail in sorted(manual_details, key=lambda item: (item.raw_start if item.raw_start is not None else 10**9)):
+        raw = (detail.raw_fragment or "").strip()
+        converted = (detail.converted_fragment or "").strip()
+        if not raw or not converted or raw == converted:
+            continue
+        if converted in text and raw not in text:
+            continue
+        if raw in text:
+            text = text.replace(raw, converted, 1)
+    return text
+
+
+def _follicle_list_from_values(values: list[Any]) -> list[dict[str, Any]]:
+    return normalize_follicles([{"size": value, "count": 1} for value in values])
+
+
+def _split_size(value: Any) -> tuple[float | None, float | None]:
+    if not value:
+        return None, None
+    text = str(value).replace("x", "×").replace("X", "×").replace("*", "×")
+    if "×" not in text:
+        return None, None
+    left, _, right = text.partition("×")
+    try:
+        return float(left), float(right)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _normalize_endometrium_type(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if not text:
+        return None
+    if text in {"A", "B", "C"}:
+        return f"{text}型"
+    return text
+
+
+def _structured_from_business_segments(segments: list[dict[str, Any]]) -> dict[str, Any]:
+    structured: dict[str, Any] = {
+        "right_follicles": [],
+        "left_follicles": [],
+        "right_follicle_total": 0,
+        "left_follicle_total": 0,
+    }
+    right_values: list[Any] = []
+    left_values: list[Any] = []
+
+    for item in segments:
+        if item.get("segment_type") != "medical_data" or item.get("participates") is False:
+            continue
+        field = item.get("field_code")
+        value = item.get("normalized")
+        if field == "endometrium_thickness":
+            structured[field] = value
+        elif field == "endometrium_type":
+            structured[field] = _normalize_endometrium_type(value)
+        elif field == "right_ovary_size":
+            length, width = _split_size(value)
+            structured["right_ovary_length"] = length
+            structured["right_ovary_width"] = width
+            structured["right_ovary_size"] = value
+        elif field == "left_ovary_size":
+            length, width = _split_size(value)
+            structured["left_ovary_length"] = length
+            structured["left_ovary_width"] = width
+            structured["left_ovary_size"] = value
+        elif field == "right_follicles":
+            right_values.append(value)
+        elif field == "left_follicles":
+            left_values.append(value)
+        elif field == "remark":
+            existing = str(structured.get("remark") or "").strip()
+            text = str(value or "").strip()
+            if text and text not in existing:
+                structured["remark"] = "；".join([part for part in [existing, text] if part])
+
+    structured["right_follicles"] = _follicle_list_from_values(right_values)
+    structured["left_follicles"] = _follicle_list_from_values(left_values)
+    structured["right_follicle_total"] = sum(int(item.get("count") or 0) for item in structured["right_follicles"])
+    structured["left_follicle_total"] = sum(int(item.get("count") or 0) for item in structured["left_follicles"])
+    return structured
+
+
+def _ground_truth_dict(gt: BUltraResult | None) -> dict[str, Any] | None:
+    if not gt:
+        return None
+    right_size = None
+    if gt.right_ovary_length is not None and gt.right_ovary_width is not None:
+        right_size = f"{gt.right_ovary_length:g}×{gt.right_ovary_width:g}"
+    left_size = None
+    if gt.left_ovary_length is not None and gt.left_ovary_width is not None:
+        left_size = f"{gt.left_ovary_length:g}×{gt.left_ovary_width:g}"
+    return {
+        "right_follicles": normalize_follicles(gt.right_follicles or []),
+        "left_follicles": normalize_follicles(gt.left_follicles or []),
+        "right_follicle_total": gt.right_follicle_total or 0,
+        "left_follicle_total": gt.left_follicle_total or 0,
+        "endometrium_thickness": gt.endometrium_thickness,
+        "endometrium_type": _normalize_endometrium_type(gt.endometrium_type),
+        "right_ovary_length": gt.right_ovary_length,
+        "right_ovary_width": gt.right_ovary_width,
+        "right_ovary_size": right_size,
+        "left_ovary_length": gt.left_ovary_length,
+        "left_ovary_width": gt.left_ovary_width,
+        "left_ovary_size": left_size,
+        "remark": gt.remark,
+    }
+
+
+def _summarize_follicle_diff(follicle_diff: dict[str, Any]) -> dict[str, int]:
+    """汇总单条记录右/左卵泡明细差异的计数（缺失/额外/数量差/疑似串边）。"""
+    totals = {
+        "missing_total": 0,
+        "extra_total": 0,
+        "count_mismatch_total": 0,
+        "possible_side_swap_total": 0,
+    }
+    for side in ("right_follicles", "left_follicles"):
+        diff = (follicle_diff or {}).get(side) or {}
+        totals["missing_total"] += len(diff.get("missing") or [])
+        totals["extra_total"] += len(diff.get("extra") or [])
+        totals["count_mismatch_total"] += len(diff.get("count_mismatch") or [])
+        totals["possible_side_swap_total"] += len(diff.get("possible_side_swaps") or [])
+    return totals
+
+
+def _build_business_structure_compare(
+    record: AsrConversionRecord,
+    gt: BUltraResult | None,
+) -> dict[str, Any]:
+    """从评估记录定位业务片段，聚合结构化字段并与真实 B 超结果比对。
+
+    单条结构化对比接口与批次结构化汇总接口复用。返回字段：
+    text_source / extracted / ground_truth / comparison / segments / follicle_diff
+    """
+    from app.services.conversion_engine.business_segment_locator import locate_business_segments
+
+    text = record.converted_text or record.raw_text or ""
+    segments = locate_business_segments(text)
+    extracted = _structured_from_business_segments(segments)
+    ground_truth = _ground_truth_dict(gt)
+    if ground_truth:
+        comparison = evaluate_result(extracted, ground_truth, include_remark=False)
+    else:
+        comparison = {
+            "fields": {},
+            "total_fields": 0,
+            "correct_fields": 0,
+            "accuracy": 0.0,
+            "include_remark": False,
+        }
+
+    follicle_diff = {
+        "right_follicles": compare_follicle_details(
+            extracted.get("right_follicles"),
+            ground_truth.get("right_follicles") if ground_truth else None,
+            extracted.get("left_follicles"),
+        ),
+        "left_follicles": compare_follicle_details(
+            extracted.get("left_follicles"),
+            ground_truth.get("left_follicles") if ground_truth else None,
+            extracted.get("right_follicles"),
+        ),
+    }
+    follicle_diff["summary"] = _summarize_follicle_diff(follicle_diff)
+
+    return {
+        "text_source": "converted" if record.converted_text else "raw",
+        "extracted": extracted,
+        "ground_truth": ground_truth,
+        "comparison": comparison,
+        "segments": segments,
+        "follicle_diff": follicle_diff,
+    }
+
+
+async def _ensure_candidate_draft_version(db: AsyncSession) -> ConversionConfigVersion:
+    version = (
+        await db.execute(
+            select(ConversionConfigVersion).where(ConversionConfigVersion.version_code == RULE_CANDIDATE_VERSION_CODE)
+        )
+    ).scalar_one_or_none()
+    if version:
+        return version
+    version = ConversionConfigVersion(
+        version_code=RULE_CANDIDATE_VERSION_CODE,
+        version_name="人工候选规则草稿",
+        status="draft",
+        description="ASR 转化评估人工标记审核通过后自动进入的候选规则库，默认不启用。",
+        created_by="system",
+    )
+    db.add(version)
+    await db.flush()
+    return version
 
 
 async def _get_record_or_404(db: AsyncSession, record_id: int) -> AsrConversionRecord:
@@ -519,6 +814,127 @@ async def get_batch(batch_id: int, db: AsyncSession = Depends(get_db)):
     return out
 
 
+@router.get("/batches/{batch_id}/structure-summary")
+async def get_batch_structure_summary(batch_id: int, db: AsyncSession = Depends(get_db)):
+    """批次结构化对比汇总：右/左卵泡明细匹配统计与差异计数，附每条记录摘要。
+
+    - status="failed" 的记录计入 failed_record_count，跳过对比；
+    - 无 ground truth 的记录计入 missing_ground_truth_count，跳过对比；
+    - 无 ASR 文本（raw/converted 均为空）计入 no_text_count，跳过对比；
+    - 其余记录实时定位业务片段并计算卵泡明细差异。
+    """
+    await _get_batch_or_404(db, batch_id)
+    records = (
+        await db.execute(
+            select(AsrConversionRecord)
+            .where(AsrConversionRecord.batch_id == batch_id)
+            .order_by(AsrConversionRecord.date_snapshot, AsrConversionRecord.record_id_snapshot)
+        )
+    ).scalars().all()
+
+    exam_ids = [record.exam_record_id for record in records if record.exam_record_id]
+    gt_by_exam: dict[int, BUltraResult] = {}
+    if exam_ids:
+        gt_rows = (
+            await db.execute(select(BUltraResult).where(BUltraResult.patient_id.in_(exam_ids)))
+        ).scalars().all()
+        gt_by_exam = {gt.patient_id: gt for gt in gt_rows}
+
+    field_summary = {
+        "right_follicles": {"match": 0, "mismatch": 0},
+        "left_follicles": {"match": 0, "mismatch": 0},
+    }
+    follicle_summary = {
+        "missing_total": 0,
+        "extra_total": 0,
+        "count_mismatch_total": 0,
+        "possible_side_swap_total": 0,
+    }
+    record_items: list[dict[str, Any]] = []
+    compared_count = 0
+    missing_ground_truth_count = 0
+    failed_record_count = 0
+    no_text_count = 0
+
+    for record in records:
+        base = {
+            "record_id": record.id,
+            "exam_record_id": record.exam_record_id,
+            "record_id_snapshot": record.record_id_snapshot,
+            "date_snapshot": record.date_snapshot,
+            "status": "compared",
+            "has_ground_truth": record.exam_record_id in gt_by_exam,
+            "right_match": None,
+            "left_match": None,
+            "right_side_swap": False,
+            "left_side_swap": False,
+            "diff_summary": "",
+        }
+        if record.status == "failed":
+            base["status"] = "failed"
+            failed_record_count += 1
+            record_items.append(base)
+            continue
+        gt = gt_by_exam.get(record.exam_record_id)
+        if not gt:
+            base["status"] = "no_ground_truth"
+            missing_ground_truth_count += 1
+            record_items.append(base)
+            continue
+        if not (record.raw_text or "").strip() and not (record.converted_text or "").strip():
+            base["status"] = "no_text"
+            no_text_count += 1
+            record_items.append(base)
+            continue
+
+        built = _build_business_structure_compare(record, gt)
+        follicle_diff = built["follicle_diff"]
+        right_diff = follicle_diff.get("right_follicles") or {}
+        left_diff = follicle_diff.get("left_follicles") or {}
+        right_match = bool(right_diff.get("match"))
+        left_match = bool(left_diff.get("match"))
+        right_swap = bool(right_diff.get("possible_side_swaps"))
+        left_swap = bool(left_diff.get("possible_side_swaps"))
+
+        field_summary["right_follicles"]["match" if right_match else "mismatch"] += 1
+        field_summary["left_follicles"]["match" if left_match else "mismatch"] += 1
+        summary_totals = _summarize_follicle_diff(follicle_diff)
+        for key in follicle_summary:
+            follicle_summary[key] += summary_totals[key]
+
+        side_parts = []
+        for side, side_label, side_diff, swap in (
+            ("right_follicles", "右侧", right_diff, right_swap),
+            ("left_follicles", "左侧", left_diff, left_swap),
+        ):
+            text = (side_diff.get("summary") or "").strip()
+            if text:
+                side_parts.append(f"{side_label}{text}")
+
+        base.update({
+            "status": "compared",
+            "right_match": right_match,
+            "left_match": left_match,
+            "right_side_swap": right_swap,
+            "left_side_swap": left_swap,
+            "diff_summary": "；".join(side_parts),
+        })
+        compared_count += 1
+        record_items.append(base)
+
+    return {
+        "batch_id": batch_id,
+        "record_count": len(records),
+        "compared_count": compared_count,
+        "missing_ground_truth_count": missing_ground_truth_count,
+        "failed_record_count": failed_record_count,
+        "no_text_count": no_text_count,
+        "field_summary": field_summary,
+        "follicle_summary": follicle_summary,
+        "records": record_items,
+    }
+
+
 @router.delete("/batches/{batch_id}")
 async def delete_batch(batch_id: int, db: AsyncSession = Depends(get_db)):
     batch = await _get_batch_or_404(db, batch_id)
@@ -629,10 +1045,292 @@ async def _detail_out_with_annotations(db: AsyncSession, record: AsrConversionRe
     return out
 
 
+async def _sync_current_reference_snapshot(db: AsyncSession, record: AsrConversionRecord) -> bool:
+    """同步检查记录当前专家标准 ASR 到转化评估记录快照。
+
+    转化评估记录创建时会保存 reference_text 快照；但标准 ASR 可能在之后才补录或更新。
+    详情页应展示当前标准 ASR，否则历史评估记录会一直空白。
+    """
+    reference = (
+        await db.execute(
+            select(AsrReferenceTranscript)
+            .where(AsrReferenceTranscript.patient_id == record.exam_record_id, AsrReferenceTranscript.is_current == True)
+            .order_by(AsrReferenceTranscript.updated_at.desc(), AsrReferenceTranscript.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not reference:
+        return False
+    changed = False
+    if record.reference_asr_id != reference.id:
+        record.reference_asr_id = reference.id
+        changed = True
+    if (record.reference_text or "") != (reference.reference_text or ""):
+        record.reference_text = reference.reference_text or ""
+        changed = True
+    return changed
+
+
 @router.get("/records/{record_id}", response_model=ConversionRecordDetailOut)
 async def get_record(record_id: int, db: AsyncSession = Depends(get_db)):
     record = await _get_record_or_404(db, record_id)
+    if await _sync_current_reference_snapshot(db, record):
+        await db.commit()
+        record = await _get_record_or_404(db, record_id)
     return await _detail_out_with_annotations(db, record)
+
+
+@router.get("/records/{record_id}/business-segments")
+async def get_record_business_segments(
+    record_id: int,
+    text_source: str = "raw",
+    db: AsyncSession = Depends(get_db),
+):
+    """返回业务片段定位结果，不写入转化明细。"""
+    from app.services.conversion_engine.business_segment_locator import locate_business_segments
+
+    record = await _get_record_or_404(db, record_id)
+    source_map = {
+        "raw": record.raw_text or "",
+        "converted": record.converted_text or "",
+        "reference": record.reference_text or "",
+    }
+    if text_source not in source_map:
+        raise HTTPException(status_code=400, detail="text_source 仅支持 raw/converted/reference")
+    text = source_map[text_source]
+    return {
+        "record_id": record.id,
+        "text_source": text_source,
+        "text": text,
+        "segments": locate_business_segments(text),
+    }
+
+
+@router.get("/records/{record_id}/business-structure-compare")
+async def get_record_business_structure_compare(record_id: int, db: AsyncSession = Depends(get_db)):
+    """按当前业务片段定位结果聚合结构化字段，并与真实 B 超结果比对。
+
+    返回顶层 follicle_diff（右/左卵泡明细的尺寸级/数量级差异 + summary 计数），
+    comparison.fields 保持原结构不变。
+    """
+    record = await _get_record_or_404(db, record_id)
+    gt = (
+        await db.execute(
+            select(BUltraResult).where(BUltraResult.patient_id == record.exam_record_id)
+        )
+    ).scalar_one_or_none()
+    built = _build_business_structure_compare(record, gt)
+
+    return {
+        "record_id": record.id,
+        "exam_record_id": record.exam_record_id,
+        "text_source": built["text_source"],
+        "extracted": built["extracted"],
+        "ground_truth": built["ground_truth"],
+        "comparison": built["comparison"],
+        "segments": built["segments"],
+        "follicle_diff": built["follicle_diff"],
+    }
+
+
+@router.get("/rule-candidates")
+async def list_rule_candidates(
+    status: str | None = Query(None),
+    segment_type: str | None = Query(None),
+    field_code: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """按人工业务片段聚合规则优化候选。
+
+    候选来源仍存放在 asr_conversion_details 中：
+    - rule_id = manual_business_segment
+    - note 头部保存 segment_type / field_code / participates / optimize_candidate 等元信息
+    这里只聚合，不改变正式规则。
+    """
+    rows = (
+        await db.execute(
+            select(AsrConversionDetail, AsrConversionRecord)
+            .join(AsrConversionRecord, AsrConversionDetail.record_id == AsrConversionRecord.id)
+            .where(AsrConversionDetail.rule_id == MANUAL_BUSINESS_RULE_ID)
+            .order_by(AsrConversionDetail.updated_at.desc(), AsrConversionDetail.id.desc())
+        )
+    ).all()
+
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for detail, record in rows:
+        meta = _parse_manual_business_note(detail.note)
+        item_segment_type = str(meta.get("segment_type") or detail.risk_type or "")
+        item_field_code = str(meta.get("field_code") or detail.category or "")
+        participates = bool(meta.get("participates", True))
+        optimize_candidate = bool(meta.get("optimize_candidate", participates))
+        if not participates or not optimize_candidate:
+            continue
+        if segment_type and item_segment_type != segment_type:
+            continue
+        if field_code and item_field_code != field_code:
+            continue
+
+        raw = (detail.raw_fragment or "").strip()
+        standard = (detail.converted_fragment or detail.raw_fragment or "").strip()
+        if not raw or not standard:
+            continue
+        key = (raw, standard, item_segment_type, item_field_code)
+        bucket = groups.setdefault(key, {
+            "raw_fragment": raw,
+            "standard_text": standard,
+            "segment_type": item_segment_type,
+            "field_code": item_field_code,
+            "occurrence_count": 0,
+            "detail_ids": [],
+            "record_ids": [],
+            "batch_ids": [],
+            "examples": [],
+            "_details": [],
+        })
+        bucket["occurrence_count"] += 1
+        bucket["detail_ids"].append(detail.id)
+        if record.record_id_snapshot and record.record_id_snapshot not in bucket["record_ids"]:
+            bucket["record_ids"].append(record.record_id_snapshot)
+        if record.batch_id and record.batch_id not in bucket["batch_ids"]:
+            bucket["batch_ids"].append(record.batch_id)
+        if len(bucket["examples"]) < 5:
+            start = detail.raw_start if detail.raw_start is not None else 0
+            end = detail.raw_end if detail.raw_end is not None else start + len(raw)
+            bucket["examples"].append({
+                "detail_id": detail.id,
+                "conversion_record_id": record.id,
+                "record_id": record.record_id_snapshot,
+                "date": record.date_snapshot,
+                "context_before": detail.context_before or "",
+                "context_after": detail.context_after or "",
+                "raw_start": start,
+                "raw_end": end,
+                "note": meta.get("note") or "",
+                "reason": meta.get("reason") or "",
+            })
+        bucket["_details"].append(detail)
+        bucket.update(_candidate_recommendation(raw, standard, item_segment_type, item_field_code))
+
+    result = []
+    for bucket in groups.values():
+        bucket["status"] = _candidate_status(bucket.pop("_details"))
+        if status and bucket["status"] != status:
+            continue
+        result.append(bucket)
+    result.sort(key=lambda item: (-int(item["occurrence_count"]), item["raw_fragment"]))
+    return result
+
+
+@router.post("/rule-candidates/ignore")
+async def ignore_rule_candidate(body: dict[str, Any], db: AsyncSession = Depends(get_db)):
+    raw = str(body.get("raw_fragment") or "").strip()
+    standard = str(body.get("standard_text") or body.get("converted_fragment") or "").strip()
+    segment_type = str(body.get("segment_type") or "").strip()
+    field_code = str(body.get("field_code") or "").strip()
+    if not raw or not standard:
+        raise HTTPException(status_code=400, detail="缺少候选原文或标准值")
+
+    details = await _matching_manual_candidate_details(db, raw, standard, segment_type, field_code)
+    for detail in details:
+        detail.manual_judgement = "ignored"
+        detail.final_judgement = "ignored"
+    await db.commit()
+    return {"updated_details": len(details), "status": "ignored"}
+
+
+@router.post("/rule-candidates/approve")
+async def approve_rule_candidate(body: dict[str, Any], db: AsyncSession = Depends(get_db)):
+    raw = str(body.get("raw_fragment") or "").strip()
+    standard = str(body.get("standard_text") or body.get("converted_fragment") or "").strip()
+    segment_type = str(body.get("segment_type") or "").strip()
+    field_code = str(body.get("field_code") or "").strip()
+    note = str(body.get("note") or "").strip()
+    if not raw or not standard:
+        raise HTTPException(status_code=400, detail="缺少候选原文或标准值")
+
+    details = await _matching_manual_candidate_details(db, raw, standard, segment_type, field_code)
+    for detail in details:
+        detail.manual_judgement = "approved"
+        detail.final_judgement = "approved"
+
+    version = await _ensure_candidate_draft_version(db)
+    existing = (
+        await db.execute(
+            select(ConversionLexiconEntry).where(
+                ConversionLexiconEntry.version_id == version.id,
+                ConversionLexiconEntry.error_text == raw,
+                ConversionLexiconEntry.standard_text == standard,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        lexicon = existing
+    else:
+        lexicon = ConversionLexiconEntry(
+            version_id=version.id,
+            rule_code=f"MC{int(datetime.utcnow().timestamp())}",
+            error_text=raw,
+            standard_text=standard,
+            business_scene="通用",
+            match_type="exact",
+            action="AUTO",
+            risk_level="medium",
+            confidence=0.95,
+            priority=100,
+            enabled=0,
+            notes="；".join([item for item in [
+                "人工候选池审核通过，默认未启用",
+                f"类型={segment_type}" if segment_type else "",
+                f"字段={field_code}" if field_code else "",
+                note,
+            ] if item]),
+        )
+        db.add(lexicon)
+        await db.flush()
+
+    await db.commit()
+    await db.refresh(lexicon)
+    return {
+        "updated_details": len(details),
+        "status": "approved",
+        "lexicon": {
+            "id": lexicon.id,
+            "version_id": lexicon.version_id,
+            "version_code": version.version_code,
+            "error_text": lexicon.error_text,
+            "standard_text": lexicon.standard_text,
+            "enabled": lexicon.enabled,
+        },
+    }
+
+
+async def _matching_manual_candidate_details(
+    db: AsyncSession,
+    raw: str,
+    standard: str,
+    segment_type: str = "",
+    field_code: str = "",
+) -> list[AsrConversionDetail]:
+    rows = (
+        await db.execute(
+            select(AsrConversionDetail)
+            .where(
+                AsrConversionDetail.rule_id == MANUAL_BUSINESS_RULE_ID,
+                AsrConversionDetail.raw_fragment == raw,
+                AsrConversionDetail.converted_fragment == standard,
+            )
+            .order_by(AsrConversionDetail.id.asc())
+        )
+    ).scalars().all()
+    matched = []
+    for detail in rows:
+        meta = _parse_manual_business_note(detail.note)
+        if segment_type and str(meta.get("segment_type") or detail.risk_type or "") != segment_type:
+            continue
+        if field_code and str(meta.get("field_code") or detail.category or "") != field_code:
+            continue
+        matched.append(detail)
+    return matched
 
 
 @router.put("/records/{record_id}", response_model=ConversionRecordOut)
@@ -657,21 +1355,32 @@ async def delete_record(record_id: int, db: AsyncSession = Depends(get_db)):
 async def run_conversion_on_record(record_id: int, db: AsyncSession = Depends(get_db)):
     """对评估记录运行转化引擎"""
     from app.services.conversion_engine import run_conversion as run_engine
+    from app.services.conversion_config import load_enabled_lexicon_rules, load_version_by_selector
 
     record = await _get_record_or_404(db, record_id)
+    manual_details = _manual_business_details(record)
 
-    # 先清理旧的转化片段，避免重复追加
-    await db.execute(delete(AsrConversionDetail).where(AsrConversionDetail.record_id == record.id))
+    # 先清理旧的自动转化片段，避免重复追加；人工业务标记必须保留。
+    await db.execute(
+        delete(AsrConversionDetail).where(
+            AsrConversionDetail.record_id == record.id,
+            AsrConversionDetail.rule_id != MANUAL_BUSINESS_RULE_ID,
+        )
+    )
+
+    config_version = await load_version_by_selector(db, version_code=record.conversion_version)
+    extra_rules = await load_enabled_lexicon_rules(db, config_version.id) if config_version else []
 
     # 运行转化引擎
     result = run_engine(
         raw_text=record.raw_text,
         scene="",  # 自动推断
-        conversion_version=record.conversion_version,
+        conversion_version=config_version.version_code if config_version else record.conversion_version,
+        extra_confusion_rules=extra_rules,
     )
 
     # 更新记录
-    record.converted_text = result.normalized_text
+    record.converted_text = _apply_manual_business_overrides(result.normalized_text, manual_details)
     record.warnings = "\n".join(result.warnings) if result.warnings else None
     record.risk_passed = 1 if result.risk_passed else 0
     record.risk_blocked = 1 if result.risk_blocked else 0
@@ -711,6 +1420,7 @@ async def run_conversion_on_record(record_id: int, db: AsyncSession = Depends(ge
 async def batch_run_conversion(body: dict[str, Any], db: AsyncSession = Depends(get_db)):
     """批量运行转化引擎"""
     from app.services.conversion_engine import run_conversion as run_engine
+    from app.services.conversion_config import load_enabled_lexicon_rules, load_version_by_selector
 
     ids = [int(item) for item in body.get("record_ids", []) if str(item).strip()]
     if not ids:
@@ -720,19 +1430,29 @@ async def batch_run_conversion(body: dict[str, Any], db: AsyncSession = Depends(
     for record_id in ids:
         try:
             record = await _get_record_or_404(db, record_id)
+            manual_details = _manual_business_details(record)
 
-            # 先清理旧的转化片段，避免重复追加
-            await db.execute(delete(AsrConversionDetail).where(AsrConversionDetail.record_id == record.id))
+            # 先清理旧的自动转化片段，避免重复追加；人工业务标记必须保留。
+            await db.execute(
+                delete(AsrConversionDetail).where(
+                    AsrConversionDetail.record_id == record.id,
+                    AsrConversionDetail.rule_id != MANUAL_BUSINESS_RULE_ID,
+                )
+            )
+
+            config_version = await load_version_by_selector(db, version_code=record.conversion_version)
+            extra_rules = await load_enabled_lexicon_rules(db, config_version.id) if config_version else []
 
             # 运行转化引擎
             result = run_engine(
                 raw_text=record.raw_text,
                 scene="",
-                conversion_version=record.conversion_version,
+                conversion_version=config_version.version_code if config_version else record.conversion_version,
+                extra_confusion_rules=extra_rules,
             )
 
             # 更新记录
-            record.converted_text = result.normalized_text
+            record.converted_text = _apply_manual_business_overrides(result.normalized_text, manual_details)
             record.warnings = "\n".join(result.warnings) if result.warnings else None
             record.risk_passed = 1 if result.risk_passed else 0
             record.risk_blocked = 1 if result.risk_blocked else 0

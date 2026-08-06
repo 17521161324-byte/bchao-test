@@ -23,6 +23,12 @@ from app.models.conversion_eval import (
     AsrConversionReview,
     AsrConversionMetric,
 )
+from app.models.conversion_config import (
+    ConversionConfigVersion,
+    ConversionLexiconEntry,
+    ConversionRuleEntry,
+)
+from app.models.text_validation import TextValidationRun, TextCorrectionTemplate
 
 
 class DateFolder(Base):

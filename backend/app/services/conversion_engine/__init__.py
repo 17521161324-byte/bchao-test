@@ -11,6 +11,7 @@ from typing import Optional, Any
 from app.services.conversion_engine.base_cleaning import apply_base_cleaning
 from app.services.conversion_engine.number_normalize import apply_number_normalize
 from app.services.conversion_engine.medical_term_correct import apply_medical_term_correct
+from app.services.conversion_engine.business_segment_convert import apply_business_segment_conversion
 from app.services.conversion_engine.field_parser import parse_fields
 from app.services.conversion_engine.risk_intercept import check_risks, RiskCheckResult
 
@@ -57,6 +58,7 @@ def run_conversion(
     model_name: str = "model_c",
     conversion_version: str = "V1.0",
     skip_conversion: bool = False,
+    extra_confusion_rules: list[dict] | None = None,
 ) -> ConversionResult:
     """执行完整的文本转化流程。
 
@@ -92,18 +94,28 @@ def run_conversion(
     result.warnings.extend(number_result.warnings)
 
     # 步骤3: 医学术语纠错
-    medical_result = apply_medical_term_correct(result.normalized_text, scene=scene)
+    medical_result = apply_medical_term_correct(
+        result.normalized_text,
+        scene=scene,
+        extra_rules=extra_confusion_rules,
+    )
     result.normalized_text = medical_result.text
     result.conversions.extend(medical_result.conversions)
     result.warnings.extend(medical_result.warnings)
 
-    # 步骤4: 字段解析
+    # 步骤4: 业务片段驱动转化
+    # 基于已定位出的 B 超业务片段做精确归一，避免旧规则把尺寸和备注混成一条。
+    business_text, business_conversions = apply_business_segment_conversion(result.normalized_text)
+    result.normalized_text = business_text
+    result.conversions.extend(business_conversions)
+
+    # 步骤5: 字段解析
     parse_result = parse_fields(result.normalized_text)
     result.fields = parse_result.fields
     result.source_spans = parse_result.source_spans
     result.warnings.extend(parse_result.warnings)
 
-    # 步骤5: 风险拦截
+    # 步骤6: 风险拦截
     risk_result = check_risks(
         raw_text=raw_text,
         normalized_text=result.normalized_text,

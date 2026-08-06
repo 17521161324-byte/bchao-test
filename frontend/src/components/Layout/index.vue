@@ -8,6 +8,8 @@
         <a-menu-item key="/data"><FolderOutlined />数据管理</a-menu-item>
         <a-menu-item key="/asr-optimize"><ExperimentOutlined />优化评估</a-menu-item>
         <a-menu-item key="/conversion-eval"><AuditOutlined />ASR转化评估</a-menu-item>
+        <a-menu-item key="/text-validation"><FileSearchOutlined />文本验证</a-menu-item>
+        <a-menu-item key="/conversion-config"><ControlOutlined />转化配置</a-menu-item>
         <a-menu-item key="/model"><SettingOutlined />模型配置</a-menu-item>
       </a-menu>
     </a-layout-sider>
@@ -37,6 +39,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores'
 import {
   FolderOutlined, SettingOutlined, ExperimentOutlined, CloudServerOutlined, AuditOutlined,
+  ControlOutlined, FileSearchOutlined,
 } from '@ant-design/icons-vue'
 
 const route = useRoute()

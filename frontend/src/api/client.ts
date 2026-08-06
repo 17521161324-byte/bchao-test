@@ -96,6 +96,12 @@ export const asrOptimizationApi = {
 export const conversionEvalApi = {
   listRecords: (params?: any) => client.get('/conversion-eval/records', { params }),
   getRecord: (id: number) => client.get(`/conversion-eval/records/${id}`),
+  getBusinessSegments: (id: number, textSource = 'raw') =>
+    client.get(`/conversion-eval/records/${id}/business-segments`, { params: { text_source: textSource } }),
+  getBusinessStructureCompare: (id: number) => client.get(`/conversion-eval/records/${id}/business-structure-compare`),
+  listRuleCandidates: (params?: any) => client.get('/conversion-eval/rule-candidates', { params }),
+  approveRuleCandidate: (data: any) => client.post('/conversion-eval/rule-candidates/approve', data),
+  ignoreRuleCandidate: (data: any) => client.post('/conversion-eval/rule-candidates/ignore', data),
   createFromExam: (examRecordId: number, data: { asr_result_id?: number; converted_text?: string; conversion_version?: string } = {}) =>
     client.post(`/conversion-eval/records/from-exam/${examRecordId}`, data),
   batchCreateFromExams: (examRecordIds: number[], data: any = {}) =>
@@ -116,9 +122,54 @@ export const conversionEvalApi = {
   createBatch: (data: any) => client.post('/conversion-eval/batches', data),
   listBatches: () => client.get('/conversion-eval/batches'),
   getBatch: (id: number) => client.get(`/conversion-eval/batches/${id}`),
+  getBatchStructureSummary: (id: number) => client.get(`/conversion-eval/batches/${id}/structure-summary`),
   deleteBatch: (id: number) => client.delete(`/conversion-eval/batches/${id}`),
   batchAutoJudge: (id: number) => client.post(`/conversion-eval/batches/${id}/auto-judge`),
   batchCalculateMetrics: (id: number) => client.post(`/conversion-eval/batches/${id}/calculate-metrics`),
+}
+
+// ========== ASR 转化配置 ==========
+export const conversionConfigApi = {
+  initDefaults: () => client.post('/conversion-config/init-defaults'),
+  listVersions: () => client.get('/conversion-config/versions'),
+  createVersion: (data: any) => client.post('/conversion-config/versions', data),
+  updateVersion: (id: number, data: any) => client.put(`/conversion-config/versions/${id}`, data),
+  cloneVersion: (id: number, data: any) => client.post(`/conversion-config/versions/${id}/clone`, data),
+  publishVersion: (id: number) => client.post(`/conversion-config/versions/${id}/publish`),
+  rollbackVersion: (id: number) => client.post(`/conversion-config/versions/${id}/rollback`),
+  deleteVersion: (id: number) => client.delete(`/conversion-config/versions/${id}`),
+  listLexicon: (versionId: number) => client.get(`/conversion-config/versions/${versionId}/lexicon`),
+  createLexicon: (versionId: number, data: any) => client.post(`/conversion-config/versions/${versionId}/lexicon`, data),
+  updateLexicon: (id: number, data: any) => client.put(`/conversion-config/lexicon/${id}`, data),
+  deleteLexicon: (id: number) => client.delete(`/conversion-config/lexicon/${id}`),
+  listRules: (versionId: number) => client.get(`/conversion-config/versions/${versionId}/rules`),
+  createRule: (versionId: number, data: any) => client.post(`/conversion-config/versions/${versionId}/rules`, data),
+  updateRule: (id: number, data: any) => client.put(`/conversion-config/rules/${id}`, data),
+  deleteRule: (id: number) => client.delete(`/conversion-config/rules/${id}`),
+  listBuiltinRules: () => client.get('/conversion-config/builtin-rules'),
+  preview: (data: any) => client.post('/conversion-config/preview', data),
+}
+
+// ========== ASR 文本验证 ==========
+export const textValidationApi = {
+  listRuns: (params?: any) => client.get('/text-validation/runs', { params }),
+  getRun: (id: number) => client.get(`/text-validation/runs/${id}`),
+  listCorrectionTemplates: () => client.get('/text-validation/correction-templates'),
+  createCorrectionTemplate: (data: { name: string; content: string; is_default?: boolean }) =>
+    client.post('/text-validation/correction-templates', data),
+  updateCorrectionTemplate: (id: number, data: { name?: string; content?: string; is_default?: boolean; status?: string }) =>
+    client.put(`/text-validation/correction-templates/${id}`, data),
+  deleteCorrectionTemplate: (id: number) => client.delete(`/text-validation/correction-templates/${id}`),
+  createRun: (data: {
+    exam_record_id: number
+    asr_result_id: number
+    llm_model_id?: number
+    prompt_template_id?: number
+    correction_template_id?: number
+    rule_version_id?: number
+    rule_version?: string
+    corrected_text_override?: string
+  }) => client.post('/text-validation/runs', data, { timeout: 300000 }),
 }
 
 // ========== 测试执行 ==========

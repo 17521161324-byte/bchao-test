@@ -48,6 +48,83 @@ def _follicle_total(follicles: list[dict]) -> int:
     return sum(int(f.get("count") or 0) for f in follicles)
 
 
+def compare_follicle_details(
+    identified: Any,
+    ground_truth: Any,
+    opposite_identified: Any | None = None,
+) -> dict[str, Any]:
+    """卵泡明细尺寸级/数量级差异对比。
+
+    输入先统一经过 normalize_follicles()（一位小数、同尺寸合并、按大小降序）：
+    - 完全一致时 match=True，无任何差异项。
+    - 真实有、抽取没有的尺寸 → missing。
+    - 抽取有、真实没有的尺寸 → extra。
+    - 同尺寸数量不同 → count_mismatch（diff = identified_count - truth_count）。
+    - missing 中的尺寸出现在对侧抽取结果 → possible_side_swaps（疑似左右串边，
+      仅提示，不自动修改结果）。
+    """
+    id_list = normalize_follicles(identified)
+    gt_list = normalize_follicles(ground_truth)
+    opp_list = normalize_follicles(opposite_identified)
+
+    id_by_size = {item["size"]: int(item["count"]) for item in id_list}
+    gt_by_size = {item["size"]: int(item["count"]) for item in gt_list}
+    opp_by_size = {item["size"]: int(item["count"]) for item in opp_list}
+
+    missing: list[dict[str, Any]] = []
+    extra: list[dict[str, Any]] = []
+    count_mismatch: list[dict[str, Any]] = []
+
+    for size, gt_count in gt_by_size.items():
+        id_count = id_by_size.get(size)
+        if id_count is None:
+            missing.append({"size": size, "count": gt_count})
+        elif id_count != gt_count:
+            count_mismatch.append({
+                "size": size,
+                "identified_count": id_count,
+                "truth_count": gt_count,
+                "diff": id_count - gt_count,
+            })
+
+    for size, id_count in id_by_size.items():
+        if size not in gt_by_size:
+            extra.append({"size": size, "count": id_count})
+
+    possible_side_swaps = [
+        {**item, "opposite_count": opp_by_size[item["size"]]}
+        for item in missing
+        if item["size"] in opp_by_size
+    ]
+
+    match = not missing and not extra and not count_mismatch
+
+    summary_parts = []
+    for item in missing:
+        swap_hint = "（疑似串边）" if item["size"] in opp_by_size else ""
+        summary_parts.append(f"缺失 {item['size']:g}×{item['count']}{swap_hint}")
+    for item in extra:
+        summary_parts.append(f"多余 {item['size']:g}×{item['count']}")
+    for item in count_mismatch:
+        if item["diff"] > 0:
+            summary_parts.append(f"{item['size']:g} 多 {item['diff']}")
+        else:
+            summary_parts.append(f"{item['size']:g} 少 {-item['diff']}")
+
+    return {
+        "match": match,
+        "identified": id_list,
+        "truth": gt_list,
+        "identified_total": sum(id_by_size.values()),
+        "truth_total": sum(gt_by_size.values()),
+        "missing": missing,
+        "extra": extra,
+        "count_mismatch": count_mismatch,
+        "possible_side_swaps": possible_side_swaps,
+        "summary": "；".join(summary_parts),
+    }
+
+
 def normalize_structured_result(structured: any) -> any:
     """
     归一化 LLM 结构化结果:

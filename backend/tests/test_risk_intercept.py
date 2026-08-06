@@ -12,8 +12,10 @@ class TestRiskRules:
 
     def test_rules_loaded(self):
         """规则已加载"""
-        assert len(RISK_RULES) == 15
+        assert len(RISK_RULES) == 17
         assert any(r.rule_id == "R001" for r in RISK_RULES)
+        assert any(r.rule_id == "R016" for r in RISK_RULES)
+        assert any(r.rule_id == "R017" for r in RISK_RULES)
 
     def test_r001_empty_text(self):
         """R001: 空文本 → BLOCK"""

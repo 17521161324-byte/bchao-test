@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     DATA_DIR: str = "./data"
     UPLOAD_DIR: str = "./uploads"
     RECORDINGS_DIR: str = "./data/recordings"
+    PROJECT_DIR: str = ""
 
     # 本地 ASR
     LOCAL_ASR_URL: str = "http://172.16.10.142:50000"
@@ -90,6 +91,9 @@ class Settings(BaseSettings):
         # 确保目录存在
         for d in [self.DATA_DIR, self.UPLOAD_DIR, self.RECORDINGS_DIR]:
             os.makedirs(d, exist_ok=True)
+        # 工程项目目录
+        if self.PROJECT_DIR:
+            os.makedirs(self.PROJECT_DIR, exist_ok=True)
 
 
 @lru_cache()

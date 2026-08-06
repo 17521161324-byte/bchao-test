@@ -239,6 +239,101 @@ class TestRunConversion:
         assert "右卵巢" in result.normalized_text
         assert "39×30" in result.normalized_text
 
+    def test_business_segment_driven_conversion_keeps_remark_separate_from_ovary_size(self):
+        """新版口径：医学名词参与转化；无回声是备注，不拼进卵巢大小。"""
+        text = "面膜十一点一B型。左卵巢大小五八乘以三八五回声。"
+
+        result = run_conversion(text)
+
+        assert "内膜11.1B型" in result.normalized_text
+        assert "左卵巢大小58×38无回声" in result.normalized_text
+        assert any(
+            item["raw"] == "面膜" and item["converted"] == "内膜" and item["category"] == "medical_term"
+            for item in result.conversions
+        )
+        assert any(
+            item["raw"] == "五八乘以三八" and item["converted"] == "58×38" and item["category"] == "medical_data"
+            for item in result.conversions
+        )
+        assert any(
+            item["raw"] == "五回声" and item["converted"] == "无回声" and item["category"] == "medical_data"
+            for item in result.conversions
+        )
+        assert not any("五八乘以三八五回声" == item["raw"] for item in result.conversions)
+
+
+class TestRiskIntercept:
+    """风险拦截测试（R005/R016/R017）"""
+
+    def _rule_ids(self, result) -> set[str]:
+        return {item["rule_id"] for item in (result.risk_result.risk_items if result.risk_result else [])}
+
+    def test_follicle_over_40mm_is_kept_and_flagged(self):
+        """R016: 卵泡 >40mm 不静默丢弃，保留字段并输出警示。"""
+        result = run_conversion("右卵巢大小45×30，45.6，20.1")
+
+        assert 45.6 in result.fields["right_follicles"]
+        assert "R016" in self._rule_ids(result)
+        assert result.risk_blocked is False
+
+    def test_ovary_single_dimension_below_10mm_is_flagged(self):
+        """R017: 卵巢单维 <10mm 输出警示。"""
+        result = run_conversion("左卵巢大小9×30，15.2")
+
+        assert result.fields["left_ovary_size"] == "9×30"
+        assert "R017" in self._rule_ids(result)
+        assert result.risk_blocked is False
+
+    def test_missing_side_trigger_is_flagged(self):
+        """R005: 卵巢数据缺少左右侧触发词（默认归属右侧）时警示复核。"""
+        result = run_conversion("卵巢大小60×35，20.1")
+
+        assert result.fields.get("right_ovary_size") == "60×35"
+        assert "R005" in self._rule_ids(result)
+
+    def test_ambiguous_left_right_phrase_is_flagged(self):
+        """R005: 左右卵巢/左右侧模糊表述警示复核。"""
+        result = run_conversion("左右卵巢大小60×35，20.1")
+
+        assert "R005" in self._rule_ids(result)
+
+    def test_normal_two_sides_passes_risk_check(self):
+        """正常双侧数据不触发 R005/R016/R017。"""
+        result = run_conversion("内膜9.2，右卵巢大小39×30，16.4。换边，左卵巢大小28×27，15.2。")
+
+        assert result.risk_passed is True
+        assert result.risk_result.risk_items == []
+
+
+class TestWarningScope:
+    """警示口径：医疗名词/换边词纠错不产生警示，警示仅由数据异常触发。"""
+
+    def test_medical_term_correction_produces_no_risk_items(self):
+        """名词纠错（肉卵巢→右卵巢）生效且不产生警示。"""
+        result = run_conversion("肉卵巢大小60×35，15.2，14.8")
+
+        # 名词纠错已生效
+        assert result.fields.get("right_ovary_size") == "60×35"
+        assert any(conv.get("converted", "") == "右卵巢" for conv in result.conversions)
+        # 无数据异常时，名词纠错本身不产生警示
+        assert result.risk_result.risk_items == []
+
+    def test_side_switch_correction_produces_no_risk_items(self):
+        """换边词纠错（放边→换边）生效且不产生警示。"""
+        result = run_conversion("内膜9.2，右卵巢大小39×30。放边，左卵巢大小28×27。")
+
+        # 换边后左侧数据正确归属
+        assert result.fields.get("left_ovary_size") == "28×27"
+        # 无数据异常时，换边词纠错不产生警示
+        assert result.risk_result.risk_items == []
+
+    def test_data_anomaly_still_triggers_warning(self):
+        """数据异常（卵泡>40mm）仍触发警示，与名词纠错无警示对照。"""
+        result = run_conversion("右卵巢大小39×30，41.5")
+
+        assert "R016" in [item.get("rule_id") for item in result.risk_result.risk_items]
+        assert result.fields.get("right_follicles") == [41.5]
+
 
 if __name__ == "__main__":
     import pytest

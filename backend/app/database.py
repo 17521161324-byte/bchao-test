@@ -75,6 +75,21 @@ async def init_db():
             await _ensure_column(conn, "asr_conversion_records", "error_message", "TEXT")
             await _ensure_column(conn, "asr_conversion_batches", "success_count", "INTEGER DEFAULT 0")
             await _ensure_column(conn, "asr_conversion_batches", "failed_count", "INTEGER DEFAULT 0")
+            await _ensure_column(conn, "text_validation_runs", "correction_template_id", "INTEGER")
+            await _ensure_column(conn, "text_validation_runs", "source_spans", "JSON")
+            await _ensure_column(conn, "text_validation_runs", "conversions", "JSON")
+            await _ensure_column(conn, "text_validation_runs", "segments", "JSON")
+            await _ensure_column(conn, "text_validation_runs", "warnings", "JSON")
+            await _ensure_column(conn, "text_validation_runs", "risk_items", "JSON")
+            await conn.execute(text(
+                "UPDATE text_validation_runs SET source_spans = '[]' "
+                "WHERE source_spans IS NULL OR source_spans = ''"
+            ))
+            await conn.execute(text(
+                "UPDATE text_validation_runs SET "
+                "conversions = '[]', segments = '[]', warnings = '[]', risk_items = '[]' "
+                "WHERE conversions IS NULL OR segments IS NULL OR warnings IS NULL OR risk_items IS NULL"
+            ))
             await conn.execute(text(
                 "UPDATE asr_conversion_records SET status = 'ready' "
                 "WHERE status IS NULL OR status = ''"

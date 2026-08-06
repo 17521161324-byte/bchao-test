@@ -17,7 +17,7 @@ def create_app():
 
     from app.config import settings
     from app.database import init_db
-    from app.routers import audio, result, model_config, test, experiment, prompt_template, patients, field_review, asr_optimization, conversion_eval
+    from app.routers import audio, result, model_config, test, experiment, prompt_template, patients, field_review, asr_optimization, conversion_eval, conversion_config, text_validation
 
     _worker = None
     _worker_task = None
@@ -88,6 +88,8 @@ def create_app():
     app.include_router(field_review.router, prefix="/api/patients", tags=["字段标记"])
     app.include_router(asr_optimization.router, prefix="/api/asr-optimization", tags=["ASR优化评估"])
     app.include_router(conversion_eval.router, prefix="/api/conversion-eval", tags=["ASR转化评估"])
+    app.include_router(conversion_config.router, prefix="/api/conversion-config", tags=["ASR转化配置"])
+    app.include_router(text_validation.router, prefix="/api/text-validation", tags=["ASR文本验证"])
 
     @app.get("/api/health")
     async def health_check():

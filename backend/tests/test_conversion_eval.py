@@ -4,7 +4,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from app.models import AsrReferenceTranscript, PatientAsrResult, PatientRecord
+from app.models import AsrConversionDetail, AsrReferenceTranscript, PatientAsrResult, PatientRecord
+from app.models.conversion_config import ConversionLexiconEntry
 
 
 @pytest.mark.anyio
@@ -345,3 +346,460 @@ async def test_record_detail_returns_reference_annotations(async_client: AsyncCl
     judged = await async_client.post(f"/conversion-eval/records/{record['id']}/auto-judge")
     assert judged.status_code == 200
     assert judged.json()["reference_annotations"] == annotations
+
+
+@pytest.mark.anyio
+async def test_record_business_segments_endpoint_returns_locator_rows(async_client: AsyncClient, db_session):
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        full_transcript="内膜6.3A型。右卵巢大小39×30，12.1。换边左卵巢大小48×1，29，13.5。无回声。",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+
+    response = await async_client.get(f"/conversion-eval/records/{record['id']}/business-segments")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["record_id"] == record["id"]
+    assert data["text_source"] == "raw"
+    assert any(item["segment_type"] == "medical_term" and item["text"] == "右卵巢大小" for item in data["segments"])
+    assert any(item["field_code"] == "left_ovary_size" and item["normalized"] == "48×29" for item in data["segments"])
+
+
+@pytest.mark.anyio
+async def test_get_conversion_record_syncs_reference_created_after_record(async_client: AsyncClient, db_session):
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        full_transcript="原始 ASR 文本",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+    assert record["reference_asr_id"] is None
+    assert record["reference_text"] == ""
+
+    reference = AsrReferenceTranscript(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        base_asr_result_id=asr.id,
+        reference_text="后补的专家标准 ASR",
+        reference_annotations=[{"start": 0, "end": 2, "type": "green", "note": "ok"}],
+        is_current=True,
+    )
+    db_session.add(reference)
+    await db_session.commit()
+
+    response = await async_client.get(f"/conversion-eval/records/{record['id']}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["reference_asr_id"] == reference.id
+    assert data["reference_text"] == "后补的专家标准 ASR"
+    assert data["reference_annotations"] == reference.reference_annotations
+
+
+@pytest.mark.anyio
+async def test_manual_business_segments_are_aggregated_as_rule_candidates(async_client: AsyncClient, db_session):
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        full_transcript="面膜十一点一。",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+
+    payload = {
+        "raw_fragment": "面膜",
+        "converted_fragment": "内膜",
+        "raw_start": 0,
+        "raw_end": 2,
+        "category": "endometrium",
+        "action_type": "manual_mark",
+        "rule_id": "manual_business_segment",
+        "rule_version": "manual",
+        "risk_type": "medical_term",
+        "note": '__manual_business_segment__{"segment_type":"medical_term","field_code":"endometrium","participates":true,"optimize_candidate":true,"reason":"近义词/ASR误识别"}\n面膜应归一为内膜',
+    }
+    assert (await async_client.post(f"/conversion-eval/records/{record['id']}/details", json=payload)).status_code == 200
+    assert (await async_client.post(f"/conversion-eval/records/{record['id']}/details", json=payload)).status_code == 200
+
+    response = await async_client.get("/conversion-eval/rule-candidates")
+
+    assert response.status_code == 200
+    candidates = response.json()
+    item = next(row for row in candidates if row["raw_fragment"] == "面膜" and row["standard_text"] == "内膜")
+    assert item["segment_type"] == "medical_term"
+    assert item["field_code"] == "endometrium"
+    assert item["occurrence_count"] == 2
+    assert item["status"] == "pending"
+    assert item["examples"][0]["record_id"] == "A017750"
+
+
+@pytest.mark.anyio
+async def test_mixed_ovary_size_and_remark_candidate_requires_split(async_client: AsyncClient, db_session):
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        full_transcript="左卵巢大小五八乘以三八五回声。",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+
+    await async_client.post(f"/conversion-eval/records/{record['id']}/details", json={
+        "raw_fragment": "五八乘以三八五回声",
+        "converted_fragment": "五八乘以三八无回声",
+        "raw_start": 5,
+        "raw_end": 14,
+        "category": "remark",
+        "action_type": "manual_mark",
+        "rule_id": "manual_business_segment",
+        "rule_version": "manual",
+        "risk_type": "medical_data",
+        "note": '__manual_business_segment__{"segment_type":"medical_data","field_code":"remark","participates":true,"optimize_candidate":true}\n尺寸与备注混合标注',
+    })
+
+    response = await async_client.get("/conversion-eval/rule-candidates")
+
+    assert response.status_code == 200
+    candidates = response.json()
+    item = next(row for row in candidates if row["raw_fragment"] == "五八乘以三八五回声")
+    assert item["recommendation"] == "split_required"
+    assert "卵巢大小" in item["recommendation_note"]
+    assert "备注" in item["recommendation_note"]
+    assert item["suggested_splits"] == [
+        {
+            "raw_fragment": "五八乘以三八",
+            "standard_text": "58×38",
+            "segment_type": "medical_data",
+            "field_code": "ovary_size",
+        },
+        {
+            "raw_fragment": "五回声",
+            "standard_text": "无回声",
+            "segment_type": "medical_data",
+            "field_code": "remark",
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_approve_rule_candidate_creates_disabled_draft_lexicon(async_client: AsyncClient, db_session):
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        full_transcript="面膜十一点一。",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+    await async_client.post(f"/conversion-eval/records/{record['id']}/details", json={
+        "raw_fragment": "面膜",
+        "converted_fragment": "内膜",
+        "raw_start": 0,
+        "raw_end": 2,
+        "category": "endometrium",
+        "action_type": "manual_mark",
+        "rule_id": "manual_business_segment",
+        "rule_version": "manual",
+        "risk_type": "medical_term",
+        "note": '__manual_business_segment__{"segment_type":"medical_term","field_code":"endometrium","participates":true,"optimize_candidate":true}\n面膜应归一为内膜',
+    })
+
+    response = await async_client.post("/conversion-eval/rule-candidates/approve", json={
+        "raw_fragment": "面膜",
+        "standard_text": "内膜",
+        "segment_type": "medical_term",
+        "field_code": "endometrium",
+        "note": "从人工候选池审核通过",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["updated_details"] == 1
+    assert data["lexicon"]["enabled"] == 0
+    lexicon = (
+        await db_session.execute(
+            select(ConversionLexiconEntry).where(
+                ConversionLexiconEntry.error_text == "面膜",
+                ConversionLexiconEntry.standard_text == "内膜",
+            )
+        )
+    ).scalar_one()
+    assert lexicon.notes and "人工候选池" in lexicon.notes
+
+
+@pytest.mark.anyio
+async def test_run_conversion_preserves_and_applies_manual_business_marks(async_client: AsyncClient, db_session):
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        full_transcript="面膜十一点一B型。左卵巢大小五八乘以三八五回声。",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+    await async_client.post(f"/conversion-eval/records/{record['id']}/details", json={
+        "raw_fragment": "五八乘以三八",
+        "converted_fragment": "58×38",
+        "raw_start": 14,
+        "raw_end": 20,
+        "category": "left_ovary_size",
+        "action_type": "manual_mark",
+        "rule_id": "manual_business_segment",
+        "rule_version": "manual",
+        "risk_type": "medical_data",
+        "note": '__manual_business_segment__{"segment_type":"medical_data","field_code":"left_ovary_size","participates":true,"optimize_candidate":true}\n人工修正尺寸',
+    })
+
+    response = await async_client.post(f"/conversion-eval/records/{record['id']}/run-conversion")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "左卵巢大小58×38无回声" in data["converted_text"]
+    manual_details = (
+        await db_session.execute(
+            select(AsrConversionDetail).where(
+                AsrConversionDetail.record_id == record["id"],
+                AsrConversionDetail.rule_id == "manual_business_segment",
+            )
+        )
+    ).scalars().all()
+    assert len(manual_details) == 1
+    assert manual_details[0].raw_fragment == "五八乘以三八"
+
+
+@pytest.mark.anyio
+async def test_business_structure_compare_from_located_segments(async_client: AsyncClient, db_session):
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        full_transcript="内膜六点四A型。右卵巢大小三九乘以三零，十六点四。换边左卵巢大小二八乘以二零，十五点二。",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+
+    response = await async_client.get(f"/conversion-eval/records/{record['id']}/business-structure-compare")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["extracted"]["endometrium_thickness"] == 6.4
+    assert data["extracted"]["endometrium_type"] == "A型"
+    assert data["extracted"]["right_follicles"] == [{"size": 16.4, "count": 1}]
+    assert data["extracted"]["left_follicles"] == [{"size": 15.2, "count": 1}]
+    assert data["ground_truth"]["endometrium_thickness"] == 6.4
+    assert data["comparison"]["fields"]["right_follicles"]["match"] is True
+    assert data["comparison"]["fields"]["left_follicles"]["match"] is True
+
+
+# ========== 卵泡明细差异对比 ==========
+
+@pytest.mark.anyio
+async def test_business_structure_compare_returns_follicle_diff(async_client: AsyncClient, db_session):
+    """单条结构化对比：comparison.fields 保持兼容，顶层新增 follicle_diff（含疑似串边）。"""
+    patient = (
+        await db_session.execute(select(PatientRecord).where(PatientRecord.record_id == "A017750"))
+    ).scalar_one()
+    asr = PatientAsrResult(
+        patient_id=patient.id,
+        record_id=patient.record_id,
+        date="20260623",
+        asr_model_id=1,
+        asr_model_name="Test ASR",
+        provider="local",
+        # 右/左卵泡尺寸互换 → 双向疑似串边
+        full_transcript="内膜六点四A型。右卵巢大小三九乘以三零，十五点二。换边左卵巢大小二八乘以二零，十六点四。",
+        status="success",
+    )
+    db_session.add(asr)
+    await db_session.commit()
+    record = (
+        await async_client.post(f"/conversion-eval/records/from-exam/{patient.id}", json={"asr_result_id": asr.id})
+    ).json()
+
+    response = await async_client.get(f"/conversion-eval/records/{record['id']}/business-structure-compare")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    # 兼容：comparison.fields 保持原结构（identified_count/truth_count）
+    right_field = data["comparison"]["fields"]["right_follicles"]
+    assert right_field["match"] is False
+    assert right_field["diff"] == {"identified_count": 1, "truth_count": 1}
+
+    # 新增：顶层 follicle_diff
+    fd = data["follicle_diff"]
+    assert fd["right_follicles"]["match"] is False
+    assert fd["right_follicles"]["missing"] == [{"size": 16.4, "count": 1}]
+    assert fd["right_follicles"]["extra"] == [{"size": 15.2, "count": 1}]
+    assert fd["right_follicles"]["possible_side_swaps"] == [{"size": 16.4, "count": 1, "opposite_count": 1}]
+    assert "疑似串边" in fd["right_follicles"]["summary"]
+    assert fd["left_follicles"]["missing"] == [{"size": 15.2, "count": 1}]
+    assert fd["left_follicles"]["extra"] == [{"size": 16.4, "count": 1}]
+    assert fd["left_follicles"]["possible_side_swaps"] == [{"size": 15.2, "count": 1, "opposite_count": 1}]
+    assert fd["summary"] == {
+        "missing_total": 2,
+        "extra_total": 2,
+        "count_mismatch_total": 0,
+        "possible_side_swap_total": 2,
+    }
+
+
+@pytest.mark.anyio
+async def test_batch_structure_summary_counts_mixed_states(async_client: AsyncClient, db_session):
+    """批次汇总：混合 compared / no_ground_truth / failed / no_text 四种状态统计正确。"""
+    p1, p2 = await _get_patients(db_session)
+    base = datetime(2026, 6, 23, 10, 0, 0)
+    db_session.add_all([
+        _make_asr(p1, "hash-a", "内膜六点四A型。右卵巢大小三九乘以三零，十六点四。换边左卵巢大小二八乘以二零，十五点二。", base),
+        _make_asr(p2, "hash-b", "右卵巢大小三九乘以三零，十六点四。", base),
+    ])
+    await db_session.commit()
+
+    created = (await async_client.post("/conversion-eval/batches", json={
+        "name": "汇总批次",
+        "selected_dates": ["20260623"],
+        "exam_record_ids": [p1.id, p2.id],
+        "asr_source_type": "latest_success",
+    })).json()
+    batch_id = created["batch"]["id"]
+    assert created["created_count"] == 2
+
+    # 手工插入：failed 记录（无 ASR）+ no_text 记录（有 GT 但无文本）+ 差异记录（卵泡互换）
+    db_session.add_all([
+        AsrConversionRecord(
+            batch_id=batch_id, exam_record_id=p2.id, status="failed",
+            error_message="无成功ASR", raw_text="", converted_text="",
+            conversion_version="manual",
+        ),
+        AsrConversionRecord(
+            batch_id=batch_id, exam_record_id=p1.id, status="ready",
+            raw_text="", converted_text="",
+            conversion_version="manual",
+        ),
+        AsrConversionRecord(
+            batch_id=batch_id, exam_record_id=p1.id, status="ready",
+            raw_text="",
+            converted_text="内膜六点四A型。右卵巢大小三九乘以三零，十五点二。换边左卵巢大小二八乘以二零，十六点四。",
+            conversion_version="manual",
+        ),
+    ])
+    await db_session.commit()
+
+    response = await async_client.get(f"/conversion-eval/batches/{batch_id}/structure-summary")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["batch_id"] == batch_id
+    assert data["record_count"] == 5
+    assert data["compared_count"] == 2
+    assert data["missing_ground_truth_count"] == 1
+    assert data["failed_record_count"] == 1
+    assert data["no_text_count"] == 1
+
+    assert data["field_summary"]["right_follicles"] == {"match": 1, "mismatch": 1}
+    assert data["field_summary"]["left_follicles"] == {"match": 1, "mismatch": 1}
+    assert data["follicle_summary"] == {
+        "missing_total": 2,
+        "extra_total": 2,
+        "count_mismatch_total": 0,
+        "possible_side_swap_total": 2,
+    }
+
+    compared_match = next(r for r in data["records"] if r["status"] == "compared" and r["right_match"] and r["left_match"])
+    assert compared_match["diff_summary"] == ""
+    assert compared_match["has_ground_truth"] is True
+
+    compared_diff = next(r for r in data["records"] if r["status"] == "compared" and not r["right_match"])
+    assert compared_diff["right_side_swap"] is True
+    assert compared_diff["left_side_swap"] is True
+    assert "右侧缺失" in compared_diff["diff_summary"]
+    assert "疑似串边" in compared_diff["diff_summary"]
+
+    no_gt = next(r for r in data["records"] if r["status"] == "no_ground_truth")
+    assert no_gt["has_ground_truth"] is False
+    assert no_gt["right_match"] is None
+
+    failed = next(r for r in data["records"] if r["status"] == "failed")
+    assert failed["right_match"] is None
+
+    no_text = next(r for r in data["records"] if r["status"] == "no_text")
+    assert no_text["has_ground_truth"] is True

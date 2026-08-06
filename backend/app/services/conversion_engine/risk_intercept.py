@@ -76,6 +76,10 @@ RISK_RULES: list[RiskRule] = [
              severity="high", action="REVIEW"),
     RiskRule("R015", "人工修改回流", "人工复核修改了最终字段",
              severity="medium", action="REVIEW"),
+    RiskRule("R016", "卵泡尺寸超常规", "卵泡直径超过常规上限 40mm，需人工复核",
+             severity="high", action="REVIEW"),
+    RiskRule("R017", "卵巢单维尺寸偏小", "卵巢任一维小于常规下限 10mm，需人工复核",
+             severity="high", action="REVIEW"),
 ]
 
 # 否定词列表
@@ -119,7 +123,7 @@ class RiskInterceptor:
         self._check_r004_negation(conversions)
 
         # R005: 左右侧冲突检查
-        self._check_r005_side_conflict(fields)
+        self._check_r005_side_conflict(fields, normalized_text)
 
         # R006: 卵巢尺寸完整性检查
         self._check_r006_dimension_complete(fields)
@@ -138,6 +142,12 @@ class RiskInterceptor:
 
         # R014: 高风险词纠错检查
         self._check_r014_high_risk_words(conversions)
+
+        # R016: 卵泡尺寸超常规检查
+        self._check_r016_follicle_overrange(fields)
+
+        # R017: 卵巢单维尺寸偏小检查
+        self._check_r017_ovary_small_dimension(fields)
 
         # 判断是否通过
         blocked = any(item.get("action") == "BLOCK" for item in self.risk_items)
@@ -226,19 +236,35 @@ class RiskInterceptor:
                         )
                         break
 
-    def _check_r005_side_conflict(self, fields: dict):
-        """R005: 左右侧冲突或缺失"""
+    def _check_r005_side_conflict(self, fields: dict, text: str):
+        """R005: 左右侧冲突或缺失
+
+        左右侧归属不可猜测：只要有卵巢数据，就必须能从文本中找到明确的
+        左右触发词或换边词；出现“左右卵巢/左右侧”等模糊表述，或全文缺少
+        任何侧别触发词（例如只写“卵巢大小60×35”被默认归属右侧）时，
+        输出 REVIEW 警示，进入人工复核。
+        """
         has_right = "right_ovary_size" in fields or "right_follicles" in fields
         has_left = "left_ovary_size" in fields or "left_follicles" in fields
 
-        if has_right and has_left:
-            # 检查是否有明确的侧别切换
-            # 简单检查：如果两个都有，假设已正确切换
-            pass
-        elif not has_right and not has_left:
-            # 没有检测到任何卵巢数据
-            pass
-        # 如果只有一个侧别，可能是正常的（单侧检查）
+        if not has_right and not has_left:
+            # 没有检测到任何卵巢数据，不适用侧别归属检查
+            return
+
+        if re.search(r"左\s*右", text):
+            self._add_risk(
+                "R005", "左右侧表述不明确，无法确定数据归属，需人工复核",
+                action="REVIEW", severity="highest",
+                details={"text": text}
+            )
+            return
+
+        if not re.search(r"[左右]|换边", text):
+            self._add_risk(
+                "R005", "缺少左右侧触发词，卵巢数据归属不明确，需人工复核",
+                action="REVIEW", severity="highest",
+                details={"text": text}
+            )
 
     def _check_r006_dimension_complete(self, fields: dict):
         """R006: 卵巢大小不足两个数值"""
@@ -336,6 +362,63 @@ class RiskInterceptor:
                             details={"word": word, "conversion": conv}
                         )
                         break
+
+    @staticmethod
+    def _follicle_numbers(fields: dict) -> list[tuple[str, float]]:
+        """从字段中提取各侧卵泡数值（兼容裸数值或 {size,count} 对象）。"""
+        result: list[tuple[str, float]] = []
+        for field_code in ("right_follicles", "left_follicles"):
+            values = fields.get(field_code)
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                if isinstance(item, dict):
+                    item = item.get("size", item.get("value"))
+                try:
+                    value = float(item)
+                except (TypeError, ValueError):
+                    continue
+                result.append((field_code, value))
+        return result
+
+    def _check_r016_follicle_overrange(self, fields: dict):
+        """R016: 卵泡直径超过常规上限 40mm
+
+        只提示复核，不阻断：超上限可能是真实异常（如囊肿样大卵泡），
+        也可能是 ASR 或录入错误，不能静默丢弃。
+        """
+        for field_code, value in self._follicle_numbers(fields):
+            if value > 40:
+                self._add_risk(
+                    "R016", f"卵泡直径 {value}mm 超过常规上限 40mm，需人工复核",
+                    action="REVIEW", severity="high",
+                    details={"field_code": field_code, "value": value}
+                )
+
+    def _check_r017_ovary_small_dimension(self, fields: dict):
+        """R017: 卵巢任一单维小于常规下限 10mm
+
+        只提示复核，不阻断；确认口径后可作为人工复核提示。
+        """
+        for field_code in ("right_ovary_size", "left_ovary_size"):
+            size = fields.get(field_code)
+            if not size:
+                continue
+            dims = re.findall(r"\d+(?:\.\d+)?", str(size))
+            if len(dims) < 2:
+                continue
+            for dim_str in dims:
+                try:
+                    dim = float(dim_str)
+                except ValueError:
+                    continue
+                if dim < 10:
+                    self._add_risk(
+                        "R017", f"卵巢单维尺寸 {dim}mm 小于常规下限 10mm，需人工复核",
+                        action="REVIEW", severity="high",
+                        details={"field_code": field_code, "value": str(size), "dimension": dim}
+                    )
+                    break
 
 
 def check_risks(

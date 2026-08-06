@@ -66,6 +66,7 @@
             <a-select-option value="local">本地</a-select-option>
             <a-select-option value="volcengine">豆包 / 火山引擎</a-select-option>
             <a-select-option value="mimo">MiMo</a-select-option>
+            <a-select-option value="deepseek">DeepSeek</a-select-option>
             <a-select-option value="iflytek_rtasr_llm">讯飞实时转写大模型</a-select-option>
             <a-select-option value="tencent_speaker_ws">腾讯实时说话人分离</a-select-option>
             <a-select-option value="iflytek">讯飞</a-select-option>

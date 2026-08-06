@@ -30,9 +30,6 @@
             <a-tag v-if="record.asr_source_type === 'config_hash'" color="purple">指纹 {{ (record.asr_config_hash || '').slice(0, 8) }}</a-tag>
             <a-tag v-else color="blue">最新成功 ASR</a-tag>
           </template>
-          <template v-else-if="column.key === 'accuracy'">
-            <a-tag :color="accuracyColor(record.average_accuracy)">{{ percent(record.average_accuracy) }}</a-tag>
-          </template>
           <template v-else-if="column.key === 'records'">
             {{ record.reviewed_count || 0 }} / {{ record.record_count || 0 }}
           </template>
@@ -48,6 +45,73 @@
               <a-button type="link" size="small" @click="enterBatch(record.id)">进入</a-button>
               <a-popconfirm title="确认删除该批次及其评估记录？" @confirm="deleteBatch(record.id)">
                 <a-button type="link" size="small" danger>删除</a-button>
+              </a-popconfirm>
+            </a-space>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <a-card class="candidate-card">
+      <template #title>
+        <a-space direction="vertical" :size="2">
+          <span>规则优化候选池</span>
+          <span class="sub-title">来自检查详情手工标记，审核通过后进入人工候选规则草稿，默认不启用</span>
+        </a-space>
+      </template>
+      <template #extra>
+        <a-space>
+          <a-input-search v-model:value="ruleCandidateKeyword" allow-clear placeholder="搜索原文/标准值/病历号" style="width: 260px" />
+          <a-select v-model:value="ruleCandidateType" :options="ruleCandidateTypeOptions" style="width: 130px" @change="loadRuleCandidates" />
+          <a-select v-model:value="ruleCandidateStatus" :options="ruleCandidateStatusOptions" style="width: 120px" @change="loadRuleCandidates" />
+          <a-button @click="loadRuleCandidates" :loading="loadingRuleCandidates">刷新候选</a-button>
+        </a-space>
+      </template>
+      <a-table
+        row-key="candidate_key"
+        size="small"
+        :columns="ruleCandidateColumns"
+        :data-source="filteredRuleCandidates"
+        :loading="loadingRuleCandidates"
+        :pagination="{ pageSize: 10, showSizeChanger: true }"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'segment_type'">
+            <a-tag :color="candidateTypeColor(record.segment_type)">{{ candidateTypeText(record.segment_type) }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <a-tag :color="candidateStatusColor(record.status)">{{ candidateStatusText(record.status) }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'records'">
+            {{ (record.record_ids || []).slice(0, 4).join('、') }}{{ (record.record_ids || []).length > 4 ? '...' : '' }}
+          </template>
+          <template v-else-if="column.key === 'examples'">
+            <div class="candidate-example">
+              <div v-for="ex in (record.examples || []).slice(0, 2)" :key="ex.detail_id">
+                <a-tag size="small">{{ ex.record_id || '-' }}</a-tag>
+                <span>{{ ex.context_before }}</span>
+                <b>{{ record.raw_fragment }}</b>
+                <span>{{ ex.context_after }}</span>
+              </div>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'recommendation'">
+            <div v-if="record.recommendation === 'split_required'" class="candidate-recommendation">
+              <a-tag color="orange">需拆分</a-tag>
+              <span>{{ record.recommendation_note }}</span>
+              <div v-for="split in record.suggested_splits || []" :key="`${split.raw_fragment}-${split.field_code}`" class="candidate-split">
+                {{ fieldCodeText(split.field_code) }}：{{ split.raw_fragment }} → {{ split.standard_text }}
+              </div>
+            </div>
+            <a-tag v-else color="green">可审核</a-tag>
+          </template>
+          <template v-else-if="column.key === 'action'">
+            <a-space>
+              <a-popconfirm title="通过后会加入人工候选规则草稿，默认不启用。确认？" @confirm="approveRuleCandidate(record)">
+                <a-button type="link" size="small" :disabled="record.status === 'approved' || record.recommendation === 'split_required'">通过</a-button>
+              </a-popconfirm>
+              <a-popconfirm title="确认忽略该候选？" @confirm="ignoreRuleCandidate(record)">
+                <a-button type="link" size="small" danger :disabled="record.status === 'ignored'">忽略</a-button>
               </a-popconfirm>
             </a-space>
           </template>
@@ -148,6 +212,11 @@ import { conversionEvalApi, audioApi, asrOptimizationApi, patientApi } from '@/a
 const router = useRouter()
 const loading = ref(false)
 const batches = ref<any[]>([])
+const loadingRuleCandidates = ref(false)
+const ruleCandidates = ref<any[]>([])
+const ruleCandidateKeyword = ref('')
+const ruleCandidateType = ref('all')
+const ruleCandidateStatus = ref('all')
 
 const columns = [
   { title: '批次名称', dataIndex: 'name', key: 'name', ellipsis: true },
@@ -156,7 +225,6 @@ const columns = [
   { title: '规则版本', dataIndex: 'conversion_version', key: 'conversion_version', width: 100 },
   { title: '执行结果', key: 'status_count', width: 190 },
   { title: '已审校/总数', key: 'records', width: 120 },
-  { title: '平均准确率', key: 'accuracy', width: 120 },
   { title: '创建时间', key: 'created', width: 170 },
   { title: '操作', key: 'action', fixed: 'right', width: 130 },
 ]
@@ -167,6 +235,31 @@ const candidateColumns = [
   { title: '成功 ASR', key: 'has_asr', width: 100 },
   { title: 'ASR 模型', key: 'asr_detail', width: 140 },
   { title: '专家标准 ASR', key: 'has_reference', width: 110 },
+]
+const ruleCandidateColumns = [
+  { title: '原文片段', dataIndex: 'raw_fragment', key: 'raw_fragment', width: 140 },
+  { title: '标准值', dataIndex: 'standard_text', key: 'standard_text', width: 140 },
+  { title: '类型', key: 'segment_type', width: 100 },
+  { title: '字段', dataIndex: 'field_code', key: 'field_code', width: 140, customRender: ({ text }: any) => fieldCodeText(text) },
+  { title: '次数', dataIndex: 'occurrence_count', key: 'occurrence_count', width: 70 },
+  { title: '涉及病历', key: 'records', width: 180 },
+  { title: '上下文样例', key: 'examples', ellipsis: true },
+  { title: '审核建议', key: 'recommendation', width: 280 },
+  { title: '状态', key: 'status', width: 90 },
+  { title: '操作', key: 'action', fixed: 'right', width: 120 },
+]
+const ruleCandidateTypeOptions = [
+  { label: '全部类型', value: 'all' },
+  { label: '医学名词', value: 'medical_term' },
+  { label: '定位词', value: 'locator' },
+  { label: '医疗数据', value: 'medical_data' },
+  { label: '噪声处理', value: 'noise' },
+]
+const ruleCandidateStatusOptions = [
+  { label: '全部状态', value: 'all' },
+  { label: '待审核', value: 'pending' },
+  { label: '已通过', value: 'approved' },
+  { label: '已忽略', value: 'ignored' },
 ]
 
 // 新建批次
@@ -191,8 +284,25 @@ const filteredCandidates = computed(() => {
   const kw = candidateSearchKeyword.value.toLowerCase()
   return candidates.value.filter((r: any) => (r.record_id || '').toLowerCase().includes(kw))
 })
+const filteredRuleCandidates = computed(() => {
+  const kw = ruleCandidateKeyword.value.trim().toLowerCase()
+  return ruleCandidates.value.filter((item: any) => {
+    if (!kw) return true
+    const haystack = [
+      item.raw_fragment,
+      item.standard_text,
+      item.field_code,
+      ...(item.record_ids || []),
+    ].join(' ').toLowerCase()
+    return haystack.includes(kw)
+  }).map((item: any) => ({
+    ...item,
+    candidate_key: `${item.raw_fragment}__${item.standard_text}__${item.segment_type}__${item.field_code}`,
+  }))
+})
 
 loadBatches()
+loadRuleCandidates()
 
 async function loadBatches() {
   loading.value = true
@@ -201,6 +311,41 @@ async function loadBatches() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadRuleCandidates() {
+  loadingRuleCandidates.value = true
+  try {
+    const params: any = {}
+    if (ruleCandidateType.value !== 'all') params.segment_type = ruleCandidateType.value
+    if (ruleCandidateStatus.value !== 'all') params.status = ruleCandidateStatus.value
+    ruleCandidates.value = await conversionEvalApi.listRuleCandidates(params) as any[]
+  } finally {
+    loadingRuleCandidates.value = false
+  }
+}
+
+async function approveRuleCandidate(record: any) {
+  const res: any = await conversionEvalApi.approveRuleCandidate({
+    raw_fragment: record.raw_fragment,
+    standard_text: record.standard_text,
+    segment_type: record.segment_type,
+    field_code: record.field_code,
+    note: `出现 ${record.occurrence_count || 0} 次，来自 ASR 转化评估人工标记`,
+  })
+  message.success(`已通过候选，更新 ${res.updated_details || 0} 条标记；规则已入草稿且默认未启用`)
+  await loadRuleCandidates()
+}
+
+async function ignoreRuleCandidate(record: any) {
+  const res: any = await conversionEvalApi.ignoreRuleCandidate({
+    raw_fragment: record.raw_fragment,
+    standard_text: record.standard_text,
+    segment_type: record.segment_type,
+    field_code: record.field_code,
+  })
+  message.success(`已忽略候选，更新 ${res.updated_details || 0} 条标记`)
+  await loadRuleCandidates()
 }
 
 async function openCreateModal() {
@@ -343,25 +488,60 @@ function enterBatch(id: number) {
   router.push(`/conversion-eval/batches/${id}`)
 }
 
-function accuracyColor(value: any) {
-  const num = Number(value || 0)
-  if (num >= 0.9) return 'green'
-  if (num >= 0.7) return 'orange'
-  return 'red'
-}
-
-function percent(value: any) {
-  const num = Number(value || 0)
-  return `${(num * 100).toFixed(1)}%`
-}
-
 function formatTime(value: string | null) {
   if (!value) return '-'
   return String(value).replace('T', ' ').slice(0, 19)
+}
+
+function candidateTypeText(value?: string) {
+  return ruleCandidateTypeOptions.find(item => item.value === value)?.label || value || '-'
+}
+
+function candidateTypeColor(value?: string) {
+  if (value === 'medical_term') return 'red'
+  if (value === 'locator') return 'purple'
+  if (value === 'medical_data') return 'green'
+  if (value === 'noise') return 'default'
+  return 'blue'
+}
+
+function candidateStatusText(value?: string) {
+  if (value === 'approved') return '已通过'
+  if (value === 'ignored') return '已忽略'
+  return '待审核'
+}
+
+function candidateStatusColor(value?: string) {
+  if (value === 'approved') return 'green'
+  if (value === 'ignored') return 'default'
+  return 'orange'
+}
+
+function fieldCodeText(value?: string) {
+  const map: Record<string, string> = {
+    endometrium: '内膜',
+    left_ovary: '左卵巢',
+    right_ovary: '右卵巢',
+    side_switch: '左右定位/换边',
+    endometrium_thickness: '内膜厚度',
+    endometrium_type: '内膜类型',
+    left_ovary_size: '左卵巢大小',
+    right_ovary_size: '右卵巢大小',
+    left_follicles: '左卵泡',
+    right_follicles: '右卵泡',
+    remark: '备注',
+    noise: '噪声',
+  }
+  return map[value || ''] || value || '-'
 }
 </script>
 
 <style scoped>
 .conversion-page { width: 100%; min-width: 0; }
+.candidate-card { margin-top: 12px; }
+.candidate-example { font-size: 12px; color: #666; line-height: 1.8; max-width: 680px; }
+.candidate-example b { color: #d4380d; padding: 0 2px; }
+.candidate-recommendation { font-size: 12px; color: #666; line-height: 1.7; }
+.candidate-split { margin-top: 2px; color: #d46b08; }
 .sub-title { color: #888; font-size: 12px; font-weight: 400; }
 </style>
