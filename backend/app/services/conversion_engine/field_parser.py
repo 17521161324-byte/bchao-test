@@ -21,6 +21,8 @@ class FieldParseResult:
     fields: dict[str, Any] = field(default_factory=dict)  # 解析出的结构化字段
     warnings: list[str] = field(default_factory=list)
     source_spans: list[dict] = field(default_factory=list)  # 每个字段的来源追踪
+    final_state: dict[str, Any] = field(default_factory=dict)  # P0-06：解析器真实最终状态
+    transitions: list[dict] = field(default_factory=list)  # P0-06：状态机变迁轨迹
 
 
 @dataclass
@@ -44,6 +46,7 @@ ENDOMETRIUM_TYPES = {"A型", "B型", "C型", "A", "B", "C"}
 ULTRASOUND_KEYWORDS = [
     "无回声", "强回声", "稍高回声", "回声欠均", "回声不均",
     "囊肿", "窦卵泡", "管状无回声", "连续性稍欠佳",
+    "宫腔分离",  # P0-08：宫腔分离归入超声发现
 ]
 
 # 操作关键词
@@ -80,6 +83,9 @@ VALID_FOLLICLE_PATTERN = re.compile(r"(?<!\d)(\d{1,2}\.\d)(?!\d)")
 # 卵巢大小尺寸（阿拉伯数字）
 SIZE_PATTERN = re.compile(r'(\d+\.?\d*)\s*[×xX\*]\s*(\d+\.?\d*)')
 
+# 卵巢大小缺失首维（??×38，P0-09）：显式未知标记，不伪装成正常数值
+UNKNOWN_DIMENSION_PATTERN = re.compile(r'\?\?\s*[×xX\*]\s*(\d+\.?\d*)')
+
 # 卵巢大小尺寸（中文数字：二零乘以幺九）
 CN_DIMENSION_PATTERN = re.compile(
     r'([零一二三四五六七八九幺两]{2,4})乘以([零一二三四五六七八九幺两]{2,4})'
@@ -108,17 +114,21 @@ class FieldParser:
         self.parsed_fields: list[ParsedField] = []
         self.warnings: list[str] = []
         self.source_spans: list[dict] = []
+        self.transitions: list[dict] = []  # P0-06：状态机变迁轨迹
         self.unassigned_ovary_sizes: list[dict] = []
         self.unparsed_follicle_values: list[dict] = []
+        self.incomplete_ovary_fields: list[str] = []  # P0-09：??×N 侧别字段码
 
     def parse(self, text: str) -> FieldParseResult:
         """解析文本，提取结构化字段"""
         self.parsed_fields = []
         self.warnings = []
         self.source_spans = []
+        self.transitions = []
         self.state = ParserState()
         self.unassigned_ovary_sizes = []
         self.unparsed_follicle_values = []
+        self.incomplete_ovary_fields = []
 
         # 按顺序扫描文本
         pos = 0
@@ -136,9 +146,9 @@ class FieldParser:
             if ovary_match and ovary_match.start() == 0:
                 # 带明确侧别词时更新侧别（结束前一侧数据段）
                 if ovary_match.group(1) == "右":
-                    self._apply_side("RIGHT", text, pos)
+                    self._apply_side("RIGHT", text, pos, trigger="右卵巢")
                 elif ovary_match.group(1) == "左":
-                    self._apply_side("LEFT", text, pos)
+                    self._apply_side("LEFT", text, pos, trigger="左卵巢")
                 field = self._parse_ovary_size(text, pos)
                 if field:
                     self._register_field(field)
@@ -150,8 +160,9 @@ class FieldParser:
             # F005/F006: 检测侧别切换（右边/左边/换边，后跟尺寸的情况）
             side = self._detect_side(text, pos)
             if side:
-                self._apply_side(side, text, pos)
                 side_len = self._side_word_len(text, pos)
+                side_word = text[pos:pos + side_len]
+                self._apply_side(side, text, pos, trigger=side_word)
                 pos += side_len
                 # 检查后面是否有尺寸（如 "右边39×30"）
                 size_match = re.match(r'\s*(\d+\.?\d*)\s*[×xX\*]\s*(\d+\.?\d*)', text[pos:pos + 20])
@@ -217,18 +228,31 @@ class FieldParser:
         # 整理结果
         return self._build_result()
 
-    def _apply_side(self, side: str, text: str, pos: int) -> None:
+    def _track_state(self, position: int, trigger: str, before: dict, after: dict) -> None:
+        """P0-06：状态发生变化时记录变迁 {position, trigger, before, after}。"""
+        if before != after:
+            self.transitions.append({
+                "position": position,
+                "trigger": trigger,
+                "before": before,
+                "after": after,
+            })
+
+    def _apply_side(self, side: str, text: str, pos: int, trigger: str = "") -> None:
         """应用侧别：出现新侧别后结束前一侧数据段。"""
+        before = self.state.to_dict()
         previous = self.state.current_side
         if side == "UNKNOWN":
             # 换边但无当前侧：保持 UNKNOWN 并警示
             self.warnings.append("换边词出现但当前侧别未知，数据归属不明确")
             self.state.current_side = "UNKNOWN"
+            self._track_state(pos, trigger or "换边", before, self.state.to_dict())
             return
         if previous != side:
             self.state.current_field = None
         self.state.current_side = side
         self.state.last_explicit_side_position = pos
+        self._track_state(pos, trigger or "侧别切换", before, self.state.to_dict())
 
     def _detect_side(self, text: str, pos: int) -> Optional[str]:
         """F005/F006: 检测侧别切换"""
@@ -270,7 +294,9 @@ class FieldParser:
         self.parsed_fields.append(field)
         if field.field_code in ("right_ovary_size", "left_ovary_size",
                                 "endometrium_thickness", "endometrium_type"):
+            before = self.state.to_dict()
             self.state.locked_fields.add(field.field_code)
+            self._track_state(field.start, f"字段锁定 {field.field_code}", before, self.state.to_dict())
 
     def _parse_endometrium_thickness(self, text: str, pos: int) -> Optional[ParsedField]:
         """F001: 解析内膜厚度"""
@@ -322,7 +348,9 @@ class FieldParser:
         """F003/F004: 解析卵巢大小。
 
         无明确侧别时：不写 right/left_ovary_size，记入 unassigned_ovary_sizes。
+        ??×38（P0-09）：缺失首维显式标记，写入对应侧字段并登记 INCOMPLETE。
         """
+        before = self.state.to_dict()
         if self.state.current_side not in ("LEFT", "RIGHT"):
             # 无侧别：记入未归属
             m = SIZE_PATTERN.search(text[pos:pos + 30])
@@ -345,10 +373,33 @@ class FieldParser:
 
         field_code = "right_ovary_size" if self.state.current_side == "RIGHT" else "left_ovary_size"
 
-        pattern = r'(\d+\.?\d*)\s*[×xX\*]\s*(\d+\.?\d*)'
-        m = re.search(pattern, text[pos:pos + 30])
+        segment = text[pos:pos + 30]
+        m = SIZE_PATTERN.search(segment)
+        incomplete = False
+        if not m:
+            m = UNKNOWN_DIMENSION_PATTERN.search(segment)
+            incomplete = True
         if not m:
             return None
+
+        if incomplete:
+            dim2_str = m.group(1)
+            try:
+                dim2 = float(dim2_str)
+            except ValueError:
+                return None
+            dim2_fmt = str(int(dim2)) if dim2 == int(dim2) else dim2_str
+            value = f"??×{dim2_fmt}"
+            self.incomplete_ovary_fields.append(field_code)
+            self.state.ovary_size_complete[self.state.current_side] = False
+            self._track_state(pos, f"卵巢大小不完整 {field_code}", before, self.state.to_dict())
+            return ParsedField(
+                field_code=field_code,
+                value=value,
+                raw_text=segment[m.start():m.end()],
+                start=pos + m.start(),
+                end=pos + m.end(),
+            )
 
         dim1_str = m.group(1)
         dim2_str = m.group(2)
@@ -362,6 +413,7 @@ class FieldParser:
         dim2_fmt = str(int(dim2)) if dim2 == int(dim2) else dim2_str
         value = f"{dim1_fmt}×{dim2_fmt}"
         self.state.ovary_size_complete[self.state.current_side] = True
+        self._track_state(pos, f"卵巢大小解析 {field_code}", before, self.state.to_dict())
 
         warning = None
         min_val, max_val, unit = RANGE_CHECKS["ovary_dimension"]
@@ -371,8 +423,8 @@ class FieldParser:
         return ParsedField(
             field_code=field_code,
             value=value,
-            raw_text=text[pos:pos + m.end()],
-            start=pos,
+            raw_text=segment[m.start():m.end()],
+            start=pos + m.start(),
             end=pos + m.end(),
             warning=warning,
         )
@@ -575,11 +627,18 @@ class FieldParser:
             fields["unassigned_ovary_sizes"] = list(self.unassigned_ovary_sizes)
         if self.unparsed_follicle_values:
             fields["unparsed_follicle_values"] = list(self.unparsed_follicle_values)
+        if self.incomplete_ovary_fields:
+            # P0-09：缺失维度侧别登记 INCOMPLETE，供 R006 阻断
+            fields["field_status"] = {
+                code: "INCOMPLETE" for code in self.incomplete_ovary_fields
+            }
 
         return FieldParseResult(
             fields=fields,
             warnings=self.warnings,
             source_spans=self.source_spans,
+            final_state=self.state.to_dict(),
+            transitions=self.transitions,
         )
 
 

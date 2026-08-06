@@ -40,6 +40,10 @@ class ConversionPipelineExecution(Base):
     config_snapshot = Column(JSON, default=dict)
     config_hash = Column(String(64), default="", index=True)
 
+    # fork 血缘（P0-05）：parent_execution_id + fork_step_code
+    parent_execution_id = Column(Integer, nullable=True, index=True)
+    fork_step_code = Column(String(50), nullable=True)
+
     status = Column(String(30), default="created", index=True)
     result_level = Column(String(40), nullable=True, index=True)
     final_text = Column(Text, default="")
@@ -92,8 +96,18 @@ class ConversionPipelineStep(Base):
     warnings = Column(JSON, default=list)
     state_before = Column(JSON, default=dict)
     state_after = Column(JSON, default=dict)
+    state_transitions = Column(JSON, default=list)  # P0-06：字段解析器真实状态轨迹
     fields = Column(JSON, default=dict)
     source_spans = Column(JSON, default=list)
+
+    # 步骤输出编辑数据结构（人工修订步骤输出用）
+    system_output_text = Column(Text, nullable=True)      # 系统（流水线）计算输出
+    manual_output_text = Column(Text, nullable=True)      # 人工修订输出
+    effective_output_text = Column(Text, nullable=True)   # 生效输出（人工修订后取 manual）
+    edited = Column(Integer, default=0)
+    edited_by = Column(String(80), default="")
+    edited_at = Column(DateTime, nullable=True)
+    edit_note = Column(Text, nullable=True)
 
     duration_ms = Column(Integer, default=0)
     config_hash = Column(String(64), default="", index=True)
@@ -109,3 +123,48 @@ class ConversionPipelineStep(Base):
         "ConversionPipelineExecution",
         back_populates="steps",
     )
+
+
+class ConversionRegressionRun(Base):
+    """规则版本回归测试执行记录（P0-10）。
+
+    新表由 Base.metadata.create_all 创建，不需要写 _ensure_column()。
+    """
+
+    __tablename__ = "conversion_regression_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    version_id = Column(
+        Integer,
+        ForeignKey("conversion_config_versions.id"),
+        nullable=False,
+        index=True,
+    )
+    config_hash = Column(String(64), default="", index=True)  # 测试时冻结的配置哈希
+    status = Column(String(30), default="pending", index=True)  # pending/running/passed/failed
+    total_cases = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    created_by = Column(String(80), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ConversionRegressionResult(Base):
+    """回归测试单案例结果（P0-10）。"""
+
+    __tablename__ = "conversion_regression_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(
+        Integer,
+        ForeignKey("conversion_regression_runs.id"),
+        nullable=False,
+        index=True,
+    )
+    case_code = Column(String(80), nullable=False, index=True)
+    input_text = Column(Text, default="")
+    expected_output = Column(Text, default="")
+    actual_output = Column(Text, default="")
+    passed = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

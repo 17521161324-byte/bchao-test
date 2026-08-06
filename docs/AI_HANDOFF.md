@@ -147,3 +147,12 @@ npm run build
 - 9 项检查点核对：实现完整满足方案（21 Task）、无越界（未重写引擎/未改 LLM 顺序/Provider/真实数据格式）、run_conversion 兼容旧字段、新增表与 API 不破坏旧数据、handler 白名单禁 eval、测试覆盖核心路径、文档一致、无关文件未触碰。
 - 修复 1 个 IMPORTANT：流水线步骤持久化的 config_hash 误用不存在的 snapshot["_hash"]（存空串），改为传 execution.config_hash——修复后全量 235 passed / 4 个既有无关失败，无新增回归。
 - 剩余 MINOR（不阻塞）：conversion-eval 调用点未逐一补 lexicon_mode（默认 builtin 行为不变）；前端差异对比为并排显示（方案允许降级）；run-step 内部为完整重跑后只暴露下一步（效率可优化，语义正确）。
+
+## 2026-08-06 复核整改 + 前端重构（第二轮，完成）
+
+【文档2 Task 1-4（本人）】nginx.conf proxy_pass 8001→8000（404 根因）；.env.deploy.example 新增（BASE_DIR/BACKEND_PORT=8000/FRONTEND_PORT=80）；deploy.bat/start-backend-prod.bat 读取 .env.deploy 并参数化端口；client.ts Axios 拦截器显示 method/url/status + console.error。
+【文档1 P0 后端修复（agent-5）】P0-01 尺寸候选接入流水线（apply_dimension_candidates，AUTO 改文本/REVIEW 不改+分级）；P0-02 参数规则进 conversions+risk_items+分级；P0-03 REVIEW/BLOCK 正则不改文本；P0-04 失败即停（PipelineStepError + status failed）；P0-05 fork 方案 B（parent_execution_id/fork_step_code 血缘，重跑不改旧）；P0-06 FieldParseResult 真实 final_state/transitions + state_transitions；P0-07 SpanMap 接入（context.span_map + 各步骤 record + raw 坐标）；P0-08 宫腔分离关键词；P0-09 ??×38 闭环（字段+field_status INCOMPLETE+R006 BLOCK）；P0-10 发布回归门槛（conversion_regression_runs/results 表 + 版本字段 + publish 409 拦截）。
+【新 API（文档2 §11，agent-5）】GET /executions（列表过滤）、POST run-to-step、PATCH steps/{code}/output（人工修订+失效下游）、POST continue；source_type 移除 conversion_preview；rule_version_id 404。
+【前端重构（agent-6）】ConversionDebug 更名"ASR 转化调试"：InputPanel（三来源+开始转化一键式）/InteractiveSteps（七步固定+状态色）/StepWorkbench（双栏+编辑+dirty 失效）/RuleHitDrawer/RFinalResultTabs/ExecutionHistoryDrawer + diff.ts；client.ts 新增 listExecutions/runToStep/patchStepOutput/continueExecution；删除旧 5 组件。
+【验证】后端全量 255 passed / 4 个既有无关失败；前端 npm run build 通过；部署接口验证：health 200、openapi 含 8 个 pipeline 路由、创建执行 curl completed/7 步。后端已重启（PID 51599）。
+【遗留】compileall 在 cli_executor.py 报既有 f-string 语法错（未改，Python 3.11 已知）；D002 REVIEW 不改文本的固有边界；回归执行接口（运行锁定案例回写状态）按最少实现后置；git diff --check 对 bat CRLF 报 trailing whitespace（MINOR）；代码未提交 git。

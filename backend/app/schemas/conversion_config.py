@@ -32,6 +32,10 @@ class ConversionVersionOut(BaseModel):
     status: str
     description: str = ""
     parent_version_id: int | None = None
+    # P0-10：发布回归门槛
+    latest_regression_status: str = ""
+    latest_regression_config_hash: str = ""
+    review_status: str = ""
     created_by: str | None = None
     published_at: datetime | None = None
     created_at: datetime | None = None

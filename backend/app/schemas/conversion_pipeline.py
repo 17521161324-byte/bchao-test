@@ -1,14 +1,15 @@
-"""流水线 API Schema（Task 14）。"""
+"""流水线 API Schema（Task 14 + P0 扩展）。"""
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class PipelineExecutionCreate(BaseModel):
+    # P1-04：conversion_preview 无实现来源，从 Literal 移除，避免虚假接口能力
     source_type: Literal[
         "manual",
         "text_validation_run",
-        "conversion_preview",
     ] = "manual"
     source_id: int | None = None
     input_source: Literal[
@@ -38,9 +39,23 @@ class PipelineRunStepRequest(BaseModel):
     step_code: str
 
 
+class PipelineRunToStepRequest(BaseModel):
+    step_code: str
+
+
 class PipelineRunFromStepRequest(BaseModel):
     step_code: str
     rule_version_id: int | None = None
+
+
+class PipelineContinueRequest(BaseModel):
+    from_step_code: str
+    run_mode: Literal["run_all", "run_step"] = "run_all"
+
+
+class PipelineStepOutputPatch(BaseModel):
+    manual_output_text: str
+    edit_note: str = ""
 
 
 class PipelineCompareRequest(BaseModel):
@@ -61,13 +76,27 @@ class PipelineStepOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     state_before: dict[str, Any] = Field(default_factory=dict)
     state_after: dict[str, Any] = Field(default_factory=dict)
+    state_transitions: list[dict[str, Any]] = Field(default_factory=list)
     fields: dict[str, Any] = Field(default_factory=dict)
     source_spans: list[dict[str, Any]] = Field(default_factory=list)
     duration_ms: int = 0
     config_hash: str = ""
     error_message: str | None = None
+    # 步骤输出编辑数据结构
+    system_output_text: str | None = None
+    manual_output_text: str | None = None
+    effective_output_text: str | None = None
+    edited: int = 0
+    edited_by: str = ""
+    edited_at: datetime | None = None
+    edit_note: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class PipelineStepPatchOut(BaseModel):
+    step: PipelineStepOut
+    invalidated_step_codes: list[str] = Field(default_factory=list)
 
 
 class PipelineExecutionOut(BaseModel):
@@ -81,6 +110,8 @@ class PipelineExecutionOut(BaseModel):
     rule_version_id: int | None
     rule_version_code: str
     config_hash: str
+    parent_execution_id: int | None = None
+    fork_step_code: str | None = None
     status: str
     result_level: str | None
     final_text: str

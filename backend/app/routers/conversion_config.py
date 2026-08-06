@@ -27,6 +27,7 @@ from app.schemas.conversion_config import (
     ConversionVersionUpdate,
 )
 from app.services.conversion_config import (
+    build_version_config_hash,
     count_version_items,
     ensure_default_version,
     get_builtin_rules,
@@ -189,7 +190,13 @@ async def clone_version(version_id: int, data: ConversionVersionClone, db: Async
 
 @router.post("/versions/{version_id}/publish", response_model=ConversionVersionOut)
 async def publish(version_id: int, db: AsyncSession = Depends(get_db)):
+    """发布版本：必须先通过回归测试且测试配置哈希与当前一致（P0-10）。"""
     version = await _get_version_or_404(db, version_id)
+    if version.latest_regression_status != "passed":
+        raise HTTPException(status_code=409, detail="该版本尚未通过回归测试")
+    current_hash = await build_version_config_hash(db, version)
+    if version.latest_regression_config_hash != current_hash:
+        raise HTTPException(status_code=409, detail="规则已发生变化，请重新执行回归测试")
     version = await publish_version(db, version)
     return await _version_out(db, version)
 

@@ -212,6 +212,29 @@ async def load_enabled_runtime_rules(
     ]
 
 
+async def build_version_config_hash(db: AsyncSession, version: ConversionConfigVersion) -> str:
+    """计算版本当前配置快照哈希（P0-10 发布门槛）。
+
+    与流水线执行创建时 _build_snapshot 对同一版本的哈希口径保持一致：
+    version 元信息 + 启用的词库规则 + 启用的参数化规则 + lexicon_mode。
+    """
+    from app.services.conversion_pipeline.orchestrator import build_config_hash
+
+    lexicon_rules = await load_enabled_lexicon_rules(db, version.id)
+    runtime_rules = await load_enabled_runtime_rules(db, version.id)
+    snapshot = {
+        "version": {
+            "id": version.id,
+            "version_code": version.version_code,
+            "status": version.status,
+        },
+        "lexicon_rules": lexicon_rules,
+        "runtime_rules": runtime_rules,
+        "lexicon_mode": "replace",
+    }
+    return build_config_hash(snapshot)
+
+
 async def publish_version(db: AsyncSession, version: ConversionConfigVersion) -> ConversionConfigVersion:
     await db.execute(
         update(ConversionConfigVersion)

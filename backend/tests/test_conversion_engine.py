@@ -343,6 +343,28 @@ class TestFieldParserStateMachine:
         findings = result.fields["ultrasound_findings"]
         assert any("无回声" in str(item) for item in findings)
 
+    def test_echo_uneven_and_cavity_separation_are_findings(self):
+        """P0-08：回声不均与宫腔分离均归入超声发现。"""
+        result = parse_fields("内膜8.2，回声不均，宫腔分离")
+        types = [item["type"] for item in result.fields["ultrasound_findings"]]
+        assert "回声不均" in types
+        assert "宫腔分离" in types
+
+    def test_unknown_dimension_writes_incomplete_status_and_blocks(self):
+        """P0-09：??×38 写入卵巢字段 + field_status=INCOMPLETE，R006 阻断。"""
+        from app.services.conversion_engine.risk_intercept import check_risks
+
+        result = parse_fields("左卵巢大小??×38")
+        assert result.fields["left_ovary_size"] == "??×38"
+        assert result.fields["field_status"]["left_ovary_size"] == "INCOMPLETE"
+
+        risk = check_risks("左卵巢大小??×38", "左卵巢大小??×38", [], result.fields, [])
+        assert any(
+            item["rule_id"] == "R006" and item["action"] == "BLOCK"
+            for item in risk.risk_items
+        )
+        assert risk.blocked is True
+
 
 class TestWarningScope:
     """警示口径：医疗名词/换边词纠错不产生警示，警示仅由数据异常触发。"""

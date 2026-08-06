@@ -1,14 +1,19 @@
-"""流水线调试 API（Task 15）。
+"""流水线调试 API（Task 15 + P0 扩展）。
 
 前缀 /api/conversion-pipeline：
 - POST /executions（创建执行，run_mode=create_only|run_all）
+- GET  /executions（列表：source_type/source_id/rule_version_id/limit）
 - GET  /executions/{id}
 - POST /executions/{id}/run-step（单步，只能执行下一步，用冻结 config_snapshot）
-- POST /executions/{id}/fork-from-step（新规则版本重跑，不覆盖旧历史）
+- POST /executions/{id}/run-to-step（执行到指定步骤后停止）
+- PATCH /executions/{id}/steps/{step_code}/output（人工修订步骤输出）
+- POST /executions/{id}/continue（从指定步骤有效输出继续）
+- POST /executions/{id}/fork-from-step（新规则版本完整重跑，方案 B：记录血缘不改旧执行）
 - GET  /compare?left_execution_id=&right_execution_id=
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,20 +28,45 @@ from app.models import (
     TextValidationRun,
 )
 from app.schemas.conversion_pipeline import (
+    PipelineContinueRequest,
     PipelineExecutionCreate,
     PipelineExecutionOut,
     PipelineRunFromStepRequest,
     PipelineRunStepRequest,
+    PipelineRunToStepRequest,
+    PipelineStepOutputPatch,
+    PipelineStepOut,
+    PipelineStepPatchOut,
 )
 from app.services.conversion_config import (
     load_enabled_lexicon_rules,
     load_enabled_runtime_rules,
 )
 from app.services.conversion_pipeline.orchestrator import build_config_hash, run_pipeline
+from app.services.conversion_pipeline.types import STEP_ORDER, StepCode
 
 router = APIRouter()
 
 STEP_COUNT = 7
+
+_STEP_ORDER_BY_CODE = {code.value: order for code, order in STEP_ORDER.items()}
+_CODES_BY_ORDER = sorted(STEP_ORDER, key=lambda code: STEP_ORDER[code])
+
+
+def _next_step_code(step_code: str) -> StepCode | None:
+    order = _STEP_ORDER_BY_CODE.get(step_code)
+    if order is None:
+        return None
+    for code in _CODES_BY_ORDER:
+        if STEP_ORDER[code] > order:
+            return code
+    return None
+
+
+def _validate_step_code(step_code: str) -> StepCode:
+    if step_code not in _STEP_ORDER_BY_CODE:
+        raise HTTPException(status_code=400, detail=f"无效的步骤编码: {step_code}")
+    return StepCode(step_code)
 
 
 async def _load_steps(db: AsyncSession, execution_id: int) -> list[ConversionPipelineStep]:
@@ -64,6 +94,8 @@ async def _execution_out(db: AsyncSession, execution: ConversionPipelineExecutio
         "rule_version_id": execution.rule_version_id,
         "rule_version_code": execution.rule_version_code,
         "config_hash": execution.config_hash,
+        "parent_execution_id": execution.parent_execution_id,
+        "fork_step_code": execution.fork_step_code,
         "status": execution.status,
         "result_level": execution.result_level,
         "final_text": execution.final_text,
@@ -115,11 +147,14 @@ async def _persist_step(
         warnings=step.warnings,
         state_before=step.state_before,
         state_after=step.state_after,
+        state_transitions=step.state_transitions,
         fields=step.fields,
         source_spans=step.source_spans,
         duration_ms=step.duration_ms,
         config_hash=config_hash,
         error_message=step.error_message,
+        system_output_text=step.output_text,
+        effective_output_text=step.output_text,
     ))
 
 
@@ -129,13 +164,21 @@ async def _apply_final(db: AsyncSession, execution: ConversionPipelineExecution,
     execution.final_warnings = pipeline.warnings
     execution.final_risk_items = pipeline.risk_items
     execution.result_level = pipeline.result_level.value
-    execution.status = "completed"
+    # P0-04：步骤失败时执行状态必须标记 failed，不得显示 completed
+    if any(step.status == "failed" for step in pipeline.steps):
+        execution.status = "failed"
+    else:
+        execution.status = "completed"
 
 
 def _run_pipeline_for(
     execution: ConversionPipelineExecution,
     snapshot: dict[str, Any],
     config_hash: str,
+    *,
+    start_step: StepCode | str | None = None,
+    stop_after_step: StepCode | str | None = None,
+    initial_text: str | None = None,
 ):
     return run_pipeline(
         raw_text=execution.input_text,
@@ -146,7 +189,45 @@ def _run_pipeline_for(
         runtime_rules=snapshot.get("runtime_rules") or [],
         rule_mode=snapshot.get("lexicon_mode") or "builtin",
         config_hash=config_hash,
+        start_step=start_step,
+        stop_after_step=stop_after_step,
+        initial_text=initial_text,
     )
+
+
+async def _resolve_version_or_404(
+    db: AsyncSession,
+    rule_version_id: int | None,
+) -> ConversionConfigVersion | None:
+    if not rule_version_id:
+        return None
+    version = await db.get(ConversionConfigVersion, rule_version_id)
+    if not version:
+        # P1-05：不存在的规则版本 ID 返回 404，不静默回退 manual/builtin
+        raise HTTPException(status_code=404, detail="规则版本不存在")
+    return version
+
+
+@router.get("/executions", response_model=list[PipelineExecutionOut])
+async def list_executions(
+    source_type: str | None = Query(default=None),
+    source_id: int | None = Query(default=None),
+    rule_version_id: int | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """执行记录列表（供前端重构使用）。"""
+    query = select(ConversionPipelineExecution).order_by(
+        ConversionPipelineExecution.id.desc()
+    )
+    if source_type:
+        query = query.where(ConversionPipelineExecution.source_type == source_type)
+    if source_id is not None:
+        query = query.where(ConversionPipelineExecution.source_id == source_id)
+    if rule_version_id is not None:
+        query = query.where(ConversionPipelineExecution.rule_version_id == rule_version_id)
+    rows = (await db.execute(query.limit(limit))).scalars().all()
+    return [await _execution_out(db, row) for row in rows]
 
 
 @router.post("/executions", response_model=PipelineExecutionOut)
@@ -165,10 +246,7 @@ async def create_execution(data: PipelineExecutionCreate, db: AsyncSession = Dep
     if not (input_text or "").strip():
         raise HTTPException(status_code=400, detail="输入文本为空")
 
-    version = (
-        await db.get(ConversionConfigVersion, data.rule_version_id)
-        if data.rule_version_id else None
-    )
+    version = await _resolve_version_or_404(db, data.rule_version_id)
     snapshot, config_hash, _, _, _ = await _build_snapshot(db, version)
 
     execution = ConversionPipelineExecution(
@@ -234,6 +312,149 @@ async def run_step(
     await _persist_step(db, execution.id, execution.config_hash, next_step)
     if len(existing_codes) + 1 >= STEP_COUNT:
         await _apply_final(db, execution, pipeline)
+    elif next_step.status == "failed":
+        execution.status = "failed"
+    else:
+        execution.status = "running"
+    await db.commit()
+    await db.refresh(execution)
+    return await _execution_out(db, execution)
+
+
+@router.post("/executions/{execution_id}/run-to-step", response_model=PipelineExecutionOut)
+async def run_to_step(
+    execution_id: int,
+    data: PipelineRunToStepRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """从最近有效步骤执行到指定步骤后停止（供前端逐步执行/执行到指定步骤）。"""
+    target = _validate_step_code(data.step_code)
+    execution = await db.get(ConversionPipelineExecution, execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    if execution.status == "completed":
+        raise HTTPException(status_code=400, detail="所有步骤已执行完成")
+
+    existing = await _load_steps(db, execution_id)
+    snapshot = execution.config_snapshot or {}
+    config_hash = execution.config_hash or build_config_hash(snapshot)
+
+    if existing:
+        last = max(existing, key=lambda step: step.step_order)
+        if _STEP_ORDER_BY_CODE[last.step_code] >= _STEP_ORDER_BY_CODE[target.value]:
+            raise HTTPException(status_code=400, detail=f"指定步骤 {target.value} 已执行")
+        start_step = _next_step_code(last.step_code)
+        initial_text = last.effective_output_text or last.output_text
+    else:
+        start_step = None
+        initial_text = None
+
+    pipeline = _run_pipeline_for(
+        execution, snapshot, config_hash,
+        start_step=start_step, stop_after_step=target, initial_text=initial_text,
+    )
+    for step in pipeline.steps:
+        await _persist_step(db, execution.id, execution.config_hash, step)
+
+    if any(step.status == "failed" for step in pipeline.steps):
+        execution.status = "failed"
+    elif target == StepCode.RISK_INTERCEPT:
+        await _apply_final(db, execution, pipeline)
+    else:
+        execution.status = "running"
+    await db.commit()
+    await db.refresh(execution)
+    return await _execution_out(db, execution)
+
+
+@router.patch(
+    "/executions/{execution_id}/steps/{step_code}/output",
+    response_model=PipelineStepPatchOut,
+)
+async def patch_step_output(
+    execution_id: int,
+    step_code: str,
+    data: PipelineStepOutputPatch,
+    db: AsyncSession = Depends(get_db),
+):
+    """人工修订步骤输出：写 manual/effective 输出，并返回被失效的后续步骤编码。"""
+    execution = await db.get(ConversionPipelineExecution, execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    step = (
+        await db.execute(
+            select(ConversionPipelineStep).where(
+                ConversionPipelineStep.execution_id == execution_id,
+                ConversionPipelineStep.step_code == step_code,
+            )
+        )
+    ).scalar_one_or_none()
+    if not step:
+        raise HTTPException(status_code=404, detail="步骤不存在")
+
+    step.manual_output_text = data.manual_output_text
+    step.effective_output_text = data.manual_output_text
+    step.edited = 1
+    step.edited_by = "manual"
+    step.edited_at = datetime.utcnow()
+    step.edit_note = data.edit_note
+
+    # 后续步骤输出基于旧文本，全部失效并删除（重新执行时重建）
+    later = await _load_steps(db, execution_id)
+    invalidated = [item for item in later if item.step_order > step.step_order]
+    for item in invalidated:
+        await db.delete(item)
+
+    await db.commit()
+    await db.refresh(step)
+    return PipelineStepPatchOut(
+        step=PipelineStepOut.model_validate(step),
+        invalidated_step_codes=[item.step_code for item in invalidated],
+    )
+
+
+@router.post("/executions/{execution_id}/continue", response_model=PipelineExecutionOut)
+async def continue_execution(
+    execution_id: int,
+    data: PipelineContinueRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """用指定步骤的有效输出继续执行后续步骤（run_mode=run_all 跑完 / run_step 只跑下一步）。"""
+    execution = await db.get(ConversionPipelineExecution, execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    if execution.status == "completed":
+        raise HTTPException(status_code=400, detail="执行已完成")
+
+    existing = await _load_steps(db, execution_id)
+    base = next((item for item in existing if item.step_code == data.from_step_code), None)
+    if base is None:
+        raise HTTPException(status_code=400, detail=f"起始步骤 {data.from_step_code} 尚未执行")
+
+    # 删除起始步骤之后的旧步骤（输出已变化，重新生成）
+    for item in existing:
+        if item.step_order > base.step_order:
+            await db.delete(item)
+
+    snapshot = execution.config_snapshot or {}
+    config_hash = execution.config_hash or build_config_hash(snapshot)
+    start_step = _next_step_code(base.step_code)
+    if start_step is None:
+        raise HTTPException(status_code=400, detail="起始步骤已是最后一步")
+
+    initial_text = base.effective_output_text or base.output_text
+    stop_after = start_step if data.run_mode == "run_step" else None
+    pipeline = _run_pipeline_for(
+        execution, snapshot, config_hash,
+        start_step=start_step, stop_after_step=stop_after, initial_text=initial_text,
+    )
+    for step in pipeline.steps:
+        await _persist_step(db, execution.id, execution.config_hash, step)
+
+    if any(step.status == "failed" for step in pipeline.steps):
+        execution.status = "failed"
+    elif data.run_mode == "run_all" and stop_after is None:
+        await _apply_final(db, execution, pipeline)
     else:
         execution.status = "running"
     await db.commit()
@@ -247,14 +468,17 @@ async def fork_from_step(
     data: PipelineRunFromStepRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    """fork（方案 B，P0-05）：新建执行并从原始输入完整重跑。
+
+    step_code 仅记录为 fork_step_code（重点比较起始步骤），不复制/修改旧执行；
+    血缘通过 parent_execution_id 记录。
+    """
+    _validate_step_code(data.step_code)
     source = await db.get(ConversionPipelineExecution, execution_id)
     if not source:
         raise HTTPException(status_code=404, detail="原执行记录不存在")
 
-    version = (
-        await db.get(ConversionConfigVersion, data.rule_version_id)
-        if data.rule_version_id else None
-    )
+    version = await _resolve_version_or_404(db, data.rule_version_id)
     snapshot, config_hash, _, _, _ = await _build_snapshot(db, version)
 
     execution = ConversionPipelineExecution(
@@ -268,6 +492,8 @@ async def fork_from_step(
         rule_version_code=version.version_code if version else "manual",
         config_snapshot=snapshot,
         config_hash=config_hash,
+        parent_execution_id=source.id,
+        fork_step_code=data.step_code,
         status="created",
     )
     db.add(execution)
@@ -275,7 +501,7 @@ async def fork_from_step(
 
     pipeline = _run_pipeline_for(execution, snapshot, config_hash)
     for step in pipeline.steps:
-        await _persist_step(db, execution.id, snapshot, step)
+        await _persist_step(db, execution.id, execution.config_hash, step)
     await _apply_final(db, execution, pipeline)
 
     await db.commit()

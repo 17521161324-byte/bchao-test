@@ -8,7 +8,7 @@
         <a-menu-item key="/data"><FolderOutlined />数据管理</a-menu-item>
         <a-menu-item key="/asr-optimize"><ExperimentOutlined />优化评估</a-menu-item>
         <a-menu-item key="/conversion-eval"><AuditOutlined />ASR转化评估</a-menu-item>
-        <a-menu-item key="/conversion-debug"><ToolOutlined />规则调试台</a-menu-item>
+        <a-menu-item key="/conversion-debug"><ToolOutlined />ASR 转化调试</a-menu-item>
         <a-menu-item key="/text-validation"><FileSearchOutlined />文本验证</a-menu-item>
         <a-menu-item key="/conversion-config"><ControlOutlined />转化配置</a-menu-item>
         <a-menu-item key="/model"><SettingOutlined />模型配置</a-menu-item>

@@ -287,12 +287,13 @@ class RiskInterceptor:
             )
 
     def _check_r006_dimension_complete(self, fields: dict):
-        """R006: 卵巢大小不足两个数值 / 存在无法确认的维度（??×N）"""
+        """R006: 卵巢大小不足两个数值 / 存在无法确认的维度（??×N / field_status=INCOMPLETE）"""
+        field_status = fields.get("field_status") if isinstance(fields, dict) else None
         for field_code in ["right_ovary_size", "left_ovary_size"]:
             if field_code not in fields:
                 continue
             size = str(fields[field_code])
-            if "??" in size:
+            if (field_status or {}).get(field_code) == "INCOMPLETE" or "??" in size:
                 self._add_risk(
                     "R006", f"卵巢尺寸存在无法确认的维度：{field_code}={size}，必须回听或人工确认",
                     action="BLOCK", severity="highest",

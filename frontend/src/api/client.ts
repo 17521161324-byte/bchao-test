@@ -15,8 +15,18 @@ const client: any = axios.create({
 client.interceptors.response.use(
   (response: any) => response.data,
   (error: any) => {
-    const msg = error.response?.data?.detail || error.message || '请求失败'
-    message.error(msg)
+    const config = error.config || {}
+    const method = (config.method || 'GET').toUpperCase()
+    const url = config.url || ''
+    const status = error.response?.status
+    const detail = error.response?.data?.detail
+    const fallback = error.message || '请求失败'
+    // 开发环境显示完整请求信息，便于定位（如 404 时区分"路由未注册"与"记录不存在"）
+    const displayMessage = status
+      ? `${method} ${url}：${status}${detail ? ` ${detail}` : ''}`
+      : `${method} ${url}：${fallback}`
+    message.error(displayMessage)
+    console.error('[API ERROR]', { method, url, status, data: error.response?.data, requestData: config.data })
     return Promise.reject(error)
   }
 )
@@ -189,6 +199,43 @@ export const conversionPipelineApi = {
         left_execution_id: leftExecutionId,
         right_execution_id: rightExecutionId,
       },
+    }),
+
+  // ===== 以下为实施说明新增契约（后端并行实现，前端按契约对接）=====
+
+  /** 最近执行记录（实施说明 §11.5）：source_type / source_id / rule_version_id / limit */
+  listExecutions: (params?: {
+    source_type?: string
+    source_id?: number
+    rule_version_id?: number
+    limit?: number
+  }) => client.get('/conversion-pipeline/executions', { params }),
+
+  /** 执行到指定步骤（实施说明 §11.2）：从最近有效步骤执行到目标步骤后停止，返回完整执行 */
+  runToStep: (id: number, stepCode: string) =>
+    client.post(`/conversion-pipeline/executions/${id}/run-to-step`, {
+      step_code: stepCode,
+    }, {
+      timeout: 300000,
+    }),
+
+  /** 保存步骤输出人工修改（实施说明 §11.3），返回 { step, invalidated_step_codes } */
+  patchStepOutput: (
+    id: number,
+    stepCode: string,
+    data: { manual_output_text: string; edit_note?: string },
+  ) =>
+    client.patch(`/conversion-pipeline/executions/${id}/steps/${stepCode}/output`, data, {
+      timeout: 300000,
+    }),
+
+  /** 从下一步继续执行（实施说明 §11.4），返回完整执行 */
+  continueExecution: (
+    id: number,
+    data: { from_step_code: string; run_mode?: 'run_all' | 'create_only' },
+  ) =>
+    client.post(`/conversion-pipeline/executions/${id}/continue`, data, {
+      timeout: 300000,
     }),
 }
 

@@ -109,6 +109,22 @@ class ParserState:
             "unassigned_values": list(self.unassigned_values),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ParserState":
+        """从 to_dict() 输出重建状态（编排器同步字段解析器真实状态用）。"""
+        if not data:
+            return cls()
+        return cls(
+            current_side=str(data.get("current_side") or "UNKNOWN"),
+            current_field=data.get("current_field"),
+            current_mode=str(data.get("current_mode") or "IDLE"),
+            ovary_size_complete=dict(data.get("ovary_size_complete") or {}),
+            locked_fields=set(data.get("locked_fields") or []),
+            in_remark=bool(data.get("in_remark", False)),
+            last_explicit_side_position=data.get("last_explicit_side_position"),
+            unassigned_values=list(data.get("unassigned_values") or []),
+        )
+
 
 @dataclass
 class PipelineStepSnapshot:
@@ -123,6 +139,7 @@ class PipelineStepSnapshot:
     warnings: list[str] = field(default_factory=list)
     state_before: dict[str, Any] = field(default_factory=dict)
     state_after: dict[str, Any] = field(default_factory=dict)
+    state_transitions: list[dict[str, Any]] = field(default_factory=list)
     fields: dict[str, Any] = field(default_factory=dict)
     source_spans: list[dict[str, Any]] = field(default_factory=list)
     duration_ms: int = 0
@@ -143,3 +160,4 @@ class PipelineRunResult:
     risk_passed: bool
     risk_blocked: bool
     config_hash: str
+    status: str = "completed"  # completed / failed（步骤失败即停时置为 failed）

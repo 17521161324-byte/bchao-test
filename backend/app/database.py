@@ -100,6 +100,21 @@ async def init_db():
                 "success_count = (SELECT COUNT(*) FROM asr_conversion_records r WHERE r.batch_id = asr_conversion_batches.id AND COALESCE(r.status, 'ready') != 'failed'), "
                 "failed_count = (SELECT COUNT(*) FROM asr_conversion_records r WHERE r.batch_id = asr_conversion_batches.id AND r.status = 'failed')"
             ))
+            # 转化流水线执行/步骤字段（P0-05/P0-06/P0-07 + 步骤输出编辑）
+            await _ensure_column(conn, "conversion_pipeline_executions", "parent_execution_id", "INTEGER")
+            await _ensure_column(conn, "conversion_pipeline_executions", "fork_step_code", "VARCHAR(50)")
+            await _ensure_column(conn, "conversion_pipeline_steps", "state_transitions", "JSON")
+            await _ensure_column(conn, "conversion_pipeline_steps", "system_output_text", "TEXT")
+            await _ensure_column(conn, "conversion_pipeline_steps", "manual_output_text", "TEXT")
+            await _ensure_column(conn, "conversion_pipeline_steps", "effective_output_text", "TEXT")
+            await _ensure_column(conn, "conversion_pipeline_steps", "edited", "INTEGER DEFAULT 0")
+            await _ensure_column(conn, "conversion_pipeline_steps", "edited_by", "VARCHAR(80)")
+            await _ensure_column(conn, "conversion_pipeline_steps", "edited_at", "DATETIME")
+            await _ensure_column(conn, "conversion_pipeline_steps", "edit_note", "TEXT")
+            # 配置版本发布回归门槛字段（P0-10）
+            await _ensure_column(conn, "conversion_config_versions", "latest_regression_status", "VARCHAR(30) DEFAULT ''")
+            await _ensure_column(conn, "conversion_config_versions", "latest_regression_config_hash", "VARCHAR(64) DEFAULT ''")
+            await _ensure_column(conn, "conversion_config_versions", "review_status", "VARCHAR(30) DEFAULT ''")
 
 
 async def _ensure_column(conn, table: str, column: str, ddl: str):

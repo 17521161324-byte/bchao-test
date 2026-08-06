@@ -5,12 +5,23 @@
 - D002 异常小数尺寸重建（二九.九乘一点二零 → 29×20，REVIEW）
 - D003 缺失卵巢维度（宽度零乘以三八 → ??×38，REVIEW）
 - 禁止把不确定数字猜成"看起来合理"的数字
+
+P0-01：候选统一应用函数 apply_dimension_candidates()——
+- AUTO → 注册决策 + 改文本 + conversions
+- CANDIDATE/REVIEW → 不改文本 + conversions + warnings + 影响 result_level
+- BLOCK（?? 占位候选提升）→ 以显式 ??×N 标记写入文本（非猜测值），
+  使字段解析与 R006 形成闭环（field_status=INCOMPLETE → BLOCK），
+  不把缺失维度伪装成正常数值。
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+from app.services.conversion_pipeline.decision_registry import DecisionRegistry
+from app.services.conversion_pipeline.span_map import SpanMap
+from app.services.conversion_pipeline.types import RuleDecision, StepCode
 
 
 DIGIT_MAP = {
@@ -180,3 +191,99 @@ def parse_dimension_candidates(text: str) -> list[DimensionCandidate]:
     # 按出现位置排序，保证候选顺序稳定
     candidates.sort(key=lambda item: (item.start, item.end))
     return candidates
+
+
+def apply_dimension_candidates(
+    text: str,
+    candidates: list[DimensionCandidate],
+    registry: DecisionRegistry | None = None,
+    rule_version: str = "V1.0",
+    span_map: SpanMap | None = None,
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """统一应用尺寸候选（P0-01）。
+
+    处理原则：
+    - AUTO → 注册决策、修改当前文本、加入 conversions
+    - CANDIDATE / REVIEW → 不修改当前文本、加入 conversions + warnings、影响 result_level
+    - 缺失维度候选（normalized 含 "??"）提升为 BLOCK：
+      以显式 ??×N 标记写入文本（不是猜测值），使字段解析与 R006 形成闭环，
+      同时触发 MANUAL_AUDIO_REVIEW。
+
+    Returns:
+        (新文本, conversions, warnings)
+    """
+    conversions: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    if not candidates:
+        return text, conversions, warnings
+
+    applied_ranges: list[tuple[int, int]] = []
+    # 从右到左应用，保证左侧坐标在文本替换后仍然有效
+    for candidate in sorted(candidates, key=lambda c: (c.start, c.end), reverse=True):
+        if any(start < candidate.end and end > candidate.start for start, end in applied_ranges):
+            continue
+        applied_ranges.append((candidate.start, candidate.end))
+
+        action = candidate.action
+        if "??" in (candidate.normalized or ""):
+            action = "BLOCK"
+
+        if registry is not None:
+            decision = RuleDecision(
+                rule_id=candidate.rule_id,
+                rule_version=rule_version,
+                step_code=StepCode.NUMBER_NORMALIZE.value,
+                action=action,
+                category="dimension_candidate",
+                raw=candidate.raw,
+                converted=candidate.normalized,
+                start=candidate.start,
+                end=candidate.end,
+                warning_code=candidate.warning_code,
+                message=candidate.message,
+            )
+            if not registry.register(decision):
+                continue
+
+        conversion: dict[str, Any] = {
+            "rule_id": candidate.rule_id,
+            "raw": candidate.raw,
+            "converted": candidate.normalized,
+            "action": action,
+            "category": "dimension_candidate",
+            "warning_code": candidate.warning_code,
+            "message": candidate.message,
+            "start": candidate.start,
+            "end": candidate.end,
+        }
+        conversions.append(conversion)
+
+        if action == "AUTO":
+            text = text[:candidate.start] + candidate.normalized + text[candidate.end:]
+            if span_map is not None:
+                span_map.record(
+                    raw_start=candidate.start,
+                    raw_end=candidate.end,
+                    current_start=candidate.start,
+                    current_end=candidate.start + len(candidate.normalized),
+                    raw_text=candidate.raw,
+                    current_text=candidate.normalized,
+                    rule_id=candidate.rule_id,
+                )
+        else:
+            # CANDIDATE/REVIEW/BLOCK：不修改文本（BLOCK 的 ??×N 标记除外）
+            if action == "BLOCK":
+                text = text[:candidate.start] + candidate.normalized + text[candidate.end:]
+                if span_map is not None:
+                    span_map.record(
+                        raw_start=candidate.start,
+                        raw_end=candidate.end,
+                        current_start=candidate.start,
+                        current_end=candidate.start + len(candidate.normalized),
+                        raw_text=candidate.raw,
+                        current_text=candidate.normalized,
+                        rule_id=candidate.rule_id,
+                    )
+            warnings.append(candidate.message or candidate.warning_code or "")
+
+    return text, conversions, warnings

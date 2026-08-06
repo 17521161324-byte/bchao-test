@@ -6,6 +6,13 @@ echo ========================================
 echo.
 
 set BASE_DIR=C:\bchao-test
+REM ===== 读取部署配置（.env.deploy）覆盖路径与端口 =====
+if exist "%~dp0.env.deploy" (
+  for /f "usebackq tokens=1,* delims==" %%a in ("%~dp0.env.deploy") do set %%a=%%b
+)
+if "%BASE_DIR%"=="" set BASE_DIR=C:\bchao-test
+if "%BACKEND_PORT%"=="" set BACKEND_PORT=8000
+
 set BACKEND_DIR=%BASE_DIR%\backend
 set FRONTEND_DIR=%BASE_DIR%\frontend
 
@@ -69,7 +76,7 @@ if not exist .env (
 
 echo   - 启动后端服务 (PM2)...
 pm2 delete bchao-backend 2>nul
-pm2 start "uvicorn app.main:app --host 0.0.0.0 --port 8000" --name bchao-backend 2>nul
+pm2 start "uvicorn app.main:app --host 0.0.0.0 --port %BACKEND_PORT%" --name bchao-backend 2>nul
 pm2 save
 
 REM ===== 4. 前端构建 =====

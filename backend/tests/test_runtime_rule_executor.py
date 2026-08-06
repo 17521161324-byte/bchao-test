@@ -56,6 +56,43 @@ def test_regex_replace_respects_required_context():
     assert "换边" in with_context.text
 
 
+def test_runtime_review_regex_does_not_mutate_text():
+    """P0-03：REVIEW 正则规则命中后不修改医疗文本。"""
+    result = run_rule(
+        "五回声",
+        {
+            "rule_code": "P001",
+            "system_handler": "regex_replace",
+            "pattern": "五回声",
+            "replacement": "无回声",
+            "action": "REVIEW",
+            "enabled": True,
+        },
+    )
+    assert result.text == "五回声"
+    assert result.applied[0]["action"] == "REVIEW"
+    assert any("不修改原文" in item for item in result.warnings)
+
+
+def test_runtime_block_regex_does_not_mutate_text():
+    """P0-03：BLOCK 正则规则命中后不修改医疗文本，并生成 BLOCK risk_item。"""
+    result = run_rule(
+        "五回声",
+        {
+            "rule_code": "P002",
+            "system_handler": "regex_replace",
+            "pattern": "五回声",
+            "replacement": "无回声",
+            "action": "BLOCK",
+            "risk_level": "highest",
+            "enabled": True,
+        },
+    )
+    assert result.text == "五回声"
+    assert result.applied[0]["action"] == "BLOCK"
+    assert any(item["action"] == "BLOCK" for item in result.risk_items)
+
+
 def test_invalid_regex_only_warns():
     rule = {
         "rule_code": "P_BAD_REGEX",

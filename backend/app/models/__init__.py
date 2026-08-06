@@ -32,6 +32,8 @@ from app.models.text_validation import TextValidationRun, TextCorrectionTemplate
 from app.models.conversion_pipeline import (
     ConversionPipelineExecution,
     ConversionPipelineStep,
+    ConversionRegressionRun,
+    ConversionRegressionResult,
 )
 
 

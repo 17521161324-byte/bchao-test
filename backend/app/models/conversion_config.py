@@ -16,6 +16,10 @@ class ConversionConfigVersion(Base):
     status = Column(String(30), default="draft", index=True)  # draft/testing/published/rolled_back
     description = Column(Text, default="")
     parent_version_id = Column(Integer, ForeignKey("conversion_config_versions.id"), nullable=True)
+    # P0-10：发布回归门槛
+    latest_regression_status = Column(String(30), default="", index=True)  # pending/passed/failed
+    latest_regression_config_hash = Column(String(64), default="")
+    review_status = Column(String(30), default="")  # pending/reviewed
     created_by = Column(String(80), default="")
     published_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

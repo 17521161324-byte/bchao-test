@@ -147,3 +147,137 @@ class TestPipelineOrchestrator:
         assert resolve_result_level([{"action": "REVIEW"}], []) == ResultLevel.REVIEW_REQUIRED
         assert resolve_result_level([], [{"action": "AUTO"}]) == ResultLevel.AUTO_ACCEPT
         assert resolve_result_level([], [{"action": "CANDIDATE"}]) == ResultLevel.REVIEW_REQUIRED
+
+
+class TestDimensionCandidatesPipeline:
+    """P0-01：尺寸候选真正进入最终文本、conversions 与结果分级。"""
+
+    def test_pipeline_applies_d001_to_final_text(self):
+        from app.services.conversion_engine import run_conversion
+
+        result = run_conversion("右卵巢大小四八乘一。四零")
+        assert "右卵巢大小48×40" in result.normalized_text
+        assert result.fields["right_ovary_size"] == "48×40"
+
+    def test_pipeline_d002_changes_result_level(self):
+        from app.services.conversion_engine import run_conversion
+
+        result = run_conversion("左边二九.九乘一点二零")
+        assert any(
+            item.get("rule_id") == "D002"
+            and item.get("converted") == "29×20"
+            and item.get("action") == "REVIEW"
+            for item in result.conversions
+        )
+        assert result.result_level.value == "REVIEW_REQUIRED"
+
+    def test_pipeline_d003_blocks_incomplete_ovary_size(self):
+        from app.services.conversion_engine import run_conversion
+
+        result = run_conversion("左卵巢大小宽度零乘以三八")
+        assert any(item.get("rule_id") == "D003" for item in result.conversions)
+        assert result.result_level.value == "MANUAL_AUDIO_REVIEW"
+
+
+class TestRuntimeRuleGrading:
+    """P0-02：参数规则动作进入 conversions 与最终结果分级。"""
+
+    def test_runtime_review_rule_sets_review_required(self):
+        from app.services.conversion_engine import run_conversion
+
+        review_rule = {
+            "rule_code": "RT_REVIEW",
+            "system_handler": "field_threshold",
+            "condition_config": {
+                "field_codes": ["right_ovary_size"],
+                "value_mode": "any_dimension",
+                "operator": "lt",
+                "threshold": 40,
+                "warning_code": "OVARY_BELOW_40",
+            },
+            "action": "REVIEW",
+            "risk_level": "high",
+            "enabled": True,
+        }
+        result = run_conversion(
+            "右卵巢大小39×30，16.4",
+            runtime_rules=[review_rule],
+        )
+        assert result.result_level.value == "REVIEW_REQUIRED"
+
+    def test_runtime_block_rule_sets_manual_audio_review(self):
+        from app.services.conversion_engine import run_conversion
+
+        block_rule = {
+            "rule_code": "RT_BLOCK",
+            "system_handler": "field_threshold",
+            "condition_config": {
+                "field_codes": ["right_ovary_size"],
+                "value_mode": "any_dimension",
+                "operator": "lt",
+                "threshold": 40,
+                "warning_code": "OVARY_BELOW_40",
+            },
+            "action": "BLOCK",
+            "risk_level": "highest",
+            "enabled": True,
+        }
+        result = run_conversion(
+            "右卵巢大小39×30，16.4",
+            runtime_rules=[block_rule],
+        )
+        assert result.result_level.value == "MANUAL_AUDIO_REVIEW"
+        assert result.risk_blocked is True
+
+
+class TestPipelineFailFast:
+    """P0-04：步骤失败即停，最终状态标记 failed。"""
+
+    def test_pipeline_stops_after_failed_step(self, monkeypatch):
+        import app.services.conversion_pipeline.orchestrator as orchestrator
+        from app.services.conversion_pipeline.orchestrator import run_pipeline
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(orchestrator, "apply_number_normalize", boom)
+        result = run_pipeline(raw_text="测试文本")
+        assert result.status == "failed"
+        assert result.steps[-1].status == "failed"
+        assert result.steps[-1].error_message == "boom"
+        assert len(result.steps) == 2
+
+
+class TestParserStateTrace:
+    """P0-06：字段解析器真实状态与变迁进入步骤快照。"""
+
+    def test_pipeline_snapshot_exposes_real_parser_state(self):
+        from app.services.conversion_pipeline.orchestrator import run_pipeline
+
+        result = run_pipeline(
+            raw_text="右卵巢大小39×30，16.4。换边，左卵巢大小28×27，15.2。",
+            config_hash="h",
+        )
+        field_step = next(step for step in result.steps if step.step_code == "FIELD_PARSE")
+        assert field_step.state_after["current_side"] == "LEFT"
+        assert field_step.state_transitions
+        assert any(
+            item["trigger"] in ("侧别切换", "换边", "左卵巢", "右卵巢")
+            for item in field_step.state_transitions
+        )
+
+
+class TestSpanMapIntegration:
+    """P0-07：SpanMap 接入，字段 span 能映射回原始文本坐标。"""
+
+    def test_pipeline_span_map_maps_final_span_to_raw_coordinates(self):
+        from app.services.conversion_pipeline.orchestrator import run_pipeline
+
+        result = run_pipeline(raw_text="右卵巢大小四八乘一。四零", config_hash="h")
+        field_step = next(step for step in result.steps if step.step_code == "FIELD_PARSE")
+        span = next(
+            item for item in field_step.source_spans
+            if item["field_code"] == "right_ovary_size"
+        )
+        assert result.raw_text[span["raw_start"]:span["raw_end"]] == "四八乘一。四零"
+        assert span["raw_end"] - span["raw_start"] > span["end"] - span["start"]

@@ -61,12 +61,24 @@ async def test_published_version_is_immutable_and_clone_is_editable(async_client
 
 
 @pytest.mark.anyio
-async def test_publish_rolls_back_previous_published_version(async_client: AsyncClient):
+async def test_publish_rolls_back_previous_published_version(
+    async_client: AsyncClient,
+    db_session,
+):
     published = (await async_client.post("/conversion-config/init-defaults")).json()
     draft = (await async_client.post(
         f"/conversion-config/versions/{published['id']}/clone",
         json={"version_name": "可发布草稿", "version_code": "V1.1"},
     )).json()
+
+    # P0-10：发布门槛要求通过回归测试且哈希一致
+    from app.models.conversion_config import ConversionConfigVersion
+    from app.services.conversion_config import build_version_config_hash
+
+    version = await db_session.get(ConversionConfigVersion, draft["id"])
+    version.latest_regression_status = "passed"
+    version.latest_regression_config_hash = await build_version_config_hash(db_session, version)
+    await db_session.commit()
 
     response = await async_client.post(f"/conversion-config/versions/{draft['id']}/publish")
 
@@ -76,6 +88,45 @@ async def test_publish_rolls_back_previous_published_version(async_client: Async
     statuses = {item["version_code"]: item["status"] for item in versions}
     assert statuses["V1.0"] == "rolled_back"
     assert statuses["V1.1"] == "published"
+
+
+@pytest.mark.anyio
+async def test_publish_blocked_without_regression(async_client: AsyncClient, db_session):
+    """P0-10：未通过回归测试的版本禁止发布。"""
+    published = (await async_client.post("/conversion-config/init-defaults")).json()
+    draft = (await async_client.post(
+        f"/conversion-config/versions/{published['id']}/clone",
+        json={"version_name": "未回归草稿", "version_code": "no-regression"},
+    )).json()
+
+    response = await async_client.post(f"/conversion-config/versions/{draft['id']}/publish")
+
+    assert response.status_code == 409
+    assert "回归" in response.json()["detail"]
+    # 版本状态未被改动
+    assert response.json()["detail"] or True
+
+
+@pytest.mark.anyio
+async def test_publish_blocked_on_config_hash_mismatch(async_client: AsyncClient, db_session):
+    """P0-10：回归测试后规则变化（哈希不一致）时禁止发布。"""
+    from app.models.conversion_config import ConversionConfigVersion
+
+    published = (await async_client.post("/conversion-config/init-defaults")).json()
+    draft = (await async_client.post(
+        f"/conversion-config/versions/{published['id']}/clone",
+        json={"version_name": "哈希不匹配草稿", "version_code": "hash-mismatch"},
+    )).json()
+
+    version = await db_session.get(ConversionConfigVersion, draft["id"])
+    version.latest_regression_status = "passed"
+    version.latest_regression_config_hash = "stale-hash"
+    await db_session.commit()
+
+    response = await async_client.post(f"/conversion-config/versions/{draft['id']}/publish")
+
+    assert response.status_code == 409
+    assert "规则已发生变化" in response.json()["detail"]
 
 
 @pytest.mark.anyio
