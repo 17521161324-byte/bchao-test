@@ -41,3 +41,6 @@ outputs/
 
 # 工具附件
 .kandev/
+
+# 验收截图
+v14-*.png
