@@ -10,6 +10,7 @@ class PipelineExecutionCreate(BaseModel):
     source_type: Literal[
         "manual",
         "text_validation_run",
+        "patient_asr_result",
     ] = "manual"
     source_id: int | None = None
     input_source: Literal[
@@ -118,6 +119,17 @@ class PipelineExecutionOut(BaseModel):
     final_fields: dict[str, Any] = Field(default_factory=dict)
     final_warnings: list[str] = Field(default_factory=list)
     final_risk_items: list[dict[str, Any]] = Field(default_factory=list)
+    # patient_asr_result 来源的真实历史/人工标准信息；无数据时保持None，不做模拟回填。
+    source_patient_id: int | None = None
+    source_record_id: str | None = None
+    source_date: str | None = None
+    source_config_hash: str | None = None
+    source_asr_model_name: str | None = None
+    reference_text: str | None = None
+    reference_base_asr_result_id: int | None = None
+    reference_base_config_hash: str | None = None
+    reference_match_type: str | None = None
+    truth_fields: dict[str, Any] = Field(default_factory=dict)
     steps: list[PipelineStepOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

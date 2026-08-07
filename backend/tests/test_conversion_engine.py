@@ -80,23 +80,30 @@ class TestNumberNormalize:
         assert "mm" in result.text
 
     def test_endometrium_type_normalize(self):
-        """N005: 内膜分型格式化"""
-        text = "C级"
+        """N005: 内膜分型格式化（V14 仅归一型/形/性变体；C级 等非标准表述保留原文）"""
+        text = "内膜9.5，C形"
         result = apply_number_normalize(text)
         assert "C型" in result.text
 
     def test_4digit_dimension_candidate(self):
-        """N006: 4位连续尺寸候选拆分"""
+        """N006: 4位连续尺寸候选拆分（V14 CANDIDATE 不改文本，仅记录候选）"""
         text = "右卵巢大小六零三五"
         result = apply_number_normalize(text)
-        assert "候选" in result.text or "60×35" in result.text
+        assert result.text == text
+        assert any(
+            c["rule_id"] == "N006" and c["action"] == "CANDIDATE" and c["converted"] == "60×35"
+            for c in result.conversions
+        )
 
     def test_decimal_sequence_split(self):
-        """N010: 连续小数列表切分"""
+        """N010: 连续小数列表切分（V14 CANDIDATE 不改文本，仅记录候选）"""
         text = "11.09.48.8"
         result = apply_number_normalize(text)
-        # 应该被切分为多个数字
-        assert "," in result.text or "，" in result.text
+        assert result.text == text
+        assert any(
+            c["rule_id"] == "N010" and c["action"] == "CANDIDATE" and c["converted"] == "11.09, 48.8"
+            for c in result.conversions
+        )
 
     def test_count_expand(self):
         """N011: 重复数值计数保留"""
@@ -141,13 +148,14 @@ class TestMedicalTermCorrect:
         assert "冻卵" in result.text
 
     def test_candidate_liu_wan_qiao(self):
-        """C002: 六碗桥大桥 → 右卵巢大小 (CANDIDATE)"""
+        """C002: 六碗桥大桥 → 卵巢大小 (CANDIDATE, side=UNKNOWN)"""
         text = "六碗桥大桥六零三五"
         result = apply_medical_term_correct(text)
-        # CANDIDATE 不修改原文，仅记录候选
+        # CANDIDATE 不修改原文，仅记录候选。
+        # V14：近似词只生成 UNKNOWN 侧别候选，左右由业务片段组合规则判断。
         assert result.text == text
         assert any(
-            c["rule_id"] == "C002" and c["action"] == "CANDIDATE" and c["converted"] == "右卵巢大小"
+            c["rule_id"] == "C002" and c["action"] == "CANDIDATE" and c["converted"] == "卵巢大小"
             for c in result.conversions
         )
 
@@ -198,11 +206,11 @@ class TestRunConversion:
         assert result.normalized_text == text
 
     def test_full_conversion(self):
-        """完整转化"""
+        """完整转化（V14：C级 等非标准内膜类型表述保留原文，仅型/形/性归一）"""
         text = "内膜十七点五，C级。三九乘以三零"
         result = run_conversion(text)
         assert "17.5" in result.normalized_text
-        assert "C型" in result.normalized_text
+        assert "C级" in result.normalized_text
         assert "39×30" in result.normalized_text
 
     def test_conversion_records(self):
@@ -261,8 +269,10 @@ class TestRunConversion:
             item["raw"] == "面膜" and item["converted"] == "内膜" and item["category"] == "medical_term"
             for item in result.conversions
         )
+        # V14 N003 乘法统一：医学词边界保护，不得把“五八乘以三八五回声”吞成 58×385，
+        # 最后一个“五”属于“五回声”，作为后缀保留在 converted 中。
         assert any(
-            item["raw"] == "五八乘以三八" and item["converted"] == "58×38" and item["category"] == "medical_data"
+            item["raw"] == "五八乘以三八五" and item["converted"] == "58×38五" and item["category"] == "size_format"
             for item in result.conversions
         )
         # 业务片段层不得再自动把“五回声”归一为“无回声”（REVIEW 不修改原文）
@@ -340,15 +350,16 @@ class TestFieldParserStateMachine:
     def test_anechoic_dimension_without_ovary_anchor_goes_to_remark(self):
         result = parse_fields("左边二零乘以幺九无回声")
         assert "left_ovary_size" not in result.fields
-        findings = result.fields["ultrasound_findings"]
-        assert any("无回声" in str(item) for item in findings)
+        # V14 F009：无卵巢锚点的“尺寸+无回声”整体归备注，不再生成 ultrasound_findings
+        remark = str(result.fields.get("remark", ""))
+        assert "无回声" in remark
 
-    def test_echo_uneven_and_cavity_separation_are_findings(self):
-        """P0-08：回声不均与宫腔分离均归入超声发现。"""
+    def test_echo_uneven_and_cavity_separation_go_to_remark(self):
+        """V14 F009：回声不均与宫腔分离等超声描述归入备注，不冒充内膜类型。"""
         result = parse_fields("内膜8.2，回声不均，宫腔分离")
-        types = [item["type"] for item in result.fields["ultrasound_findings"]]
-        assert "回声不均" in types
-        assert "宫腔分离" in types
+        remark = str(result.fields.get("remark", ""))
+        assert "回声不均" in remark
+        assert "宫腔分离" in remark
 
     def test_unknown_dimension_writes_incomplete_status_and_blocks(self):
         """P0-09：??×38 写入卵巢字段 + field_status=INCOMPLETE，R006 阻断。"""

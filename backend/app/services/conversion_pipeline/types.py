@@ -22,9 +22,9 @@ class StepCode(str, Enum):
 
 
 STEP_ORDER: dict[StepCode, int] = {
-    StepCode.BASE_CLEANING: 10,
-    StepCode.NUMBER_NORMALIZE: 20,
-    StepCode.MEDICAL_TERM: 30,
+    StepCode.MEDICAL_TERM: 10,
+    StepCode.BASE_CLEANING: 20,
+    StepCode.NUMBER_NORMALIZE: 30,
     StepCode.BUSINESS_SEGMENT: 40,
     StepCode.FIELD_PARSE: 50,
     StepCode.RUNTIME_RULE: 60,
@@ -33,11 +33,11 @@ STEP_ORDER: dict[StepCode, int] = {
 
 
 STEP_NAMES: dict[StepCode, str] = {
-    StepCode.BASE_CLEANING: "基础清洗",
-    StepCode.NUMBER_NORMALIZE: "数字与尺寸解析",
-    StepCode.MEDICAL_TERM: "医学词处理",
+    StepCode.MEDICAL_TERM: "医学名词标准化",
+    StepCode.BASE_CLEANING: "清洗与中文数值预处理",
+    StepCode.NUMBER_NORMALIZE: "数字与尺寸转换",
     StepCode.BUSINESS_SEGMENT: "业务片段定位",
-    StepCode.FIELD_PARSE: "上下文与字段解析",
+    StepCode.FIELD_PARSE: "字段解析、校验与分流",
     StepCode.RUNTIME_RULE: "参数化规则执行",
     StepCode.RISK_INTERCEPT: "风险校验与分流",
 }

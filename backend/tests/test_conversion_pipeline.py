@@ -15,9 +15,10 @@ from app.services.conversion_engine.business_segment_convert import apply_busine
 
 
 def test_step_order_is_stable():
-    assert STEP_ORDER[StepCode.BASE_CLEANING] == 10
-    assert STEP_ORDER[StepCode.NUMBER_NORMALIZE] == 20
-    assert STEP_ORDER[StepCode.MEDICAL_TERM] == 30
+    # V14：医学词标准化提到最前，先保护“五回声”等医学近音词不被数字处理吞掉。
+    assert STEP_ORDER[StepCode.MEDICAL_TERM] == 10
+    assert STEP_ORDER[StepCode.BASE_CLEANING] == 20
+    assert STEP_ORDER[StepCode.NUMBER_NORMALIZE] == 30
     assert STEP_ORDER[StepCode.BUSINESS_SEGMENT] == 40
     assert STEP_ORDER[StepCode.FIELD_PARSE] == 50
     assert STEP_ORDER[StepCode.RUNTIME_RULE] == 60
@@ -131,7 +132,7 @@ class TestPipelineOrchestrator:
         assert len(result.steps) == 7
         codes = [s.step_code for s in result.steps]
         assert codes == [
-            "BASE_CLEANING", "NUMBER_NORMALIZE", "MEDICAL_TERM",
+            "MEDICAL_TERM", "BASE_CLEANING", "NUMBER_NORMALIZE",
             "BUSINESS_SEGMENT", "FIELD_PARSE", "RUNTIME_RULE", "RISK_INTERCEPT",
         ]
         assert all(s.status == "success" for s in result.steps)
@@ -245,7 +246,8 @@ class TestPipelineFailFast:
         assert result.status == "failed"
         assert result.steps[-1].status == "failed"
         assert result.steps[-1].error_message == "boom"
-        assert len(result.steps) == 2
+        # V14：医学词步骤提前，NUMBER_NORMALIZE 是第 3 步（MEDICAL_TERM/BASE_CLEANING 成功后失败）
+        assert len(result.steps) == 3
 
 
 class TestParserStateTrace:

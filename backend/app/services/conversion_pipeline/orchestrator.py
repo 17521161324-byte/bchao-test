@@ -36,6 +36,7 @@ from app.services.conversion_pipeline.types import (
 )
 from app.services.conversion_engine.base_cleaning import apply_base_cleaning
 from app.services.conversion_engine.business_segment_convert import apply_business_segment_conversion
+from app.services.conversion_engine.business_segment_locator import locate_business_segments
 from app.services.conversion_engine.field_parser import parse_fields
 from app.services.conversion_engine.medical_term_correct import apply_medical_term_correct
 from app.services.conversion_engine.number_normalize import apply_number_normalize
@@ -219,7 +220,10 @@ def _step_business_segment(ctx: PipelineContext) -> dict[str, Any]:
     ctx.current_text = business_text
     ctx.conversions.extend(business_conversions)
     _record_step_replacements(ctx, business_conversions, step_input)
-    return {"conversions": business_conversions}
+    return {
+        "conversions": business_conversions,
+        "rule_hits": locate_business_segments(ctx.current_text),
+    }
 
 
 def _step_field_parse(ctx: PipelineContext) -> dict[str, Any]:
@@ -227,6 +231,10 @@ def _step_field_parse(ctx: PipelineContext) -> dict[str, Any]:
     ctx.fields = parse_result.fields
     ctx.source_spans = parse_result.source_spans
     ctx.warnings.extend(parse_result.warnings)
+    field_rule_items = list(getattr(parse_result, "rule_items", []) or [])
+    # M006/M007 are REVIEW decisions. Adding them to global conversions makes
+    # resolve_result_level() route the whole execution to REVIEW_REQUIRED.
+    ctx.conversions.extend(field_rule_items)
     ctx.parser_state = ParserState.from_dict(parse_result.final_state)
     # P0-07：source_spans 补充 raw_start/raw_end（映射回原始文本坐标）
     for span in ctx.source_spans:
@@ -238,6 +246,9 @@ def _step_field_parse(ctx: PipelineContext) -> dict[str, Any]:
         span["raw_end"] = raw_end
     return {
         "fields": parse_result.fields,
+        "conversions": field_rule_items,
+        # 字段解析校验复用业务片段模型，前端可按内膜/右卵巢/左卵巢/备注卡片展示。
+        "rule_hits": locate_business_segments(ctx.current_text),
         "source_spans": parse_result.source_spans,
         "warnings": parse_result.warnings,
         "state_after": parse_result.final_state,
@@ -284,9 +295,10 @@ def _build_step_functions(scene: str, rule_mode: str) -> list[tuple[StepCode, Ca
     from functools import partial
 
     return [
+        # 医学词必须先于中文数字处理，避免“五回声”等医学近音词被数字规则拆坏。
+        (StepCode.MEDICAL_TERM, partial(_step_medical_term, scene=scene, rule_mode=rule_mode)),
         (StepCode.BASE_CLEANING, _step_base_cleaning),
         (StepCode.NUMBER_NORMALIZE, partial(_step_number_normalize, scene=scene)),
-        (StepCode.MEDICAL_TERM, partial(_step_medical_term, scene=scene, rule_mode=rule_mode)),
         (StepCode.BUSINESS_SEGMENT, _step_business_segment),
         (StepCode.FIELD_PARSE, _step_field_parse),
         (StepCode.RUNTIME_RULE, _step_runtime_rule),

@@ -156,3 +156,12 @@ npm run build
 【前端重构（agent-6）】ConversionDebug 更名"ASR 转化调试"：InputPanel（三来源+开始转化一键式）/InteractiveSteps（七步固定+状态色）/StepWorkbench（双栏+编辑+dirty 失效）/RuleHitDrawer/RFinalResultTabs/ExecutionHistoryDrawer + diff.ts；client.ts 新增 listExecutions/runToStep/patchStepOutput/continueExecution；删除旧 5 组件。
 【验证】后端全量 255 passed / 4 个既有无关失败；前端 npm run build 通过；部署接口验证：health 200、openapi 含 8 个 pipeline 路由、创建执行 curl completed/7 步。后端已重启（PID 51599）。
 【遗留】compileall 在 cli_executor.py 报既有 f-string 语法错（未改，Python 3.11 已知）；D002 REVIEW 不改文本的固有边界；回归执行接口（运行锁定案例回写状态）按最少实现后置；git diff --check 对 bat CRLF 报 trailing whitespace（MINOR）；代码未提交 git。
+
+## 2026-08-07 V14 功能合并（asr_rules_update_20260807_v14_complete）
+
+- 基线：2fc6ba9（本地=远程）。代码包 apply_all.py 5 脚本全部应用（marker 校验通过；complete_medical_type_parity.py 需用 venv python3.11 运行，系统 python3.9 不认 UTF-8 源码）。
+- 已落地：context_inference.py（S006/S010/S011/S012 左右上下文推断，REVIEW）、endometrium_type_rules.py（M003/M005/M006/M007 内膜 A/B/C 型）、医学词顺序提前（MEDICAL_TERM=10）、CORE 规则暴露（builtin-rules 新增 medical_term/number_normalize/business_segment 组）、五回声医学边界保护（N003）、前端 HistoricalAsrPicker/BatchExecutionResults/BusinessStepWorkbench/BusinessSegmentCards/RuleExecutionDiagnostics + InteractiveSteps/FinalResultTabs 更新 + ConversionDebug 五步聚合 + client.ts 批量执行；新增 POST /conversion-pipeline/executions/batch。
+- 测试：16+2 个既有失败均为 V14 行为变更预期（医学词顺序、CORE 组、F009 归备注、CANDIDATE 不改文本等），按新语义更新断言（5 个测试文件），0 处代码修复、未删测试、未 hardcode。全量 279 passed / 4 个既有无关失败。
+- 前端：npm run build 通过。
+- 回归案例（真实 DB 数据）：ID 439 右卵巢 35×25、输卵管大小→S011 左卵巢 28×20、左卵泡 [17.4,14.5,11.1]、REVIEW_REQUIRED ✓；ID 456 内膜 9.5 C型、六宛桥大桥→上下文推断 REVIEW_REQUIRED ✓。
+- 遗留：ConversionDebug/index.vue:611 有 ultrasound_findings 死映射标签（无害，可清理）；回归执行接口仍后置；D002 REVIEW 不改文本固有边界；代码未提交 git。

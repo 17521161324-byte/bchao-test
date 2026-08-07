@@ -18,8 +18,8 @@ class TestFieldParser:
         assert result.fields["endometrium_thickness"] == 9.5
 
     def test_parse_endometrium_type(self):
-        """F002: 内膜类型解析"""
-        text = "C型"
+        """F002/M003: 内膜类型解析（V14 仅在内膜业务窗口内解析标准 A/B/C 型）"""
+        text = "内膜9.5，C型"
         result = parse_fields(text)
         assert "endometrium_type" in result.fields
         assert result.fields["endometrium_type"] == "C型"
@@ -54,12 +54,12 @@ class TestFieldParser:
         assert isinstance(result.fields["right_follicles"], list)
 
     def test_parse_ultrasound_finding(self):
-        """F009: 超声发现解析"""
+        """V14 F009: 超声描述（无回声/强回声等）归入备注，不冒充内膜类型"""
         text = "无回声"
         result = parse_fields(text)
-        assert "ultrasound_findings" in result.fields
-        findings = result.fields["ultrasound_findings"]
-        assert any(f["type"] == "无回声" for f in findings)
+        assert "ultrasound_findings" not in result.fields
+        remark = str(result.fields.get("remark", ""))
+        assert "无回声" in remark
 
     def test_parse_procedure(self):
         """F010: 操作信息解析"""

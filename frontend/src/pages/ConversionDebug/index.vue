@@ -26,7 +26,19 @@
     </div>
 
     <!-- 顶部输入区 -->
-    <InputPanel :creating="creating" @start="onStart" @restore="restoreExecution" />
+    <InputPanel
+      :creating="creating"
+      @start="onStart"
+      @batch-start="onBatchStart"
+      @restore="restoreExecution"
+    />
+
+    <BatchExecutionResults
+      v-if="batchExecutions.length || batchErrors.length"
+      :executions="batchExecutions"
+      :errors="batchErrors"
+      @open="openBatchExecution"
+    />
 
     <!-- 创建失败：主区域完整错误信息（实施说明 §13） -->
     <section v-if="createError" class="panel create-error-panel">
@@ -75,9 +87,11 @@
         @select="onSelectStep"
       />
 
-      <StepWorkbench
+      <BusinessStepWorkbench
         v-if="currentStep"
         :step="currentStep"
+        :all-steps="execution.steps"
+        :rule-version-id="execution.rule_version_id"
         :editing="editingStepCode === currentStep.step_code"
         :busy="busy"
         @edit="onEdit"
@@ -88,13 +102,7 @@
         @open-drawer="openDrawer"
       />
 
-      <FinalResultTabs
-        :execution="execution"
-        :history="history"
-        :busy="historyLoading"
-        @view="viewHistoryItem"
-        @compare="openHistoryCompare"
-      />
+      <FinalResultTabs :execution="execution" />
     </template>
 
     <!-- 规则/警示/字段 抽屉 -->
@@ -220,7 +228,8 @@ import type {
 } from '@/types/conversionPipeline'
 import InputPanel from '@/components/ConversionPipeline/InputPanel.vue'
 import InteractiveSteps from '@/components/ConversionPipeline/InteractiveSteps.vue'
-import StepWorkbench from '@/components/ConversionPipeline/StepWorkbench.vue'
+import BusinessStepWorkbench from '@/components/ConversionPipeline/BusinessStepWorkbench.vue'
+import BatchExecutionResults from '@/components/ConversionPipeline/BatchExecutionResults.vue'
 import RuleHitDrawer from '@/components/ConversionPipeline/RuleHitDrawer.vue'
 import FinalResultTabs from '@/components/ConversionPipeline/FinalResultTabs.vue'
 import ExecutionHistoryDrawer from '@/components/ConversionPipeline/ExecutionHistoryDrawer.vue'
@@ -236,6 +245,8 @@ const saving = ref(false)
 const execution = ref<PipelineExecution | null>(null)
 const currentStep = ref<PipelineStep | null>(null)
 const editingStepCode = ref<string | null>(null)
+const batchExecutions = ref<PipelineExecution[]>([])
+const batchErrors = ref<Record<string, any>[]>([])
 
 const busy = computed(() => creating.value || running.value || saving.value)
 
@@ -372,6 +383,8 @@ function markRunningUntil(targetCode: string) {
 async function onStart(payload: Record<string, any>) {
   creating.value = true
   createError.value = null
+  batchExecutions.value = []
+  batchErrors.value = []
   lastStartPayload.value = payload
   try {
     const created: any = await conversionPipelineApi.createExecution({
@@ -387,6 +400,33 @@ async function onStart(payload: Record<string, any>) {
   } finally {
     creating.value = false
   }
+}
+
+async function onBatchStart(payload: { source_ids: number[]; scene: string; rule_version_id?: number }) {
+  creating.value = true
+  createError.value = null
+  try {
+    const result: any = await conversionPipelineApi.batchCreateExecutions(payload)
+    batchExecutions.value = result?.items || []
+    batchErrors.value = result?.errors || []
+    if (batchExecutions.value.length) {
+      applyExecution(batchExecutions.value[0])
+      router.replace(`/conversion-debug/${batchExecutions.value[0].id}`)
+      message.success(`批量执行完成：${batchExecutions.value.length} 条成功${batchErrors.value.length ? `，${batchErrors.value.length} 条未执行` : ''}`)
+    } else {
+      message.warning('本次批量执行没有产生有效结果')
+    }
+    loadHistory()
+  } catch (error: any) {
+    createError.value = buildErrorInfo(error)
+  } finally {
+    creating.value = false
+  }
+}
+
+function openBatchExecution(item: PipelineExecution) {
+  applyExecution(item)
+  router.replace(`/conversion-debug/${item.id}`)
 }
 
 function retryStart() {

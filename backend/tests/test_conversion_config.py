@@ -199,13 +199,21 @@ async def test_preview_uses_draft_lexicon_entry(async_client: AsyncClient):
 
 
 @pytest.mark.anyio
-async def test_builtin_rules_returns_three_groups(async_client: AsyncClient):
+async def test_builtin_rules_returns_all_groups(async_client: AsyncClient):
     response = await async_client.get("/conversion-config/builtin-rules")
 
     assert response.status_code == 200
     data = response.json()
-    assert set(data.keys()) == {"text_switch", "field_extract", "risk"}
-    assert len(data["text_switch"]) >= 3
+    # V14：builtin-rules 真实暴露 CORE 规则（medical_term/number_normalize/business_segment），
+    # text_switch 规则并入 business_segment，此组保留空壳。
+    assert set(data.keys()) == {
+        "medical_term", "number_normalize", "business_segment",
+        "text_switch", "field_extract", "risk",
+    }
+    assert len(data["medical_term"]) >= 3
+    assert len(data["number_normalize"]) >= 14
+    assert len(data["business_segment"]) >= 3
+    assert len(data["text_switch"]) == 0
     assert len(data["field_extract"]) >= 14
     assert len(data["risk"]) >= 17
 

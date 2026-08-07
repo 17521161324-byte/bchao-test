@@ -175,6 +175,9 @@ export const conversionPipelineApi = {
     timeout: 300000,
   }),
 
+  batchCreateExecutions: (data: { source_ids: number[]; scene?: string; model_name?: string; rule_version_id?: number }) =>
+    client.post('/conversion-pipeline/executions/batch', data, { timeout: 900000 }),
+
   getExecution: (id: number) =>
     client.get(`/conversion-pipeline/executions/${id}`),
 

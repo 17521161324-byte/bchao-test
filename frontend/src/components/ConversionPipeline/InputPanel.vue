@@ -41,7 +41,16 @@
       :maxlength="100000"
     />
 
-    <!-- 文本验证记录：复用 TextValidation 记录选择 -->
+    <!-- 历史ASR指纹：直接读取 patient_asr_results.config_hash/full_transcript -->
+    <template v-else-if="sourceTab === 'historical_asr'">
+      <HistoricalAsrPicker @select="onHistoricalAsrSelect" @selection-change="onHistoricalSelectionChange" />
+      <div class="historical-batch-bar">
+        <span class="muted">已勾选 {{ selectedHistoricalRows.length }} 条真实历史ASR</span>
+        <a-button type="primary" :loading="creating" :disabled="!selectedHistoricalRows.length" @click="emitBatchStart">批量执行选中项</a-button>
+      </div>
+    </template>
+
+    <!-- 文本验证记录：保留原有入口 -->
     <template v-else-if="sourceTab === 'text_validation'">
       <div class="tv-filter">
         <a-select v-model:value="tvDate" class="tv-date" :options="tvDateOptions" placeholder="日期" allow-clear />
@@ -135,6 +144,7 @@ import { message } from 'ant-design-vue'
 import { audioApi, conversionConfigApi, conversionPipelineApi, textValidationApi } from '@/api/client'
 import type { PipelineExecutionSummary } from '@/types/conversionPipeline'
 import AudioPlayer from '@/components/AudioPlayer/index.vue'
+import HistoricalAsrPicker from '@/components/ConversionPipeline/HistoricalAsrPicker.vue'
 
 const props = defineProps<{
   creating: boolean
@@ -142,7 +152,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'start', payload: {
-    source_type: 'manual' | 'text_validation_run'
+    source_type: 'manual' | 'text_validation_run' | 'patient_asr_result'
     source_id?: number
     input_source: 'manual' | 'raw_asr_text' | 'corrected_text'
     text: string
@@ -150,10 +160,12 @@ const emit = defineEmits<{
     rule_version_id?: number
   }): void
   (e: 'restore', executionId: number): void
+  (e: 'batch-start', payload: { source_ids: number[]; scene: string; rule_version_id?: number }): void
 }>()
 
 const sourceOptions = [
   { label: '手动输入', value: 'manual' },
+  { label: '历史ASR指纹', value: 'historical_asr' },
   { label: '文本验证记录', value: 'text_validation' },
   { label: '最近调试', value: 'recent' },
 ]
@@ -168,7 +180,9 @@ const sceneOptions = [
   { label: '其他', value: '其他' },
 ]
 
-const sourceTab = ref<'manual' | 'text_validation' | 'recent'>('manual')
+const sourceTab = ref<'manual' | 'historical_asr' | 'text_validation' | 'recent'>('historical_asr')
+const selectedHistoricalAsr = ref<Record<string, any> | null>(null)
+const selectedHistoricalRows = ref<Record<string, any>[]>([])
 const manualText = ref('')
 const ruleVersionId = ref<number | undefined>()
 const scene = ref('卵泡监测B超')
@@ -249,6 +263,7 @@ const tvPreviewText = computed(() => {
 /** 当前将提交转化的文本（创建时使用） */
 const currentText = computed(() => {
   if (sourceTab.value === 'manual') return manualText.value
+  if (sourceTab.value === 'historical_asr') return String(selectedHistoricalAsr.value?.full_transcript || '')
   if (sourceTab.value === 'text_validation') return tvPreviewText.value
   return ''
 })
@@ -290,6 +305,20 @@ function onTextSourceChange(value: string | number) {
   tvTextSource.value = value as 'raw_asr_text' | 'corrected_text'
 }
 
+function onHistoricalAsrSelect(row: Record<string, any> | null) {
+  selectedHistoricalAsr.value = row
+}
+
+function onHistoricalSelectionChange(rows: Record<string, any>[]) {
+  selectedHistoricalRows.value = rows
+}
+
+function emitBatchStart() {
+  const sourceIds = selectedHistoricalRows.value.map((row) => Number(row.id)).filter(Number.isFinite)
+  if (!sourceIds.length) { message.warning("请先勾选要批量执行的历史ASR"); return }
+  emit("batch-start", { source_ids: sourceIds, scene: scene.value, rule_version_id: ruleVersionId.value })
+}
+
 function onVersionChange() { /* 规则版本随开始转化提交 */ }
 
 function statusText(status: string) {
@@ -310,14 +339,28 @@ function emitStart() {
     message.warning('请先选择一条文本验证记录')
     return
   }
-  const payload = sourceTab.value === 'manual'
-    ? { source_type: 'manual' as const, source_id: undefined, input_source: 'manual' as const, text }
-    : {
-        source_type: 'text_validation_run' as const,
-        source_id: selectedRun.value?.id,
-        input_source: tvTextSource.value as 'raw_asr_text' | 'corrected_text',
-        text,
-      }
+  let payload: any
+  if (sourceTab.value === 'manual') {
+    payload = { source_type: 'manual' as const, source_id: undefined, input_source: 'manual' as const, text }
+  } else if (sourceTab.value === 'historical_asr') {
+    if (!selectedHistoricalAsr.value?.id) {
+      message.warning('请先选择一条真实历史ASR结果')
+      return
+    }
+    payload = {
+      source_type: 'patient_asr_result' as const,
+      source_id: Number(selectedHistoricalAsr.value.id),
+      input_source: 'raw_asr_text' as const,
+      text,
+    }
+  } else {
+    payload = {
+      source_type: 'text_validation_run' as const,
+      source_id: selectedRun.value?.id,
+      input_source: tvTextSource.value as 'raw_asr_text' | 'corrected_text',
+      text,
+    }
+  }
   emit('start', { ...payload, scene: scene.value, rule_version_id: ruleVersionId.value })
 }
 
@@ -433,4 +476,5 @@ onMounted(async () => {
 @media (max-width: 1100px) {
   .config-row { grid-template-columns: 1fr; }
 }
+.historical-batch-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 </style>

@@ -69,6 +69,16 @@ export interface PipelineExecution {
   final_fields: Record<string, any>
   final_warnings: string[]
   final_risk_items: Record<string, any>[]
+  source_patient_id?: number | null
+  source_record_id?: string | null
+  source_date?: string | null
+  source_config_hash?: string | null
+  source_asr_model_name?: string | null
+  reference_text?: string | null
+  reference_base_asr_result_id?: number | null
+  reference_base_config_hash?: string | null
+  reference_match_type?: 'exact_base' | 'config_match' | 'same_exam' | null
+  truth_fields?: Record<string, any>
   steps: PipelineStep[]
   /** fork 产生的执行会带来源执行 id（后端可选字段） */
   parent_execution_id?: number | null
@@ -80,7 +90,7 @@ export interface PipelineExecution {
 
 /** 创建执行请求参数（POST /conversion-pipeline/executions） */
 export interface PipelineExecutionCreate {
-  source_type?: 'manual' | 'text_validation_run' | 'conversion_preview'
+  source_type?: 'manual' | 'text_validation_run' | 'patient_asr_result'
   source_id?: number
   input_source?: 'manual' | 'raw_asr_text' | 'corrected_text'
   text?: string

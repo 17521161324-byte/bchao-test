@@ -26,6 +26,9 @@ from app.models import (
     ConversionPipelineExecution,
     ConversionPipelineStep,
     TextValidationRun,
+    PatientAsrResult,
+    AsrReferenceTranscript,
+    BUltraResult,
 )
 from app.schemas.conversion_pipeline import (
     PipelineContinueRequest,
@@ -83,6 +86,63 @@ async def _load_steps(db: AsyncSession, execution_id: int) -> list[ConversionPip
 async def _execution_out(db: AsyncSession, execution: ConversionPipelineExecution) -> PipelineExecutionOut:
     steps = await _load_steps(db, execution.id)
     # 手动构建数据，避免 Pydantic 从 ORM 关系触发异步懒加载（MissingGreenlet）
+    source_meta: dict[str, Any] = {
+        "source_patient_id": None,
+        "source_record_id": None,
+        "source_date": None,
+        "source_config_hash": None,
+        "source_asr_model_name": None,
+        "reference_text": None,
+        "reference_base_asr_result_id": None,
+        "reference_base_config_hash": None,
+        "reference_match_type": None,
+        "truth_fields": {},
+    }
+    if execution.source_type == "patient_asr_result" and execution.source_id:
+        asr = await db.get(PatientAsrResult, execution.source_id)
+        if asr:
+            source_meta.update({
+                "source_patient_id": asr.patient_id,
+                "source_record_id": asr.record_id,
+                "source_date": asr.date,
+                "source_config_hash": asr.config_hash,
+                "source_asr_model_name": asr.asr_model_name,
+            })
+            ref_rows = (await db.execute(
+                select(AsrReferenceTranscript)
+                .where(
+                    AsrReferenceTranscript.patient_id == asr.patient_id,
+                    AsrReferenceTranscript.is_current == True,
+                )
+                .order_by(AsrReferenceTranscript.updated_at.desc(), AsrReferenceTranscript.id.desc())
+            )).scalars().all()
+            ref = ref_rows[0] if ref_rows else None
+            if ref:
+                match_type = "same_exam"
+                if ref.base_asr_result_id == asr.id:
+                    match_type = "exact_base"
+                elif ref.base_config_hash and asr.config_hash and ref.base_config_hash == asr.config_hash:
+                    match_type = "config_match"
+                source_meta.update({
+                    "reference_text": ref.reference_text or None,
+                    "reference_base_asr_result_id": ref.base_asr_result_id,
+                    "reference_base_config_hash": ref.base_config_hash,
+                    "reference_match_type": match_type,
+                })
+            truth = (await db.execute(
+                select(BUltraResult).where(BUltraResult.patient_id == asr.patient_id)
+            )).scalars().first()
+            if truth:
+                source_meta["truth_fields"] = {
+                    "endometrium_thickness": truth.endometrium_thickness,
+                    "endometrium_type": truth.endometrium_type,
+                    "right_ovary_size": f"{truth.right_ovary_length:g}×{truth.right_ovary_width:g}" if truth.right_ovary_length is not None and truth.right_ovary_width is not None else None,
+                    "right_follicles": truth.right_follicles or [],
+                    "left_ovary_size": f"{truth.left_ovary_length:g}×{truth.left_ovary_width:g}" if truth.left_ovary_length is not None and truth.left_ovary_width is not None else None,
+                    "left_follicles": truth.left_follicles or [],
+                    "remark": truth.remark or "",
+                }
+
     data = {
         "id": execution.id,
         "source_type": execution.source_type,
@@ -102,6 +162,7 @@ async def _execution_out(db: AsyncSession, execution: ConversionPipelineExecutio
         "final_fields": execution.final_fields or {},
         "final_warnings": execution.final_warnings or [],
         "final_risk_items": execution.final_risk_items or [],
+        **source_meta,
         "steps": steps,
     }
     return PipelineExecutionOut.model_validate(data)
@@ -113,7 +174,8 @@ async def _build_snapshot(
 ) -> tuple[dict[str, Any], str, list[dict[str, Any]], list[dict[str, Any]], str]:
     lexicon_rules = await load_enabled_lexicon_rules(db, version.id) if version else []
     runtime_rules = await load_enabled_runtime_rules(db, version.id) if version else []
-    lexicon_mode = "replace" if version else "builtin"
+    # CORE 规则优先常驻；数据库规则作为版本化增量追加，避免已确认医学规则在选择版本后消失。
+    lexicon_mode = "append" if version else "builtin"
     snapshot: dict[str, Any] = {
         "version": {
             "id": version.id,
@@ -234,6 +296,12 @@ async def list_executions(
 async def create_execution(data: PipelineExecutionCreate, db: AsyncSession = Depends(get_db)):
     if data.source_type == "manual":
         input_text = (data.text or "").strip()
+    elif data.source_type == "patient_asr_result":
+        asr = await db.get(PatientAsrResult, data.source_id)
+        if not asr:
+            raise HTTPException(status_code=404, detail="历史ASR结果不存在")
+        input_text = (asr.full_transcript or "").strip()
+        data.input_source = "raw_asr_text"
     else:
         run = await db.get(TextValidationRun, data.source_id)
         if not run:
@@ -274,6 +342,89 @@ async def create_execution(data: PipelineExecutionCreate, db: AsyncSession = Dep
     await db.commit()
     await db.refresh(execution)
     return await _execution_out(db, execution)
+
+
+@router.post("/executions/batch")
+async def batch_create_executions(body: dict, db: AsyncSession = Depends(get_db)):
+    """批量执行真实历史 ASR。source_ids 必须是 PatientAsrResult.id。
+
+    不接收前端伪造 transcript；每条输入都重新从数据库 full_transcript 读取。
+    单条不存在/无文本时记录到 errors，不阻断其他合法记录。
+    """
+    raw_ids = body.get("source_ids") or []
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="source_ids 必须是数组")
+    source_ids: list[int] = []
+    for value in raw_ids:
+        try:
+            item = int(value)
+        except (TypeError, ValueError):
+            continue
+        if item > 0 and item not in source_ids:
+            source_ids.append(item)
+    if not source_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一条历史ASR")
+    if len(source_ids) > 200:
+        raise HTTPException(status_code=400, detail="单次最多批量执行200条历史ASR")
+
+    scene = str(body.get("scene") or "卵泡监测B超")
+    model_name = str(body.get("model_name") or "model_c")
+    rule_version_id = body.get("rule_version_id")
+    if rule_version_id is not None:
+        try:
+            rule_version_id = int(rule_version_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="rule_version_id 无效")
+
+    version = await _resolve_version_or_404(db, rule_version_id)
+    snapshot, config_hash, _, _, _ = await _build_snapshot(db, version)
+    created: list[ConversionPipelineExecution] = []
+    errors: list[dict[str, Any]] = []
+
+    for source_id in source_ids:
+        asr = await db.get(PatientAsrResult, source_id)
+        if not asr:
+            errors.append({"source_id": source_id, "error": "历史ASR结果不存在"})
+            continue
+        input_text = (asr.full_transcript or "").strip()
+        if not input_text:
+            errors.append({"source_id": source_id, "error": "历史ASR无有效full_transcript"})
+            continue
+
+        execution = ConversionPipelineExecution(
+            source_type="patient_asr_result",
+            source_id=source_id,
+            input_source="raw_asr_text",
+            input_text=input_text,
+            scene=scene,
+            model_name=model_name,
+            rule_version_id=version.id if version else None,
+            rule_version_code=version.version_code if version else "manual",
+            config_snapshot=snapshot,
+            config_hash=config_hash,
+            status="created",
+        )
+        db.add(execution)
+        await db.flush()
+
+        pipeline = _run_pipeline_for(execution, snapshot, config_hash)
+        for step in pipeline.steps:
+            await _persist_step(db, execution.id, execution.config_hash, step)
+        await _apply_final(db, execution, pipeline)
+        created.append(execution)
+
+    await db.commit()
+    items: list[PipelineExecutionOut] = []
+    for execution in created:
+        await db.refresh(execution)
+        items.append(await _execution_out(db, execution))
+    return {
+        "total": len(source_ids),
+        "success_count": len(items),
+        "failed_count": len(errors),
+        "items": items,
+        "errors": errors,
+    }
 
 
 @router.get("/executions/{execution_id}", response_model=PipelineExecutionOut)

@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.services.conversion_engine.endometrium_type_rules import collect_endometrium_type_rule_items
+
 
 @dataclass
 class NumberResult:
@@ -170,10 +172,17 @@ def _normalize_multiply_operator(text: str) -> tuple[str, list[dict]]:
     def replace_multiply(m):
         raw = m.group()
         num1 = _parse_chinese_number(m.group(1))
-        num2 = _parse_chinese_number(m.group(3))
+        right_raw = m.group(3)
+        protected_suffix = ""
+        # 医学词步骤已把“五回声”登记为高风险候选。数字转换不得把
+        # “五八乘以三八五回声”吞成 58×385；最后一个“五”属于“五回声”。
+        if right_raw.endswith("五") and text[m.end():].startswith("回声") and len(right_raw) > 2:
+            right_raw = right_raw[:-1]
+            protected_suffix = "五"
+        num2 = _parse_chinese_number(right_raw)
 
         if num1 is not None and num2 is not None:
-            result = f"{num1}×{num2}"
+            result = f"{num1}×{num2}{protected_suffix}"
             conversions.append({
                 "rule_id": "N003",
                 "raw": raw,
@@ -262,50 +271,30 @@ def _normalize_unit(text: str) -> tuple[str, list[dict]]:
 
 
 def _normalize_endometrium_type(text: str) -> tuple[str, list[dict]]:
-    """N005: 内膜分型格式化（如 C / C级 / C 型 → C型）
-
-    仅 A/B/C 可自动格式化。
-    """
-    conversions = []
-
-    # 匹配 A/B/C 后跟 级/型/空格 等
-    pattern = r'([ABC])\s*[级型]?\s*型'
-
-    def normalize_type(m):
-        raw = m.group()
-        result = f"{m.group(1)}型"
-        if raw != result:
-            conversions.append({
-                "rule_id": "N005",
-                "raw": raw,
-                "converted": result,
-                "action": "AUTO",
-                "category": "format",
-                "start": m.start(),
-                "end": m.end(),
-            })
-        return result
-
-    cleaned = re.sub(pattern, normalize_type, text)
-
-    # 处理 "C级" → "C型"
-    pattern2 = r'([ABC])级'
-    def normalize_type2(m):
-        raw = m.group()
-        result = f"{m.group(1)}型"
+    """N005: 仅在内膜业务窗口内把A/B/C的型/形/性变体归一为“X型”。"""
+    conversions: list[dict] = []
+    replacements: list[tuple[int, int, str]] = []
+    for item in collect_endometrium_type_rule_items(text):
+        # 多类型冲突(M006)和疑似近音(M007)必须保留原文等待复核。
+        if item.rule_id != "M003" or item.action != "AUTO" or not item.converted:
+            continue
+        if item.raw == item.converted:
+            continue
         conversions.append({
             "rule_id": "N005",
-            "raw": raw,
-            "converted": result,
+            "raw": item.raw,
+            "converted": item.converted,
             "action": "AUTO",
             "category": "format",
-            "start": m.start(),
-            "end": m.end(),
+            "start": item.start,
+            "end": item.end,
+            "notes": "只在内膜业务窗口内归一A/B/C型变体",
         })
-        return result
+        replacements.append((item.start, item.end, item.converted))
 
-    cleaned = re.sub(pattern2, normalize_type2, cleaned)
-
+    cleaned = text
+    for start, end, converted in sorted(replacements, reverse=True):
+        cleaned = cleaned[:start] + converted + cleaned[end:]
     return cleaned, conversions
 
 
@@ -346,7 +335,8 @@ def _split_4digit_dimension(text: str, scene: str) -> tuple[str, list[dict]]:
                 "risk_level": "medium",
                 "notes": "4位连续数字，疑似卵巢尺寸，需确认",
             })
-            return f"【候选：{result}】"
+            # CANDIDATE 只记录候选，不覆盖当前有效文本。
+            return raw
         return raw
 
     cleaned = re.sub(chinese_4digit, split_dimension, text)
@@ -369,7 +359,8 @@ def _split_4digit_dimension(text: str, scene: str) -> tuple[str, list[dict]]:
                 "confidence": 0.8,
                 "risk_level": "medium",
             })
-            return f"【候选：{result}】"
+            # CANDIDATE 只记录候选，不覆盖当前有效文本。
+            return raw
         return raw
 
     cleaned = re.sub(arabic_4digit, split_arabic_4digit, cleaned)
@@ -412,7 +403,8 @@ def _check_dimension_anomaly(text: str) -> tuple[str, list[dict]]:
                 "risk_level": "highest",
                 "notes": "异常小数点，疑似尺寸误识",
             })
-            return f"【候选{result}】"
+            # REVIEW 只记录候选值，原文留给人工确认。
+            return raw
         return raw
 
     cleaned = re.sub(pattern, check_anomaly, text)
@@ -443,7 +435,8 @@ def _split_decimal_sequence(text: str) -> tuple[str, list[dict]]:
                 "confidence": 0.75,
                 "risk_level": "medium",
             })
-            return result
+            # CANDIDATE 不修改当前有效文本。
+            return raw
         return raw
 
     cleaned = re.sub(pattern, split_sequence, text)
@@ -479,7 +472,8 @@ def _expand_count_notation(text: str) -> tuple[str, list[dict]]:
             "risk_level": "medium",
             "notes": "仅作候选，不能覆盖原始列表",
         })
-        return result
+        # CANDIDATE 不修改当前有效文本。
+        return raw
 
     cleaned = re.sub(pattern, expand_count, text)
     return cleaned, conversions

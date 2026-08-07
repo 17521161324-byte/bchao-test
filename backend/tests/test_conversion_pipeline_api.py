@@ -21,7 +21,7 @@ async def test_create_execution_run_all_saves_seven_steps(async_client: AsyncCli
     assert len(data["steps"]) == 7
     codes = [step["step_code"] for step in data["steps"]]
     assert codes == [
-        "BASE_CLEANING", "NUMBER_NORMALIZE", "MEDICAL_TERM",
+        "MEDICAL_TERM", "BASE_CLEANING", "NUMBER_NORMALIZE",
         "BUSINESS_SEGMENT", "FIELD_PARSE", "RUNTIME_RULE", "RISK_INTERCEPT",
     ]
     assert all(step["status"] == "success" for step in data["steps"])
@@ -69,11 +69,11 @@ async def test_run_step_progressive(async_client: AsyncClient):
 
     step1 = await async_client.post(
         f"/conversion-pipeline/executions/{created['id']}/run-step",
-        json={"step_code": "BASE_CLEANING"},
+        json={"step_code": "MEDICAL_TERM"},
     )
     assert step1.status_code == 200
     assert len(step1.json()["steps"]) == 1
-    assert step1.json()["steps"][0]["step_code"] == "BASE_CLEANING"
+    assert step1.json()["steps"][0]["step_code"] == "MEDICAL_TERM"
 
     # 跳步应被拒绝
     skip = await async_client.post(
@@ -166,8 +166,9 @@ async def test_run_to_step_stops_after_target_step(async_client: AsyncClient):
     assert partial.status_code == 200
     data = partial.json()
     assert data["status"] == "running"
+    # V14：医学词标准化为第一步
     assert [step["step_code"] for step in data["steps"]] == [
-        "BASE_CLEANING", "NUMBER_NORMALIZE", "MEDICAL_TERM",
+        "MEDICAL_TERM",
     ]
 
     full = await async_client.post(
@@ -243,7 +244,7 @@ async def test_continue_uses_effective_output(async_client: AsyncClient):
     data = response.json()
     assert data["status"] == "completed"
     assert [step["step_code"] for step in data["steps"]] == [
-        "BASE_CLEANING", "NUMBER_NORMALIZE", "MEDICAL_TERM",
+        "MEDICAL_TERM", "BASE_CLEANING", "NUMBER_NORMALIZE",
         "BUSINESS_SEGMENT", "FIELD_PARSE", "RUNTIME_RULE", "RISK_INTERCEPT",
     ]
 

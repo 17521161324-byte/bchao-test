@@ -8,13 +8,21 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.services.conversion_engine.context_inference import (
+    FUZZY_OVARY_SIZE_TERMS,
+    collect_anonymous_ovary_groups,
+    collect_fuzzy_ovary_inferences,
+    collect_inferred_endometrium_pairs,
+)
+
 
 MEDICAL_TERMS = [
     {
         "field_code": "right_ovary",
         "normalized": "右卵巢",
         "side": "RIGHT",
-        "terms": ["右卵巢大小", "右卵巢", "肉卵巢", "右卵朝", "六宛桥大桥", "六碗桥大桥"],
+        # 模糊卵巢大小词不得在词典层直接固定为右侧，统一交给 S006/S011。
+        "terms": ["右卵巢大小", "右卵巢", "肉卵巢", "右卵朝"],
     },
     {
         "field_code": "left_ovary",
@@ -39,11 +47,16 @@ EXPLICIT_SIDE_LOCATORS = {
     "右边": "RIGHT",
     "右侧": "RIGHT",
 }
-REMARK_WORDS = ["无回声", "五回声", "强回声光团", "强回声", "稍高回声", "回声欠均", "回声不均", "连续性欠佳", "管状无回声", "囊性无回声", "排精"]
+REMARK_WORDS = [
+    "内膜上见多个强回声包块", "内膜中断见息肉体影", "内膜上见强回声包块",
+    "连续性稍欠佳", "连续性欠佳", "管状无回声", "囊性无回声",
+    "强回声包块", "强回声光团", "息肉样回声", "息肉体影", "宫腔分离", "内膜中断",
+    "回声欠均", "回声不均", "稍高回声", "强回声", "无回声", "五回声", "排精",
+]
 # “五回声 → 无回声”只能由医学词规则决定，不能由 locator 自动决定（避免低风险 AUTO 覆盖高风险 REVIEW）。
 REMARK_NORMALIZATION: dict[str, str] = {}
 NOISE_WORDS = ["嗯", "啊", "哦", "好", "好的", "可以", "等一下", "我看看"]
-ENDOMETRIUM_TYPE_PATTERN = re.compile(r"([ABC])[型级]?|回声欠均|回声不均|连续性欠佳")
+ENDOMETRIUM_TYPE_PATTERN = re.compile(r"([ABCＡＢＣ])\s*[型形性]")
 DECIMAL_PATTERN = re.compile(r"\d+\.\d+")
 SIZE_PATTERN = re.compile(r"(\d{2})\s*[×xX*乘]\s*(\d{2})")
 SPLIT_SIZE_PATTERN = re.compile(r"(\d{2})\s*[×xX*乘]\s*(\d)[，,、\s]*(\d{1,2})")
@@ -79,6 +92,9 @@ def locate_business_segments(text: str) -> list[dict[str, Any]]:
         normalized: Any = None,
         participates: bool = True,
         note: str = "",
+        rule_id: str = "",
+        action: str = "",
+        evidence: str = "",
     ):
         if start < 0 or end <= start:
             return
@@ -92,6 +108,9 @@ def locate_business_segments(text: str) -> list[dict[str, Any]]:
             "end": end,
             "participates": participates,
             "note": note,
+            "rule_id": rule_id,
+            "action": action,
+            "evidence": evidence,
         })
         if segment_type not in ("noise",):
             occupied.append((start, end))
@@ -104,7 +123,32 @@ def locate_business_segments(text: str) -> list[dict[str, Any]]:
             field_code=anchor["field_code"],
             side=anchor["side"] or "",
             normalized=anchor["normalized"],
-            note="医学名词/近似词",
+            note="明确医学名词",
+        )
+
+    # C006/C007 -> S006/S011：近似词先是UNKNOWN候选，再由全文上下文推断侧别。
+    for inferred in collect_fuzzy_ovary_inferences(text):
+        field_code = inferred.target_field or "ovary_size_candidate"
+        normalized = (
+            "右卵巢大小" if inferred.side == "RIGHT" else
+            "左卵巢大小" if inferred.side == "LEFT" else
+            "卵巢大小"
+        )
+        add(
+            "medical_term", inferred.start, inferred.end,
+            field_code=field_code, side=inferred.side, normalized=normalized,
+            note=f"{inferred.rule_id} 上下文组合判定：{inferred.evidence}；状态REVIEW",
+            rule_id=inferred.rule_id, action=inferred.action, evidence=inferred.evidence,
+        )
+
+    # S010：后文首次明确一侧时，把前面的匿名尺寸+连续卵泡组归到另一侧。
+    for group in collect_anonymous_ovary_groups(text):
+        add(
+            "locator", group.start, min(group.end, group.start + len(group.size_text)),
+            field_code="inferred_right_segment" if group.side == "RIGHT" else "inferred_left_segment",
+            side=group.side, normalized="右卵巢段" if group.side == "RIGHT" else "左卵巢段",
+            note=f"S010 上下文反推：{group.evidence}；状态REVIEW",
+            rule_id=group.rule_id, action=group.action, evidence=group.evidence,
         )
 
     for word in LOCATOR_WORDS:
@@ -113,6 +157,7 @@ def locate_business_segments(text: str) -> list[dict[str, Any]]:
             add("locator", m.start(), m.end(), field_code="side_switch", normalized=normalized, note="左右归属定位词")
 
     _locate_endometrium_values(text, add)
+    _locate_inferred_endometrium_values(text, add)
     _locate_ovary_sizes_and_follicles(text, add)
 
     for word in REMARK_WORDS:
@@ -151,14 +196,35 @@ def _locate_endometrium_values(text: str, add):
             start = window_start + typ.start()
             end = window_start + typ.end()
             raw = text[start:end]
-            normalized = raw if raw in ("回声欠均", "回声不均", "连续性欠佳") else f"{raw[0]}型"
+            type_char = raw[0].translate(str.maketrans({"Ａ": "A", "Ｂ": "B", "Ｃ": "C"}))
             add(
                 "medical_data",
                 start,
                 end,
                 field_code="endometrium_type",
-                normalized=normalized,
-                note="内膜定位词后类型值",
+                normalized=f"{type_char}型",
+                note="标准内膜类型仅允许A/B/C型",
+            )
+
+
+def _locate_inferred_endometrium_values(text: str, add):
+    for item in collect_inferred_endometrium_pairs(text):
+        # 不改写原文；在业务片段中直接标记厚度/类型来源。
+        decimal = re.search(r"\d{1,2}\.\d", item.raw_text)
+        typ = re.search(r"[ABCＡＢＣ]\s*[型形性]", item.raw_text)
+        if decimal:
+            add(
+                "medical_data", item.start + decimal.start(), item.start + decimal.end(),
+                field_code="endometrium_thickness", normalized=item.thickness,
+                note=f"S012 反推内膜段：{item.evidence}",
+                rule_id=item.rule_id, action=item.action, evidence=item.evidence,
+            )
+        if typ:
+            add(
+                "medical_data", item.start + typ.start(), item.start + typ.end(),
+                field_code="endometrium_type", normalized=item.endometrium_type,
+                note=f"S012 反推内膜段：{item.evidence}",
+                rule_id=item.rule_id, action=item.action, evidence=item.evidence,
             )
 
 
@@ -255,6 +321,15 @@ def _collect_side_anchors(text: str) -> list[tuple[int, int, str]]:
     for word, side in EXPLICIT_SIDE_LOCATORS.items():
         for m in re.finditer(re.escape(word), text):
             candidates.append((m.start(), m.end(), side, 1))
+
+    # 近似卵巢大小候选的左右只来自组合规则，优先级低于原文明示侧别。
+    for inferred in collect_fuzzy_ovary_inferences(text):
+        if inferred.side in ("LEFT", "RIGHT"):
+            candidates.append((inferred.start, inferred.end, inferred.side, 1))
+
+    # 匿名测量组用尺寸起点作为虚拟侧别锚点，让后续尺寸/卵泡进入同一业务段。
+    for group in collect_anonymous_ovary_groups(text):
+        candidates.append((group.start, group.start, group.side, 1))
 
     candidates.sort(key=lambda item: (item[0], -item[3], -(item[1] - item[0])))
     result: list[tuple[int, int, str]] = []

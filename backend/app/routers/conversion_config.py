@@ -345,7 +345,7 @@ async def preview(data: ConversionPreviewRequest, db: AsyncSession = Depends(get
         skip_conversion=data.skip_conversion,
         extra_confusion_rules=extra_rules,
         runtime_rules=runtime_rules,
-        lexicon_mode="replace" if version else "builtin",
+        lexicon_mode="append" if version else "builtin",
     )
     return ConversionPreviewOut(
         raw_text=result.raw_text,

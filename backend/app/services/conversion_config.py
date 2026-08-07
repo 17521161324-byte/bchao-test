@@ -230,7 +230,7 @@ async def build_version_config_hash(db: AsyncSession, version: ConversionConfigV
         },
         "lexicon_rules": lexicon_rules,
         "runtime_rules": runtime_rules,
-        "lexicon_mode": "replace",
+        "lexicon_mode": "append",
     }
     return build_config_hash(snapshot)
 
@@ -276,14 +276,14 @@ TEXT_SWITCH_RULES = [
 
 FIELD_EXTRACT_RULES = [
     {"rule_code": "F001", "name": "内膜厚度", "description": "内膜定位词后首个小数，范围 1-30mm。", "field_code": "endometrium_thickness", "range": "1-30mm"},
-    {"rule_code": "F002", "name": "内膜类型", "description": "内膜分型 A/B/C 型（含回声欠均等描述）。", "field_code": "endometrium_type", "range": "A/B/C 型"},
+    {"rule_code": "F002", "name": "内膜类型", "description": "仅接受内膜业务窗口内的 A/B/C 型；回声欠均等描述进入备注。", "field_code": "endometrium_type", "range": "A/B/C 型"},
     {"rule_code": "F003", "name": "右卵巢大小", "description": "右卵巢长×宽，每维范围 10-100mm。", "field_code": "right_ovary_size", "range": "10-100mm/维"},
     {"rule_code": "F004", "name": "左卵巢大小", "description": "左卵巢长×宽，每维范围 10-100mm。", "field_code": "left_ovary_size", "range": "10-100mm/维"},
     {"rule_code": "F005", "name": "右侧当前状态", "description": "检测到右/换边词后当前侧别置为右侧。", "field_code": "current_side", "range": "RIGHT"},
     {"rule_code": "F006", "name": "左侧当前状态", "description": "检测到左/换边词后当前侧别置为左侧。", "field_code": "current_side", "range": "LEFT"},
     {"rule_code": "F007", "name": "右卵泡列表", "description": "右卵巢大小之后的小数序列，常规 2-40mm，>40mm 保留并警示。", "field_code": "right_follicles", "range": "2-40mm 常规，>40mm 警示"},
     {"rule_code": "F008", "name": "左卵泡列表", "description": "左卵巢大小之后的小数序列，常规 2-40mm，>40mm 保留并警示。", "field_code": "left_follicles", "range": "2-40mm 常规，>40mm 警示"},
-    {"rule_code": "F009", "name": "超声发现", "description": "无回声/强回声/回声欠均等超声描述，支持否定修饰。", "field_code": "ultrasound_findings", "range": "-"},
+    {"rule_code": "F009", "name": "超声描述归备注", "description": "无回声/强回声/回声欠均/宫腔分离等医学描述写入备注，不冒充内膜类型。", "field_code": "remark", "range": "-"},
     {"rule_code": "F010", "name": "操作信息", "description": "取卵/移植/冻胚胎/麻醉等操作，支持取消/否定修饰。", "field_code": "procedure_info", "range": "-"},
     {"rule_code": "F011", "name": "随访医嘱", "description": "抽血/空腹/复诊等医嘱关键词。", "field_code": "followup_orders", "range": "-"},
     {"rule_code": "F012", "name": "提及数量", "description": "口述卵泡数量（如三个）。", "field_code": "mentioned_count", "range": "-"},
@@ -293,15 +293,60 @@ FIELD_EXTRACT_RULES = [
 
 
 def get_builtin_rules() -> dict[str, list[dict]]:
-    """返回内置规则清单元数据（只读展示用）。
-
-    三组：text_switch（文本切换 SW001-SW003）、field_extract（数据提取 F001-F014）、
-    risk（警示规则 R001-R017，直接序列化 risk_intercept.RISK_RULES 保证与引擎同步）。
-    """
+    """返回真实 CORE 规则清单，供执行诊断判断“已配置/已调用/命中”。"""
     from app.services.conversion_engine.risk_intercept import RISK_RULES
 
+    medical_term = [
+        {
+            "rule_code": rule.rule_id,
+            "name": f"{rule.asr_error} → {rule.standard}",
+            "description": rule.notes or f"{rule.match_type} 医学词规则",
+            "action": rule.action,
+            "system_handler": "apply_medical_term_correct",
+        }
+        for rule in CONFUSION_RULES
+        if rule.enabled
+    ]
+    medical_term.extend([
+        {"rule_code": "M003", "name": "标准内膜类型识别", "description": "内膜窗口内明确 A/B/C型、形、性，归一为A/B/C型。", "action": "AUTO", "system_handler": "collect_endometrium_type_rule_items"},
+        {"rule_code": "M005", "name": "内膜类型识别窗口", "description": "只在内膜锚点之后、下一核心卵巢锚点/强边界之前识别类型。", "action": "AUTO", "system_handler": "collect_endometrium_type_rule_items"},
+        {"rule_code": "M006", "name": "多内膜类型冲突", "description": "同一内膜窗口出现多个完整类型时仅生成最后完整类型候选并进入REVIEW。", "action": "REVIEW", "system_handler": "collect_endometrium_type_rule_items"},
+        {"rule_code": "M007", "name": "疑似内膜类型近音词", "description": "飞行/地形/黑皮等只标记疑似类型，禁止盲猜A/B/C。", "action": "REVIEW", "system_handler": "collect_endometrium_type_rule_items"},
+    ])
+
+    number_rules = [
+        {"rule_code": code, "name": name, "description": desc, "action": action, "system_handler": handler}
+        for code, name, desc, action, handler in [
+            ("D001", "乘一误识尺寸候选", "乘一误识为乘以的尺寸处理。", "AUTO", "parse_dimension_candidates"),
+            ("D002", "异常小数尺寸重建", "异常小数尺寸仅生成REVIEW候选。", "REVIEW", "parse_dimension_candidates"),
+            ("D003", "卵巢维度缺失", "缺失首维输出??×N并BLOCK。", "BLOCK", "parse_dimension_candidates"),
+            ("N001", "中文小数转数字", "完整中文小数转阿拉伯数字。", "AUTO", "apply_number_normalize"),
+            ("N002", "幺数字归一", "明确数值语境中的幺按1处理。", "AUTO", "apply_number_normalize"),
+            ("N003", "乘法连接词统一", "明确二维尺寸中的乘/乘以统一为×，保护医学词边界。", "AUTO", "apply_number_normalize"),
+            ("N004", "单位统一", "毫米/厘米/毫升等单位格式统一。", "AUTO", "apply_number_normalize"),
+            ("N005", "A/B/C格式化", "明确A/B/C类型格式归一。", "AUTO", "apply_number_normalize"),
+            ("N006", "中文四位尺寸候选", "连续四位中文数字只生成尺寸候选，不覆盖原文。", "CANDIDATE", "apply_number_normalize"),
+            ("N007", "数字四位尺寸候选", "连续四位数字只生成尺寸候选，不覆盖原文。", "CANDIDATE", "apply_number_normalize"),
+            ("N009", "异常小数尺寸候选", "异常小数尺寸进入REVIEW，不覆盖原文。", "REVIEW", "apply_number_normalize"),
+            ("N010", "连续小数切分候选", "连续小数序列仅生成候选元数据。", "CANDIDATE", "apply_number_normalize"),
+            ("N011", "重复数量候选", "数字+两个/三个等只生成重复候选。", "CANDIDATE", "apply_number_normalize"),
+            ("N012", "数值列表标点恢复", "业务数值列表中的空格分隔转中文逗号。", "AUTO", "apply_number_normalize"),
+        ]
+    ]
+
+    business_segment = [
+        {"rule_code": "S006", "name": "后置明确侧别反推模糊卵巢大小", "description": "模糊大小候选在后文明示另一侧前时按互补侧别生成REVIEW候选。", "action": "REVIEW", "system_handler": "collect_fuzzy_ovary_inferences"},
+        {"rule_code": "S010", "name": "后置明确侧别反推前置匿名卵巢段", "description": "匿名二维尺寸+连续卵泡组在后文首次明确一侧时归为另一侧候选。", "action": "REVIEW", "system_handler": "collect_anonymous_ovary_groups"},
+        {"rule_code": "S011", "name": "重复卵巢测量组互补侧别", "description": "前一测量组侧别已知，后续模糊大小候选形成新测量组时推断另一侧。", "action": "REVIEW", "system_handler": "collect_fuzzy_ovary_inferences"},
+        {"rule_code": "S012", "name": "数值+A/B/C型反推内膜段", "description": "不在左右卵巢段内的明确小数+A/B/C型建立内膜段。", "action": "AUTO", "system_handler": "collect_inferred_endometrium_pairs"},
+        *TEXT_SWITCH_RULES,
+    ]
+
     return {
-        "text_switch": TEXT_SWITCH_RULES,
+        "medical_term": medical_term,
+        "number_normalize": number_rules,
+        "business_segment": business_segment,
+        "text_switch": [],
         "field_extract": FIELD_EXTRACT_RULES,
         "risk": [
             {

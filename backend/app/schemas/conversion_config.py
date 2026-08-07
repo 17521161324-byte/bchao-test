@@ -179,7 +179,10 @@ class BuiltinRuleItem(BaseModel):
 
 
 class BuiltinRulesOut(BaseModel):
-    """内置规则清单元数据：文本切换 / 数据提取 / 警示规则。"""
+    """内置规则清单元数据：CORE词典 / 数字 / 业务片段 / 字段 / 风险。"""
+    medical_term: list[BuiltinRuleItem] = Field(default_factory=list)
+    number_normalize: list[BuiltinRuleItem] = Field(default_factory=list)
+    business_segment: list[BuiltinRuleItem] = Field(default_factory=list)
     text_switch: list[BuiltinRuleItem] = Field(default_factory=list)
     field_extract: list[BuiltinRuleItem] = Field(default_factory=list)
     risk: list[BuiltinRuleItem] = Field(default_factory=list)

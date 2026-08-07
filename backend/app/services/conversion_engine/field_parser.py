@@ -13,6 +13,14 @@ from dataclasses import dataclass, field
 from typing import Optional, Any
 
 from app.services.conversion_pipeline.types import ParserState
+from app.services.conversion_engine.context_inference import (
+    collect_anonymous_ovary_groups,
+    collect_fuzzy_ovary_inferences,
+    collect_inferred_endometrium_pairs,
+)
+from app.services.conversion_engine.endometrium_type_rules import (
+    collect_endometrium_type_rule_items,
+)
 
 
 @dataclass
@@ -23,6 +31,7 @@ class FieldParseResult:
     source_spans: list[dict] = field(default_factory=list)  # 每个字段的来源追踪
     final_state: dict[str, Any] = field(default_factory=dict)  # P0-06：解析器真实最终状态
     transitions: list[dict] = field(default_factory=list)  # P0-06：状态机变迁轨迹
+    rule_items: list[dict[str, Any]] = field(default_factory=list)  # M003/M006/M007 可观测规则记录
 
 
 @dataclass
@@ -44,9 +53,12 @@ ENDOMETRIUM_TYPES = {"A型", "B型", "C型", "A", "B", "C"}
 
 # 超声发现关键词
 ULTRASOUND_KEYWORDS = [
-    "无回声", "强回声", "稍高回声", "回声欠均", "回声不均",
-    "囊肿", "窦卵泡", "管状无回声", "连续性稍欠佳",
-    "宫腔分离",  # P0-08：宫腔分离归入超声发现
+    # 长表达必须排在短表达之前，避免“强回声包块”只截成“强回声”。
+    "内膜上见多个强回声包块", "内膜中断见息肉体影", "内膜上见强回声包块",
+    "连续性稍欠佳", "连续性欠佳", "管状无回声", "囊性无回声",
+    "强回声包块", "息肉样回声", "息肉体影", "宫腔分离", "内膜中断",
+    "回声欠均", "回声不均", "稍高回声", "强回声", "无回声",
+    "囊肿", "窦卵泡",
 ]
 
 # 操作关键词
@@ -118,6 +130,11 @@ class FieldParser:
         self.unassigned_ovary_sizes: list[dict] = []
         self.unparsed_follicle_values: list[dict] = []
         self.incomplete_ovary_fields: list[str] = []  # P0-09：??×N 侧别字段码
+        self.fuzzy_ovary_inferences: dict[int, Any] = {}
+        self.anonymous_ovary_groups: dict[int, Any] = {}
+        self.inferred_endometrium_pairs: dict[int, Any] = {}
+        self.endometrium_type_items: dict[int, Any] = {}
+        self.field_rule_items: list[dict[str, Any]] = []
 
     def parse(self, text: str) -> FieldParseResult:
         """解析文本，提取结构化字段"""
@@ -129,6 +146,36 @@ class FieldParser:
         self.unassigned_ovary_sizes = []
         self.unparsed_follicle_values = []
         self.incomplete_ovary_fields = []
+        self.fuzzy_ovary_inferences = {item.start: item for item in collect_fuzzy_ovary_inferences(text)}
+        self.anonymous_ovary_groups = {item.start: item for item in collect_anonymous_ovary_groups(text)}
+        self.inferred_endometrium_pairs = {item.start: item for item in collect_inferred_endometrium_pairs(text)}
+        type_rule_items = collect_endometrium_type_rule_items(text)
+        self.endometrium_type_items = {
+            item.start: item for item in type_rule_items if item.converted and item.rule_id in {"M003", "M006"}
+        }
+        self.field_rule_items = [
+            {
+                "rule_id": item.rule_id,
+                "rule_name": {
+                    "M003": "标准内膜类型识别",
+                    "M006": "多内膜类型冲突",
+                    "M007": "疑似内膜类型近音词",
+                }.get(item.rule_id, item.rule_id),
+                "raw": item.raw,
+                "converted": item.converted,
+                "action": item.action,
+                "category": "endometrium_type",
+                "start": item.start,
+                "end": item.end,
+                "message": item.message,
+                "evidence": item.evidence,
+                "field_code": "endometrium_type",
+            }
+            for item in type_rule_items
+        ]
+        for item in type_rule_items:
+            if item.action == "REVIEW":
+                self.warnings.append(f"{item.rule_id}: {item.message}；{item.evidence}")
 
         # 按顺序扫描文本
         pos = 0
@@ -138,6 +185,54 @@ class FieldParser:
                 end_bracket = text.find("】", pos)
                 if end_bracket != -1:
                     pos = end_bracket + 1
+                    continue
+
+            # S012：其他文本中出现标准“几点几 + A/B/C型”，从该数值处建立内膜段。
+            inferred_endo = self.inferred_endometrium_pairs.get(pos)
+            if inferred_endo:
+                self._register_field(ParsedField(
+                    field_code="endometrium_thickness",
+                    value=inferred_endo.thickness, raw_text=inferred_endo.raw_text,
+                    start=inferred_endo.start, end=inferred_endo.end,
+                    confidence=0.98,
+                ))
+                self._register_field(ParsedField(
+                    field_code="endometrium_type",
+                    value=inferred_endo.endometrium_type, raw_text=inferred_endo.raw_text,
+                    start=inferred_endo.start, end=inferred_endo.end,
+                    confidence=0.98,
+                ))
+                self.warnings.append(f"S012: {inferred_endo.evidence}")
+                pos = inferred_endo.end
+                continue
+
+            # C006/C007 + S006/S011：近似词只做候选，侧别由全文组合判断。
+            fuzzy = self.fuzzy_ovary_inferences.get(pos)
+            if fuzzy:
+                if fuzzy.side in ("LEFT", "RIGHT"):
+                    self._apply_side(fuzzy.side, text, pos, trigger=f"{fuzzy.rule_id}:{fuzzy.term}")
+                    self.warnings.append(
+                        f"{fuzzy.rule_id}: {fuzzy.term} → {'右' if fuzzy.side == 'RIGHT' else '左'}卵巢大小（上下文推断，需复核）"
+                    )
+                    field = self._parse_ovary_size(text, pos)
+                    if field:
+                        field.warning = "侧别来自上下文组合判定，需人工复核"
+                        self._register_field(field)
+                        pos = field.end
+                        continue
+                pos = fuzzy.end
+                continue
+
+            # S010：匿名尺寸/卵泡组 + 后置明确侧别，反推为另一侧业务段。
+            anonymous = self.anonymous_ovary_groups.get(pos)
+            if anonymous:
+                self._apply_side(anonymous.side, text, pos, trigger="S010:匿名测量组反推")
+                self.warnings.append(f"S010: {anonymous.evidence}（需复核）")
+                field = self._parse_ovary_size(text, pos)
+                if field:
+                    field.warning = "侧别来自后置明确侧别反推，需人工复核"
+                    self._register_field(field)
+                    pos = field.end
                     continue
 
             # F003/F004: 解析卵巢大小（优先于侧别检测）
@@ -328,20 +423,19 @@ class FieldParser:
         )
 
     def _parse_endometrium_type(self, text: str, pos: int) -> Optional[ParsedField]:
-        """F002: 解析内膜类型"""
-        pattern = r'([ABC])[型级]'
-        m = re.match(pattern, text[pos:])
-        if not m:
+        """F002/M003/M006: 仅解析内膜业务窗口中的标准A/B/C类型。"""
+        item = self.endometrium_type_items.get(pos)
+        if item is None or not item.converted:
             return None
-
-        value = f"{m.group(1)}型"
-
+        warning = "同一内膜窗口出现多个类型，需人工确认" if item.action == "REVIEW" else None
         return ParsedField(
             field_code="endometrium_type",
-            value=value,
-            raw_text=m.group(),
-            start=pos,
-            end=pos + m.end(),
+            value=item.converted,
+            raw_text=item.raw,
+            start=item.start,
+            end=item.end,
+            confidence=1.0 if item.action == "AUTO" else 0.7,
+            warning=warning,
         )
 
     def _parse_ovary_size(self, text: str, pos: int) -> Optional[ParsedField]:
@@ -435,9 +529,14 @@ class FieldParser:
         二维尺寸 + 紧邻"无回声/五回声"，且前方无"卵巢大小"锚点 → 整体作为备注候选，
         不解析为卵巢大小。
         """
-        before = text[max(0, pos - 20):pos]
+        before_start = max(0, pos - 20)
+        before = text[before_start:pos]
         if "卵巢大小" in before:
             return None
+        remark_start = pos
+        side_prefix = re.search(r"(?:左|右)卵巢(?:内|外)?\s*$", before)
+        if side_prefix:
+            remark_start = before_start + side_prefix.start()
 
         raw_size: str | None = None
         end: int | None = None
@@ -467,11 +566,12 @@ class FieldParser:
         if suffix is None:
             return None
 
+        full_remark = text[remark_start:end] + suffix
         return ParsedField(
-            field_code="ultrasound_findings",
-            value={"type": f"{raw_size}{suffix}", "negated": False},
-            raw_text=text[pos:end] + suffix,
-            start=pos,
+            field_code="remark",
+            value=full_remark,
+            raw_text=full_remark,
+            start=remark_start,
             end=end + len(suffix),
         )
 
@@ -538,8 +638,8 @@ class FieldParser:
                 }
 
                 return ParsedField(
-                    field_code="ultrasound_findings",
-                    value=value,
+                    field_code="remark",
+                    value=keyword,
                     raw_text=keyword,
                     start=pos,
                     end=pos + len(keyword),
@@ -597,10 +697,11 @@ class FieldParser:
                 if field_code not in fields:
                     fields[field_code] = []
                 fields[field_code].append(pf.value)
-            elif field_code == "ultrasound_findings":
-                if field_code not in fields:
-                    fields[field_code] = []
-                fields[field_code].append(pf.value)
+            elif field_code == "remark":
+                existing = str(fields.get("remark") or "").strip()
+                current = str(pf.value or "").strip()
+                if current and current not in existing:
+                    fields["remark"] = f"{existing}；{current}" if existing else current
             elif field_code == "procedure_info":
                 if field_code not in fields:
                     fields[field_code] = []
@@ -639,6 +740,7 @@ class FieldParser:
             source_spans=self.source_spans,
             final_state=self.state.to_dict(),
             transitions=self.transitions,
+            rule_items=self.field_rule_items,
         )
 
 
