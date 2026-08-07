@@ -412,6 +412,16 @@ async def batch_create_executions(body: dict, db: AsyncSession = Depends(get_db)
             await _persist_step(db, execution.id, execution.config_hash, step)
         await _apply_final(db, execution, pipeline)
         created.append(execution)
+        # P1：pipeline 失败的执行不计入 success_count，进入 failed_count 并携带
+        # execution_id/failed_step/error，与“创建成功即 success”的错误口径区分。
+        if execution.status == "failed":
+            failed_step = next((step for step in pipeline.steps if step.status == "failed"), None)
+            errors.append({
+                "source_id": source_id,
+                "execution_id": execution.id,
+                "failed_step": failed_step.step_code if failed_step else None,
+                "error": failed_step.error_message if failed_step else "pipeline 执行失败",
+            })
 
     await db.commit()
     items: list[PipelineExecutionOut] = []
@@ -420,7 +430,7 @@ async def batch_create_executions(body: dict, db: AsyncSession = Depends(get_db)
         items.append(await _execution_out(db, execution))
     return {
         "total": len(source_ids),
-        "success_count": len(items),
+        "success_count": sum(1 for execution in created if execution.status != "failed"),
         "failed_count": len(errors),
         "items": items,
         "errors": errors,

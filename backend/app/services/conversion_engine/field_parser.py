@@ -130,6 +130,7 @@ class FieldParser:
         self.unassigned_ovary_sizes: list[dict] = []
         self.unparsed_follicle_values: list[dict] = []
         self.incomplete_ovary_fields: list[str] = []  # P0-09：??×N 侧别字段码
+        self.review_fields: list[str] = []  # P0-02：S012 缺“型”后缀反推的内膜字段（REVIEW）
         self.fuzzy_ovary_inferences: dict[int, Any] = {}
         self.anonymous_ovary_groups: dict[int, Any] = {}
         self.inferred_endometrium_pairs: dict[int, Any] = {}
@@ -146,6 +147,7 @@ class FieldParser:
         self.unassigned_ovary_sizes = []
         self.unparsed_follicle_values = []
         self.incomplete_ovary_fields = []
+        self.review_fields = []
         self.fuzzy_ovary_inferences = {item.start: item for item in collect_fuzzy_ovary_inferences(text)}
         self.anonymous_ovary_groups = {item.start: item for item in collect_anonymous_ovary_groups(text)}
         self.inferred_endometrium_pairs = {item.start: item for item in collect_inferred_endometrium_pairs(text)}
@@ -173,6 +175,25 @@ class FieldParser:
             }
             for item in type_rule_items
         ]
+        # P0-02：S012 无“型”后缀反推（如 14.8A）是 REVIEW 决策，追加到规则记录，
+        # 使结果分级进入 REVIEW_REQUIRED 而不是 AUTO_ACCEPT。
+        self.field_rule_items.extend([
+            {
+                "rule_id": item.rule_id,
+                "rule_name": "数值+A/B/C型反推内膜段",
+                "raw": item.raw_text,
+                "converted": item.endometrium_type,
+                "action": item.action,
+                "category": "endometrium_type",
+                "start": item.start,
+                "end": item.end,
+                "message": "内膜厚度数值后紧跟无“型”后缀的A/B/C，疑似内膜类型，需人工确认",
+                "evidence": item.evidence,
+                "field_code": "endometrium_type",
+            }
+            for item in self.inferred_endometrium_pairs.values()
+            if item.action == "REVIEW"
+        ])
         for item in type_rule_items:
             if item.action == "REVIEW":
                 self.warnings.append(f"{item.rule_id}: {item.message}；{item.evidence}")
@@ -188,6 +209,8 @@ class FieldParser:
                     continue
 
             # S012：其他文本中出现标准“几点几 + A/B/C型”，从该数值处建立内膜段。
+            # P0-02：缺少“型”后缀的“几点几 + A/B/C”（如 14.8A）动作为 REVIEW，
+            # 只生成内膜厚度+内膜类型候选，不自动确认。
             inferred_endo = self.inferred_endometrium_pairs.get(pos)
             if inferred_endo:
                 self._register_field(ParsedField(
@@ -202,6 +225,9 @@ class FieldParser:
                     start=inferred_endo.start, end=inferred_endo.end,
                     confidence=0.98,
                 ))
+                if inferred_endo.action == "REVIEW":
+                    # P0-02：缺少“型”后缀只能 REVIEW，登记 field_status 供前端与分级使用。
+                    self.review_fields.extend(["endometrium_thickness", "endometrium_type"])
                 self.warnings.append(f"S012: {inferred_endo.evidence}")
                 pos = inferred_endo.end
                 continue
@@ -733,6 +759,12 @@ class FieldParser:
             fields["field_status"] = {
                 code: "INCOMPLETE" for code in self.incomplete_ovary_fields
             }
+        if self.review_fields:
+            # P0-02：S012 缺“型”后缀反推的内膜字段标记 REVIEW，需人工确认
+            status = dict(fields.get("field_status") or {})
+            for code in self.review_fields:
+                status[code] = "REVIEW"
+            fields["field_status"] = status
 
         return FieldParseResult(
             fields=fields,

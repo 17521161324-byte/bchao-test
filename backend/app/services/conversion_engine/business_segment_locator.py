@@ -226,6 +226,17 @@ def _locate_inferred_endometrium_values(text: str, add):
                 note=f"S012 反推内膜段：{item.evidence}",
                 rule_id=item.rule_id, action=item.action, evidence=item.evidence,
             )
+        else:
+            # P0-02：无“型”后缀的“几点几 + A/B/C”只有 REVIEW 候选（如 14.8A），
+            # 仍需在业务片段中标记类型候选来源，交由字段解析/人工复核。
+            letter = re.search(r"[ABCＡＢＣ]", item.raw_text)
+            if letter:
+                add(
+                    "medical_data", item.start + letter.start(), item.start + letter.end(),
+                    field_code="endometrium_type", normalized=item.endometrium_type,
+                    note=f"S012 反推内膜段（缺少“型”，状态REVIEW）：{item.evidence}",
+                    rule_id=item.rule_id, action=item.action, evidence=item.evidence,
+                )
 
 
 def _before_strong_boundary(text: str) -> str:

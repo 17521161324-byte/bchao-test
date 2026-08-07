@@ -287,6 +287,102 @@ def _rule_from_dict(item: dict) -> ConfusionRule:
     )
 
 
+def _rule_id_of(rule: ConfusionRule | dict) -> str:
+    if isinstance(rule, ConfusionRule):
+        return rule.rule_id
+    return str(rule.get("rule_id") or rule.get("rule_code") or "")
+
+
+def _rule_behavior_key(rule: ConfusionRule | dict) -> tuple:
+    """规则行为指纹：仅比较影响执行结果的字段（描述/备注类字段不参与）。"""
+    if isinstance(rule, ConfusionRule):
+        return (
+            rule.asr_error,
+            rule.standard,
+            rule.scene,
+            rule.required_context,
+            rule.excluded_context,
+            rule.match_type,
+            rule.risk_level,
+            rule.action,
+            round(rule.confidence, 4),
+            int(rule.priority),
+            bool(rule.enabled),
+        )
+    return (
+        str(rule.get("asr_error") or rule.get("error_text") or ""),
+        str(rule.get("standard") or rule.get("standard_text") or ""),
+        str(rule.get("scene") or rule.get("business_scene") or "通用"),
+        str(rule.get("required_context") or ""),
+        str(rule.get("excluded_context") or ""),
+        str(rule.get("match_type") or "exact"),
+        str(rule.get("risk_level") or "medium"),
+        str(rule.get("action") or "AUTO"),
+        round(float(rule.get("confidence") if rule.get("confidence") is not None else 0.95), 4),
+        int(rule.get("priority") or 100),
+        bool(rule.get("enabled", True)),
+    )
+
+
+def merge_lexicon_rules(
+    core_rules: list[ConfusionRule],
+    db_rules: list[ConfusionRule | dict],
+) -> list[ConfusionRule]:
+    """CORE（内置）与 DB（版本词库）合并策略（P1）。
+
+    - 先 CORE 后 DB：CORE 规则常驻，DB 规则作为版本化增量。
+    - DB rule_id 不存在于 CORE → append。
+    - DB rule_id == CORE rule_id 且行为完全一致 → 系统核心不可覆盖，保持 CORE
+      （版本库中由 builtin 种子导入的同 id 重复条目被丢弃，不允许同一 rule_id
+      存在两个执行版本）。
+    - DB rule_id == CORE rule_id 且行为不同 → 视为用户已配置该规则，DB 覆盖 CORE。
+    """
+    merged: list[ConfusionRule] = list(core_rules)
+    index_by_id: dict[str, int] = {rule.rule_id: idx for idx, rule in enumerate(merged) if rule.rule_id}
+    for item in db_rules:
+        db_rule = item if isinstance(item, ConfusionRule) else _rule_from_dict(item)
+        rule_id = db_rule.rule_id
+        if not rule_id:
+            merged.append(db_rule)
+            continue
+        if rule_id not in index_by_id:
+            merged.append(db_rule)
+            index_by_id[rule_id] = len(merged) - 1
+            continue
+        core_idx = index_by_id[rule_id]
+        if _rule_behavior_key(merged[core_idx]) == _rule_behavior_key(db_rule):
+            continue  # 与 CORE 完全一致的重复种子：保持 CORE
+        merged[core_idx] = db_rule  # 行为不同：DB 覆盖（仅保留一个执行版本）
+    return merged
+
+
+def merge_rule_entries(
+    core_entries: list[dict],
+    db_entries: list[dict],
+) -> list[dict]:
+    """与 merge_lexicon_rules 相同的合并策略，面向 dict 形态的规则条目（诊断用）。"""
+    merged: list[dict] = list(core_entries)
+    index_by_id: dict[str, int] = {}
+    for idx, entry in enumerate(merged):
+        rule_id = str(entry.get("rule_code") or entry.get("rule_id") or "")
+        if rule_id:
+            index_by_id[rule_id] = idx
+    for entry in db_entries:
+        rule_id = str(entry.get("rule_code") or entry.get("rule_id") or "")
+        if not rule_id:
+            merged.append(entry)
+            continue
+        if rule_id not in index_by_id:
+            merged.append(entry)
+            index_by_id[rule_id] = len(merged) - 1
+            continue
+        core_idx = index_by_id[rule_id]
+        if _rule_behavior_key(merged[core_idx]) == _rule_behavior_key(entry):
+            continue
+        merged[core_idx] = entry
+    return merged
+
+
 def apply_medical_term_correct(
     text: str,
     scene: str = "",
@@ -315,17 +411,16 @@ def apply_medical_term_correct(
         scene = _get_scene_context(text)
 
     if rule_mode == "builtin":
-        runtime_rules: list[ConfusionRule] = list(CONFUSION_RULES)
+        # 内置模式也按合并策略去重（builtin 只使用硬编码规则，extra 空时等价于 CORE）
+        runtime_rules = merge_lexicon_rules(CONFUSION_RULES, extra_rules or [])
     elif rule_mode == "replace":
-        runtime_rules = []
+        # 数据库规则完全替代硬编码；同 rule_id 重复只保留一个执行版本
+        runtime_rules = merge_lexicon_rules([], extra_rules or [])
     elif rule_mode == "append":
-        runtime_rules = list(CONFUSION_RULES)
+        # CORE 常驻 + DB 增量追加（P1 合并策略去重，不允许同一 rule_id 双版本）
+        runtime_rules = merge_lexicon_rules(CONFUSION_RULES, extra_rules or [])
     else:
         raise ValueError(f"Unsupported rule_mode: {rule_mode}")
-
-    if extra_rules:
-        for item in extra_rules:
-            runtime_rules.append(item if isinstance(item, ConfusionRule) else _rule_from_dict(item))
 
     # 排序：优先级数字小的先评估；同优先级长表达先匹配；
     # 同位置冲突时高风险动作先评估；最终由 DecisionRegistry 防止降级覆盖。

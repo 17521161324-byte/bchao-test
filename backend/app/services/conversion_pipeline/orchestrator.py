@@ -24,7 +24,10 @@ from app.services.conversion_pipeline.dimension_parser import (
     apply_dimension_candidates,
     parse_dimension_candidates,
 )
-from app.services.conversion_pipeline.runtime_rule_executor import execute_runtime_rules
+from app.services.conversion_pipeline.runtime_rule_executor import (
+    ALLOWED_HANDLERS,
+    execute_runtime_rules,
+)
 from app.services.conversion_pipeline.types import (
     ParserState,
     ResultLevel,
@@ -34,11 +37,17 @@ from app.services.conversion_pipeline.types import (
     PipelineRunResult,
     PipelineStepSnapshot,
 )
+from app.services.conversion_config import get_builtin_rules
 from app.services.conversion_engine.base_cleaning import apply_base_cleaning
 from app.services.conversion_engine.business_segment_convert import apply_business_segment_conversion
 from app.services.conversion_engine.business_segment_locator import locate_business_segments
 from app.services.conversion_engine.field_parser import parse_fields
-from app.services.conversion_engine.medical_term_correct import apply_medical_term_correct
+from app.services.conversion_engine.medical_term_correct import (
+    CONFUSION_RULES,
+    _get_scene_context,
+    apply_medical_term_correct,
+    merge_rule_entries,
+)
 from app.services.conversion_engine.number_normalize import apply_number_normalize
 from app.services.conversion_engine.risk_intercept import check_risks
 
@@ -82,6 +91,217 @@ def _snapshot(
         duration_ms=duration_ms,
         error_message=error_message,
     )
+
+
+# ========== 规则真实诊断（P1） ==========
+# 前端不再用“步骤执行过”反推所有规则 called=true；每条“本步骤配置的规则”
+# （builtin CORE + 版本 DB 规则，按 P1 合并策略去重）生成真实诊断记录：
+# {rule_id, rule_name, configured, called, hit, action, matched_text, converted,
+#  changed, reason, evidence, risk_level}
+# called=true 表示该规则进入了处理器判断；hit=true 表示条件匹配并产生转化；
+# 未进入（场景不符/处理器未运行）→ called=false hit=false；called=true 但未命中
+# → reason 说明原因（如“文本未出现X”/“必要上下文不满足”）。
+
+_BASE_CLEANING_RULES = [
+    {"rule_code": "B001", "name": "移除ASR伪标签", "description": "移除 language chinese <asr_text> 等伪标签。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+    {"rule_code": "B002", "name": "提取ASR文本内容", "description": "提取 <asr_text> 闭合标签内的内容。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+    {"rule_code": "B003", "name": "过滤language前缀", "description": "过滤开头的 language chinese 前缀。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+    {"rule_code": "B004", "name": "清除异常空格", "description": "移除中英文间及连续多余空格。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+    {"rule_code": "B005", "name": "恢复数值列表标点", "description": "在业务数值列表间恢复中文逗号。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+]
+
+
+def _confusion_rule_to_diag_entry(rule: Any) -> dict[str, Any]:
+    """把内置医学词规则转成诊断用 dict（携带行为字段，供合并去重与 called 判断）。"""
+    return {
+        "rule_id": rule.rule_id,
+        "rule_code": rule.rule_id,
+        "rule_name": f"{rule.asr_error} → {rule.standard}",
+        "asr_error": rule.asr_error,
+        "standard": rule.standard,
+        "scene": rule.scene,
+        "required_context": rule.required_context,
+        "excluded_context": rule.excluded_context,
+        "match_type": rule.match_type,
+        "risk_level": rule.risk_level,
+        "action": rule.action,
+        "confidence": rule.confidence,
+        "priority": rule.priority,
+        "enabled": rule.enabled,
+        "system_handler": "apply_medical_term_correct",
+    }
+
+
+def _configured_rules_for(
+    step_code: StepCode,
+    ctx: PipelineContext,
+) -> list[dict[str, Any]]:
+    """本步骤配置的规则清单：builtin CORE + 版本 DB 规则（医学词按合并策略去重）。"""
+    if step_code == StepCode.MEDICAL_TERM:
+        core = [_confusion_rule_to_diag_entry(rule) for rule in CONFUSION_RULES if rule.enabled]
+        return merge_rule_entries(core, list(ctx.lexicon_rules))
+    if step_code == StepCode.BASE_CLEANING:
+        return list(_BASE_CLEANING_RULES)
+    if step_code == StepCode.NUMBER_NORMALIZE:
+        return list(get_builtin_rules()["number_normalize"])
+    if step_code == StepCode.BUSINESS_SEGMENT:
+        return list(get_builtin_rules()["business_segment"]) + list(get_builtin_rules()["text_switch"])
+    if step_code == StepCode.FIELD_PARSE:
+        builtin = get_builtin_rules()
+        m_rules = [
+            rule for rule in builtin["medical_term"]
+            if rule.get("system_handler") == "collect_endometrium_type_rule_items"
+        ]
+        return m_rules + list(builtin["field_extract"])
+    if step_code == StepCode.RUNTIME_RULE:
+        return list(ctx.runtime_rules)
+    if step_code == StepCode.RISK_INTERCEPT:
+        return list(get_builtin_rules()["risk"])
+    return []
+
+
+def _rule_called_and_reason(
+    step_code: StepCode,
+    scene: str,
+    rule: dict[str, Any],
+    step_failed: bool,
+) -> tuple[bool, str]:
+    """判断规则是否进入处理器判断（与各引擎模块的实际跳过逻辑保持一致）。"""
+    if step_failed:
+        return False, "步骤执行失败，处理器未运行"
+    if step_code == StepCode.MEDICAL_TERM:
+        # 与 apply_medical_term_correct 的场景过滤一致：通用场景放行所有规则，
+        # 特定场景下只放行匹配场景或通用规则。
+        if scene and scene != "通用":
+            rscene = str(rule.get("scene") or rule.get("business_scene") or "通用")
+            if rscene != "通用" and rscene not in scene:
+                return False, "场景不符，未进入该规则判断"
+        return True, ""
+    if step_code == StepCode.RUNTIME_RULE:
+        # 与 runtime_rule_executor.run_rule 的跳过逻辑一致。
+        if not rule.get("enabled", True):
+            return False, "规则未启用"
+        if str(rule.get("system_handler") or "") not in ALLOWED_HANDLERS:
+            return False, "处理器不在白名单，未执行"
+        return True, ""
+    return True, ""
+
+
+def _unhit_reason(
+    step_code: StepCode,
+    rule: dict[str, Any],
+    step_input: str,
+) -> str:
+    """called=true 但未命中时的原因说明。"""
+    pattern = (
+        rule.get("asr_error")
+        or rule.get("error_text")
+        or rule.get("pattern")
+        or ""
+    )
+    if pattern and pattern not in step_input:
+        return f"文本未出现“{pattern}”"
+    if pattern:
+        return "文本出现匹配词，但被其他规则占用或决策注册表拦截，未产生转化"
+    required = rule.get("required_context")
+    if required and not any(term in step_input for term in _context_terms(required)):
+        return "必要上下文不满足"
+    return "规则条件未命中，未产生转化"
+
+
+def _context_terms(required: str) -> list[str]:
+    """把“A/B/C；D/E”形式的必要上下文拆成候选关键词列表。"""
+    terms: list[str] = []
+    for group in required.replace("；", ";").split(";"):
+        for alt in group.replace("或", "/").split("/"):
+            alt = alt.strip()
+            if alt:
+                terms.append(alt)
+    return terms
+
+
+def _build_rule_diagnostics(
+    step_code: StepCode,
+    scene: str,
+    step_input: str,
+    *,
+    conversions: list[dict[str, Any]],
+    rule_hits: list[dict[str, Any]],
+    fields: dict[str, Any],
+    configured: list[dict[str, Any]],
+    step_failed: bool = False,
+) -> list[dict[str, Any]]:
+    """把本步骤配置规则 + 实际 conversions/rule_hits 合并成 rule_diagnostics 数组。"""
+    diagnostics: list[dict[str, Any]] = []
+    for rule in configured:
+        rule_id = str(rule.get("rule_code") or rule.get("rule_id") or "").strip()
+        if not rule_id:
+            continue
+        name = str(rule.get("rule_name") or rule.get("name") or rule_id)
+        called, called_reason = _rule_called_and_reason(step_code, scene, rule, step_failed)
+
+        hits = [
+            item for item in conversions
+            if str(item.get("rule_id") or "") == rule_id or str(item.get("rule_code") or "") == rule_id
+        ]
+        hits += [
+            item for item in (rule_hits or [])
+            if str(item.get("rule_id") or "") == rule_id or str(item.get("rule_code") or "") == rule_id
+        ]
+        field_code = rule.get("field_code")
+        field_hit = bool(
+            field_code and step_code == StepCode.FIELD_PARSE and field_code in (fields or {})
+        )
+        hit = bool(called and (hits or field_hit))
+
+        reason = ""
+        if not called:
+            reason = called_reason
+        elif not hit:
+            reason = _unhit_reason(step_code, rule, step_input)
+
+        matched_text = ""
+        converted = ""
+        action = str(rule.get("action") or "")
+        risk_level = str(rule.get("risk_level") or "medium")
+        evidence = ""
+        changed = False
+        if hits:
+            first = hits[0]
+            matched_text = str(first.get("raw") or first.get("matched_text") or first.get("text") or "")
+            converted = str(first.get("converted") or "")
+            action = str(first.get("action") or action)
+            risk_level = str(first.get("risk_level") or risk_level)
+            evidence = str(first.get("evidence") or first.get("notes") or first.get("message") or "")
+            changed = any(str(item.get("action")) == "AUTO" for item in hits)
+        elif field_hit:
+            evidence = f"字段 {field_code} 已生成"
+            matched_text = step_input
+
+        diagnostics.append({
+            "rule_id": rule_id,
+            "rule_name": name,
+            "configured": True,
+            "called": called,
+            "hit": hit,
+            "action": action,
+            "matched_text": matched_text,
+            "converted": converted,
+            "changed": changed,
+            "reason": reason,
+            "evidence": evidence,
+            "risk_level": risk_level,
+            "diagnostic": True,  # 与既有原始 rule_hits 条目区分
+        })
+    return diagnostics
+
+
+def _merge_rule_hits(
+    existing: list[dict[str, Any]] | None,
+    diagnostics: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把诊断记录合并进步骤 rule_hits（复用 rule_hits 随快照持久化返回）。"""
+    return list(existing or []) + diagnostics
 
 
 def resolve_result_level(
@@ -170,7 +390,11 @@ def _step_number_normalize(ctx: PipelineContext, scene: str) -> dict[str, Any]:
     ctx.conversions.extend(dimension_conversions)
     ctx.warnings.extend(dimension_warnings)
 
-    number = apply_number_normalize(ctx.current_text, scene=scene)
+    number = apply_number_normalize(
+        ctx.current_text,
+        scene=scene,
+        ovary_anchor_raws=ctx.medical_ovary_anchor_raws,
+    )
     ctx.current_text = number.text
     ctx.conversions.extend(number.conversions)
     ctx.warnings.extend(number.warnings)
@@ -206,6 +430,13 @@ def _step_medical_term(ctx: PipelineContext, scene: str, rule_mode: str) -> dict
     ctx.current_text = medical.text
     ctx.conversions.extend(medical.conversions)
     ctx.warnings.extend(medical.warnings)
+    # P0-01：把医学词步骤产出的卵巢大小候选原始串（OVARY_SIZE_ANCHOR，如
+    # 六宛桥大桥/六碗桥大桥/满朝大赏/图案朝大小/输卵管大小）作为保护区间元数据，
+    # 交给 N006/N007 判断“四位数字位于卵巢大小锚点附近”。只传数据、不硬编码词表。
+    ctx.medical_ovary_anchor_raws = [
+        str(conv.get("raw")) for conv in medical.conversions
+        if str(conv.get("converted") or "") == "卵巢大小" and conv.get("raw")
+    ]
     _record_step_replacements(ctx, medical.conversions, step_input)
     return {"conversions": medical.conversions, "warnings": medical.warnings}
 
@@ -355,13 +586,22 @@ def run_pipeline(
             if start_step is not None and STEP_ORDER[step_code] < STEP_ORDER[start_step]:
                 continue
             step_input = ctx.current_text
+            # 医学词步骤场景可能为空时由引擎推断，诊断使用同一有效场景判断 called。
+            effective_scene = scene or _get_scene_context(step_input)
+            configured_rules = _configured_rules_for(step_code, ctx)
             state_before = ctx.parser_state.to_dict()
             started = time.monotonic()
             try:
                 extras = step_fn(ctx)
             except Exception as exc:  # noqa: BLE001
+                diagnostics = _build_rule_diagnostics(
+                    step_code, effective_scene, step_input,
+                    conversions=[], rule_hits=[], fields={},
+                    configured=configured_rules, step_failed=True,
+                )
                 ctx.steps.append(_snapshot(
                     step_code, "failed", step_input, ctx.current_text,
+                    rule_hits=_merge_rule_hits(None, diagnostics),
                     error_message=str(exc),
                     state_before=state_before,
                     state_after=ctx.parser_state.to_dict(),
@@ -370,10 +610,17 @@ def run_pipeline(
                 raise PipelineStepError(str(exc)) from exc
             duration_ms = int((time.monotonic() - started) * 1000)
             state_after = extras.get("state_after") or ctx.parser_state.to_dict()
+            diagnostics = _build_rule_diagnostics(
+                step_code, effective_scene, step_input,
+                conversions=extras.get("conversions") or [],
+                rule_hits=extras.get("rule_hits") or [],
+                fields=ctx.fields if step_code == StepCode.FIELD_PARSE else {},
+                configured=configured_rules,
+            )
             ctx.steps.append(_snapshot(
                 step_code, "success", step_input, ctx.current_text,
                 conversions=extras.get("conversions"),
-                rule_hits=extras.get("rule_hits"),
+                rule_hits=_merge_rule_hits(extras.get("rule_hits"), diagnostics),
                 warnings=extras.get("warnings"),
                 state_before=state_before,
                 state_after=state_after,

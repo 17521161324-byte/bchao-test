@@ -348,6 +348,13 @@ def get_builtin_rules() -> dict[str, list[dict]]:
         "business_segment": business_segment,
         "text_switch": [],
         "field_extract": FIELD_EXTRACT_RULES,
+        "base_cleaning": [
+            {"rule_code": "B001", "name": "移除ASR伪标签", "description": "移除 language chinese <asr_text> 等伪标签。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+            {"rule_code": "B002", "name": "提取ASR文本内容", "description": "提取 <asr_text> 闭合标签内的内容。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+            {"rule_code": "B003", "name": "过滤language前缀", "description": "过滤开头的 language chinese 前缀。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+            {"rule_code": "B004", "name": "清除异常空格", "description": "移除中英文间及连续多余空格。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+            {"rule_code": "B005", "name": "恢复数值列表标点", "description": "在业务数值列表间恢复中文逗号。", "action": "AUTO", "system_handler": "apply_base_cleaning"},
+        ],
         "risk": [
             {
                 "rule_code": rule.rule_id,

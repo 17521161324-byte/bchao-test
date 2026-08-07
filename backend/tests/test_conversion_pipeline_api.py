@@ -285,3 +285,87 @@ async def test_create_execution_404_for_missing_rule_version(async_client: Async
     )
     assert response.status_code == 404
     assert "规则版本不存在" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_batch_success_failed_counts_pipeline_failure(
+    async_client: AsyncClient, db_session,
+):
+    """P1：批量接口 success_count 只统计 status != failed 的执行；
+    pipeline 失败计入 failed_count 并携带 execution_id/failed_step/error。"""
+    from sqlalchemy import select
+
+    from app.models import (
+        ConversionConfigVersion,
+        ConversionRuleEntry,
+        PatientAsrResult,
+        PatientRecord,
+    )
+
+    patient = (
+        await db_session.execute(
+            select(PatientRecord).where(PatientRecord.record_id == "A017750")
+        )
+    ).scalar_one()
+
+    good = PatientAsrResult(
+        patient_id=patient.id, record_id=patient.record_id, date="20260623",
+        asr_model_id=1, asr_model_name="Test ASR", provider="local",
+        full_transcript="内膜", status="success",
+    )
+    bad = PatientAsrResult(
+        patient_id=patient.id, record_id=patient.record_id, date="20260623",
+        asr_model_id=1, asr_model_name="Test ASR", provider="local",
+        full_transcript="右卵巢大小39×30，16.4", status="success",
+    )
+    db_session.add_all([good, bad])
+
+    version = ConversionConfigVersion(
+        version_code="V_TEST_BATCH", version_name="batch 测试版本",
+        status="published", description="pipeline 失败批量测试",
+    )
+    db_session.add(version)
+    await db_session.flush()
+    # 坏参数规则：threshold 不可转 float；只有文本解析出 right_ovary_size 字段时
+    # 才会执行 float() 并抛 ValueError → 触发 RUNTIME_RULE 步骤失败（P0-04 fail-fast）。
+    db_session.add(ConversionRuleEntry(
+        version_id=version.id,
+        rule_code="RT_BAD_THRESHOLD",
+        rule_type="runtime_rule",
+        name="坏阈值规则",
+        description="threshold 无法转 float，命中字段时执行失败",
+        pattern="",
+        replacement="",
+        condition_config={
+            "field_codes": ["right_ovary_size"],
+            "operator": "lt",
+            "threshold": "not-a-number",
+            "value_mode": "any_dimension",
+        },
+        action="REVIEW",
+        risk_level="high",
+        priority=100,
+        enabled=1,
+        editable=1,
+        system_handler="field_threshold",
+    ))
+    await db_session.commit()
+
+    response = await async_client.post(
+        "/conversion-pipeline/executions/batch",
+        json={"source_ids": [good.id, bad.id], "rule_version_id": version.id},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    # 创建成功 ≠ 执行成功：pipeline failed 的执行不计入 success_count
+    assert data["success_count"] == 1
+    assert data["failed_count"] == 1
+    assert len(data["items"]) == 2
+    by_source = {item["source_id"]: item for item in data["items"]}
+    assert by_source[good.id]["status"] == "completed"
+    assert by_source[bad.id]["status"] == "failed"
+    failed = next(error for error in data["errors"] if error["source_id"] == bad.id)
+    assert failed["execution_id"] == by_source[bad.id]["id"]
+    assert failed["failed_step"] == "RUNTIME_RULE"
+    assert "float" in failed["error"]

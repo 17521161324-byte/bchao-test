@@ -60,6 +60,37 @@ def test_endometrium_pair_without_anchor_is_inferred_before_ovary_segments():
     assert rows[0].endometrium_type == "A型"
 
 
+def test_id463_real_form_no_suffix_type_is_review_inference():
+    """P0-02：真实形式“14.8A”（无“型”后缀）→ 内膜厚度=14.8 + 内膜类型候选=A型，
+    status=REVIEW（缺少“型”不能 AUTO）。不改动现有 ID463 测试。"""
+    text = "一些普通对话，14.8A，右卵巢大小35×25，17.2。"
+    rows = collect_inferred_endometrium_pairs(text)
+    assert len(rows) == 1
+    assert rows[0].thickness == 14.8
+    assert rows[0].endometrium_type == "A型"
+    assert rows[0].action == "REVIEW"
+    assert "缺少" in rows[0].evidence and "型" in rows[0].evidence
+
+
+def test_no_suffix_pair_inside_ovary_segment_is_not_inferred():
+    text = "右卵巢大小35×25，14.8A。"
+    assert collect_inferred_endometrium_pairs(text) == []
+
+
+def test_suffix_pair_remains_auto_inference():
+    text = "一些普通对话，7.0A型，右卵巢大小35×25，17.2。"
+    rows = collect_inferred_endometrium_pairs(text)
+    assert rows[0].action == "AUTO"
+
+
+def test_no_suffix_pattern_does_not_swallow_standard_type():
+    """P0-02：无“型”后缀模式不得误吞标准“X型”写法（负向断言）。"""
+    text = "一些普通对话，7.0A型，右卵巢大小35×25，17.2。"
+    rows = collect_inferred_endometrium_pairs(text)
+    assert len(rows) == 1
+    assert rows[0].raw_text == "7.0A型"
+
+
 def test_abc_pair_inside_ovary_segment_is_not_inferred_as_endometrium():
     text = "右卵巢大小35×25，17.2，7.0A型。"
     assert collect_inferred_endometrium_pairs(text) == []

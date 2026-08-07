@@ -61,6 +61,64 @@ export function simpleDiff(oldText: string, newText: string): DiffSegment[] {
   raw.reverse()
 
   // 丢弃纯空白的新增/删除（空白变化视为噪声），再合并相邻同类段
+  return mergeSegments(raw)
+}
+
+/**
+ * 字符级 LCS 比对（标准ASR文本左右差异用）。
+ * 中文/医学文本按单字对齐更直观；文本过大时降级为整段并排，不逐字比对。
+ */
+export function simpleDiffChars(oldText: string, newText: string): DiffSegment[] {
+  if (oldText === newText) return [{ type: 'same', text: oldText }]
+  const a = Array.from(oldText)
+  const b = Array.from(newText)
+  if (!a.length || !b.length || a.length * b.length > 4_000_000) {
+    return [
+      ...(oldText ? [{ type: 'del' as const, text: oldText }] : []),
+      ...(newText ? [{ type: 'add' as const, text: newText }] : []),
+    ]
+  }
+
+  const n = a.length
+  const m = b.length
+  const width = m + 1
+  // dp 展平为一维 Uint32Array：dp[i * width + j] = LCS(a[0..i), b[0..j))
+  const dp = new Uint32Array((n + 1) * width)
+  for (let i = 1; i <= n; i++) {
+    const row = i * width
+    const prevRow = (i - 1) * width
+    const ai = a[i - 1]
+    for (let j = 1; j <= m; j++) {
+      dp[row + j] = ai === b[j - 1]
+        ? dp[prevRow + j - 1] + 1
+        : Math.max(dp[prevRow + j], dp[row + j - 1])
+    }
+  }
+
+  const raw: DiffSegment[] = []
+  let i = n
+  let j = m
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) {
+      raw.push({ type: 'same', text: a[i - 1] })
+      i--
+      j--
+    } else if (dp[(i - 1) * width + j] >= dp[i * width + j - 1]) {
+      raw.push({ type: 'del', text: a[i - 1] })
+      i--
+    } else {
+      raw.push({ type: 'add', text: b[j - 1] })
+      j--
+    }
+  }
+  while (i > 0) { raw.push({ type: 'del', text: a[i - 1] }); i-- }
+  while (j > 0) { raw.push({ type: 'add', text: b[j - 1] }); j-- }
+  raw.reverse()
+  return mergeSegments(raw)
+}
+
+/** 合并相邻同类段；纯空白的新增/删除视为噪声丢弃 */
+function mergeSegments(raw: DiffSegment[]): DiffSegment[] {
   const merged: DiffSegment[] = []
   for (const seg of raw) {
     if ((seg.type === 'del' || seg.type === 'add') && /^\s*$/.test(seg.text)) continue

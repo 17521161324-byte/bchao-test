@@ -298,10 +298,19 @@ def _normalize_endometrium_type(text: str) -> tuple[str, list[dict]]:
     return cleaned, conversions
 
 
-def _split_4digit_dimension(text: str, scene: str) -> tuple[str, list[dict]]:
+def _split_4digit_dimension(
+    text: str,
+    scene: str,
+    ovary_anchor_raws: list[str] | None = None,
+) -> tuple[str, list[dict]]:
     """N006/N007: 4位连续尺寸候选拆分（如 六零三五 → 60×35）
 
-    仅在紧跟卵巢大小后时生效，动作为 CANDIDATE。
+    触发条件（任一）：
+    - 紧跟字面卵巢大小上下文（卵巢大小/卵巢/大小）；
+    - 位于上一步医学词步骤产出的卵巢大小候选锚点附近（P0-01：
+      六宛桥大桥/六碗桥大桥/满朝大赏/图案朝大小/输卵管大小等由医学词规则
+      匹配出的原始串，经 orchestrator 传入，禁止在本模块硬编码具体词）。
+    动作为 CANDIDATE，不改写正文。
     """
     conversions = []
 
@@ -321,7 +330,7 @@ def _split_4digit_dimension(text: str, scene: str) -> tuple[str, list[dict]]:
 
         num_str = ''.join(digits)
         # 检查是否在卵巢大小上下文
-        if _is_ovary_context(text, m.start()):
+        if _is_ovary_context(text, m.start(), ovary_anchor_raws):
             result = f"{num_str[:2]}×{num_str[2:]}"
             conversions.append({
                 "rule_id": "N006",
@@ -346,7 +355,7 @@ def _split_4digit_dimension(text: str, scene: str) -> tuple[str, list[dict]]:
 
     def split_arabic_4digit(m):
         raw = m.group()
-        if _is_ovary_context(text, m.start()):
+        if _is_ovary_context(text, m.start(), ovary_anchor_raws):
             result = f"{raw[:2]}×{raw[2:]}"
             conversions.append({
                 "rule_id": "N007",
@@ -368,12 +377,20 @@ def _split_4digit_dimension(text: str, scene: str) -> tuple[str, list[dict]]:
     return cleaned, conversions
 
 
-def _is_ovary_context(text: str, pos: int) -> bool:
-    """判断位置是否在卵巢大小上下文中"""
+def _is_ovary_context(text: str, pos: int, ovary_anchor_raws: list[str] | None = None) -> bool:
+    """判断位置是否在卵巢大小上下文中。
+
+    P0-01：除字面关键词外，还接受上一步医学词候选的原始串（OVARY_SIZE_ANCHOR
+    近似词）作为上下文证据——数字步骤只读取元数据，不硬编码任何医学词。
+    """
     context_start = max(0, pos - 30)
     context = text[context_start:pos]
     keywords = ["卵巢大小", "卵巢", "大小"]
-    return any(kw in context for kw in keywords)
+    if any(kw in context for kw in keywords):
+        return True
+    if ovary_anchor_raws:
+        return any(anchor in context for anchor in ovary_anchor_raws if anchor)
+    return False
 
 
 def _check_dimension_anomaly(text: str) -> tuple[str, list[dict]]:
@@ -516,8 +533,17 @@ def _is_follicle_context(text: str, pos: int) -> bool:
     return any(kw in context for kw in keywords)
 
 
-def apply_number_normalize(text: str, scene: str = "follicle_ultrasound") -> NumberResult:
-    """执行所有数字标准化步骤"""
+def apply_number_normalize(
+    text: str,
+    scene: str = "follicle_ultrasound",
+    ovary_anchor_raws: list[str] | None = None,
+) -> NumberResult:
+    """执行所有数字标准化步骤
+
+    Args:
+        ovary_anchor_raws: 上一步医学词步骤产出的卵巢大小候选原始串（P0-01），
+            供 N006/N007 判断“四位数字位于卵巢大小锚点附近”。
+    """
     result = NumberResult(text=text)
 
     # N001: 中文小数转阿拉伯数字
@@ -541,7 +567,7 @@ def apply_number_normalize(text: str, scene: str = "follicle_ultrasound") -> Num
     result.conversions.extend(convs)
 
     # N006/N007: 4位连续尺寸候选拆分
-    result.text, convs = _split_4digit_dimension(result.text, scene)
+    result.text, convs = _split_4digit_dimension(result.text, scene, ovary_anchor_raws)
     result.conversions.extend(convs)
 
     # N009: 异常小数点插入候选

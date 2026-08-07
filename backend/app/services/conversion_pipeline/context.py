@@ -22,6 +22,8 @@ class PipelineContext:
     config_hash: str
     lexicon_rules: list[dict[str, Any]] = field(default_factory=list)
     runtime_rules: list[dict[str, Any]] = field(default_factory=list)
+    # P0-01：上一步医学词步骤产出的卵巢大小候选原始串（N006 读取的保护区间元数据）
+    medical_ovary_anchor_raws: list[str] = field(default_factory=list)
     parser_state: ParserState = field(default_factory=ParserState)
     decision_registry: DecisionRegistry = field(default_factory=DecisionRegistry)
     span_map: SpanMap = field(init=False, repr=False, default=None)  # type: ignore[assignment]

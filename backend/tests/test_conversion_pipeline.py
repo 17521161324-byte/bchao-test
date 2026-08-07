@@ -283,3 +283,119 @@ class TestSpanMapIntegration:
         )
         assert result.raw_text[span["raw_start"]:span["raw_end"]] == "四八乘一。四零"
         assert span["raw_end"] - span["raw_start"] > span["end"] - span["start"]
+
+
+class TestNoSuffixEndometriumReview:
+    """P0-02：14.8A（无“型”）→ 内膜厚度 + 内膜类型候选，status=REVIEW。"""
+
+    def test_pipeline_no_suffix_endometrium_pair_is_review_candidate(self):
+        from app.services.conversion_engine import run_conversion
+
+        result = run_conversion("十四点八A")  # 经数字步骤后为 14.8A
+        assert result.fields["endometrium_thickness"] == 14.8
+        assert result.fields["endometrium_type"] == "A型"
+        status = result.fields.get("field_status") or {}
+        assert status.get("endometrium_thickness") == "REVIEW"
+        assert status.get("endometrium_type") == "REVIEW"
+        assert result.result_level.value == "REVIEW_REQUIRED"
+        assert any(
+            item.get("rule_id") == "S012" and item.get("action") == "REVIEW"
+            for item in result.conversions
+        )
+
+    def test_pipeline_suffix_endometrium_pair_is_auto(self):
+        from app.services.conversion_engine import run_conversion
+
+        result = run_conversion("一些对话，7.0A型")
+        assert result.fields.get("endometrium_thickness") == 7.0
+        assert result.fields.get("endometrium_type") == "A型"
+        assert not any(
+            item.get("rule_id") == "S012" and item.get("action") == "REVIEW"
+            for item in result.conversions
+        )
+
+
+class TestRuleDiagnostics:
+    """P1：每条规则的 called/hit 真实诊断随步骤快照返回。"""
+
+    def _medical_diags(self, raw_text: str, scene: str = "卵泡监测B超"):
+        from app.services.conversion_pipeline.orchestrator import run_pipeline
+
+        result = run_pipeline(raw_text=raw_text, scene=scene)
+        medical = next(step for step in result.steps if step.step_code == "MEDICAL_TERM")
+        return result, [hit for hit in medical.rule_hits if hit.get("diagnostic")]
+
+    def test_medical_step_unmatched_rule_is_called_with_reason(self):
+        result, diags = self._medical_diags("内膜9.2")
+        assert diags
+        c001 = next(item for item in diags if item["rule_id"] == "C001")
+        assert c001["configured"] is True
+        assert c001["called"] is True
+        assert c001["hit"] is False
+        assert c001["reason"] and "文本未出现" in c001["reason"]
+        # 诊断记录携带完整契约字段
+        required = {
+            "rule_id", "rule_name", "configured", "called", "hit", "action",
+            "matched_text", "converted", "changed", "reason", "evidence", "risk_level",
+        }
+        assert required.issubset(c001.keys())
+
+    def test_medical_step_scene_mismatched_rule_is_not_called(self):
+        result, diags = self._medical_diags("内膜9.2", scene="卵泡监测B超")
+        c008 = next(item for item in diags if item["rule_id"] == "C008")  # 取卵麻醉场景
+        assert c008["configured"] is True
+        assert c008["called"] is False
+        assert c008["hit"] is False
+        assert c008["reason"] and "场景不符" in c008["reason"]
+
+    def test_medical_step_hit_rule_carries_action_and_changed(self):
+        result, diags = self._medical_diags("面膜九点五，C型")
+        c016 = next(item for item in diags if item["rule_id"] == "C016")
+        assert c016["called"] is True
+        assert c016["hit"] is True
+        assert c016["action"] == "AUTO"
+        assert c016["matched_text"] == "面膜"
+        assert c016["converted"] == "内膜"
+        assert c016["changed"] is True
+
+    def test_every_step_exposes_diagnostics_and_required_keys(self):
+        from app.services.conversion_pipeline.orchestrator import run_pipeline
+
+        result = run_pipeline(raw_text="内膜9.2", scene="卵泡监测B超")
+        required = {
+            "rule_id", "rule_name", "configured", "called", "hit", "action",
+            "matched_text", "converted", "changed", "reason", "evidence", "risk_level",
+        }
+        for step in result.steps:
+            diags = [hit for hit in step.rule_hits if hit.get("diagnostic")]
+            assert all(required.issubset(item.keys()) for item in diags)
+        for code in (
+            "MEDICAL_TERM", "BASE_CLEANING", "NUMBER_NORMALIZE",
+            "BUSINESS_SEGMENT", "FIELD_PARSE", "RISK_INTERCEPT",
+        ):
+            step = next(s for s in result.steps if s.step_code == code)
+            diags = [hit for hit in step.rule_hits if hit.get("diagnostic")]
+            assert diags, code
+
+    def test_runtime_rule_unsupported_handler_is_not_called(self):
+        from app.services.conversion_pipeline.orchestrator import run_pipeline
+
+        bad_rule = {
+            "rule_code": "RT_BAD_HANDLER",
+            "system_handler": "eval_arbitrary_code",
+            "pattern": "x", "replacement": "y",
+            "action": "AUTO", "risk_level": "medium", "enabled": True,
+        }
+        result = run_pipeline(
+            raw_text="右卵巢大小39×30", scene="卵泡监测B超",
+            runtime_rules=[bad_rule],
+        )
+        step = next(s for s in result.steps if s.step_code == "RUNTIME_RULE")
+        diag = next(
+            hit for hit in step.rule_hits
+            if hit.get("diagnostic") and hit.get("rule_id") == "RT_BAD_HANDLER"
+        )
+        assert diag["configured"] is True
+        assert diag["called"] is False
+        assert diag["hit"] is False
+        assert "白名单" in diag["reason"]

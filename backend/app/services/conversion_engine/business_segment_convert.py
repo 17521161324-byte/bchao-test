@@ -38,6 +38,10 @@ def apply_business_segment_conversion(
     for segment in locate_business_segments(text):
         if segment.get("segment_type") not in ("medical_term", "medical_data"):
             continue
+        # P0-02：REVIEW 语义的片段（如 S012 缺“型”后缀的 A/B/C 候选）只作候选展示，
+        # 不得被本步骤 AUTO 改写正文（如 “14.8A” → “14.8A型”）。
+        if str(segment.get("action") or "") == "REVIEW":
+            continue
         raw = str(segment.get("text") or "")
         converted = _format_normalized(segment.get("normalized"))
         if not raw or not converted or raw == converted:

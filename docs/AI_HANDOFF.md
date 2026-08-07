@@ -165,3 +165,11 @@ npm run build
 - 前端：npm run build 通过。
 - 回归案例（真实 DB 数据）：ID 439 右卵巢 35×25、输卵管大小→S011 左卵巢 28×20、左卵泡 [17.4,14.5,11.1]、REVIEW_REQUIRED ✓；ID 456 内膜 9.5 C型、六宛桥大桥→上下文推断 REVIEW_REQUIRED ✓。
 - 遗留：ConversionDebug/index.vue:611 有 ultrasound_findings 死映射标签（无害，可清理）；回归执行接口仍后置；D002 REVIEW 不改文本固有边界；代码未提交 git。
+
+## 2026-08-07 V14 前端一致性重构 + P0 修复（完成）
+
+- 前端（agent-9）：ConversionDebug 整页重写为 V14 布局（topbar + 左侧 350px 历史ASR Sidebar[DebugSidebar：指纹下拉 config_hash 聚合358条/日期/状态筛选/搜索/全选+批量执行工具栏/记录列表选中高亮] + 右侧工作区[DebugStepCards 五步卡片/记录信息头/patient-strip/原始ASR/DebugStepWorkbench 步骤工作区含 can/cannot+四格统计+输入输出双栏+行内语义标注+规则诊断表/DebugSegmentCards 业务片段卡片/DebugCompareTabs 数据对比+标准ASR]）；删除 11 个旧组件（InputPanel/HistoricalAsrPicker/InteractiveSteps/StepWorkbench/BusinessStepWorkbench/BatchExecutionResults/RuleHitDrawer/FinalResultTabs/BusinessSegmentCards/RuleExecutionDiagnostics/ExecutionHistoryDrawer）；新增 debug.ts（五步定义/诊断合并/语义标注/mapTruthFromBUltra）+ diff.ts 字符级 LCS；数据全走真实 API。
+- 后端（agent-10）P0/P1 五项：① 六宛桥大桥+六零三五 尺寸候选（N006 读医学词候选区间，未硬编码）；② 14.8A 无"型"内膜候选 REVIEW（S012 负向断言）；③ 规则 called 真实诊断（orchestrator _build_rule_diagnostics：configured/called/hit/reason/evidence，随 rule_hits 持久化）；④ CORE+DB 规则合并策略（merge_lexicon_rules：同 rule_id 去重/override，不双版本）；⑤ 批量接口 success/failed 定义修正（pipeline failed 计 failed_count+execution_id/failed_step/error）。
+- 测试：全量 299 passed / 4 个既有无关失败；新增 20 测试（六宛桥尺寸候选/14.8A/规则诊断/合并策略/batch 状态）；前端 npm run build 通过。
+- 截图验收（4 张，.playwright-mcp/）：v14-page-full（V14 布局+左侧358条真实ASR）、v14-439-record（记录选择）、v14-439-executed（执行后规则诊断）、v14-439-executed-full（执行后完整页）。
+- 遗留：更新处理状态按钮禁用（后端无 PATCH 接口）；listExecutions 仅最近 200 条推导状态；诊断表 called 来自后端（已实现）；代码已提交 git。

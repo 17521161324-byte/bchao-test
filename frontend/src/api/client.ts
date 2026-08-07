@@ -163,7 +163,7 @@ export const conversionConfigApi = {
 // ========== ASR 结构化处理流水线 ==========
 export const conversionPipelineApi = {
   createExecution: (data: {
-    source_type?: 'manual' | 'text_validation_run' | 'conversion_preview'
+    source_type?: 'manual' | 'text_validation_run' | 'conversion_preview' | 'patient_asr_result'
     source_id?: number
     input_source?: 'manual' | 'raw_asr_text' | 'corrected_text'
     text?: string

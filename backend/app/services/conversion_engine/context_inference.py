@@ -31,6 +31,13 @@ ENDOMETRIUM_PAIR_PATTERN = re.compile(
     r"\s*[，,、:：]?\s*"
     r"(?P<type>[ABCＡＢＣ])\s*[型形性]"
 )
+# P0-02：无“型”后缀的“几点几 + A/B/C”同样可能是内膜段（如 14.8A），
+# 但缺少“型”不能 AUTO，必须 REVIEW。负向断言避免吞掉标准“X型”写法。
+ENDOMETRIUM_PAIR_NO_SUFFIX_PATTERN = re.compile(
+    r"(?<!\d)(?P<value>\d{1,2}\.\d)(?!\d)"
+    r"\s*[，,、:：]?\s*"
+    r"(?P<type>[ABCＡＢＣ])(?![型形性])"
+)
 
 SIDE_MAP = {"左": "LEFT", "右": "RIGHT"}
 OPPOSITE_SIDE = {"LEFT": "RIGHT", "RIGHT": "LEFT"}
@@ -235,38 +242,76 @@ def _strong_block_bounds(text: str, start: int, end: int) -> tuple[int, int]:
     return left, right
 
 
+def _infer_endometrium_from_match(
+    text: str,
+    match: re.Match,
+    *,
+    action: str,
+    missing_type_suffix: bool = False,
+) -> EndometriumInference | None:
+    """从单个“几点几 + A/B/C(型)”匹配构造 EndometriumInference（共用上下文检查）。
+
+    P0-02：missing_type_suffix=True 时动作为 REVIEW——缺少“型”后缀不能 AUTO，
+    只生成“内膜厚度 + 内膜类型候选”，需人工确认。
+    """
+    block_start, block_end = _strong_block_bounds(text, match.start(), match.end())
+    before_in_block = text[block_start:match.start()]
+
+    # 只判断该数值之前是否已进入卵巢段：
+    # “7.0A型，右卵巢大小...” 仍应建立内膜段；
+    # “右卵巢大小...，7.0A型” 则属于已进入的卵巢段，不反推。
+    if EXPLICIT_OVARY_PATTERN.search(before_in_block):
+        return None
+    if any(term in before_in_block for term in FUZZY_OVARY_SIZE_TERMS):
+        return None
+
+    # 若近邻已经明确出现“内膜”，交给正常 F001/F002 处理，不重复生成推断。
+    before = text[max(block_start, match.start() - 16):match.start()]
+    if "内膜" in before:
+        return None
+
+    type_char = match.group("type").translate(str.maketrans({"Ａ": "A", "Ｂ": "B", "Ｃ": "C"}))
+    evidence = (
+        "该值所在独立句块不属于左右卵巢段，且满足标准的“内膜厚度小数 + A/B/C型”组合"
+    )
+    if missing_type_suffix:
+        evidence = (
+            f"该值所在独立句块不属于左右卵巢段，但类型字母“{match.group('type')}”缺少"
+            "“型”后缀（如 14.8A），只能作为内膜厚度+内膜类型候选，需人工确认"
+        )
+    return EndometriumInference(
+        start=match.start(),
+        end=match.end(),
+        thickness=float(match.group("value")),
+        endometrium_type=f"{type_char}型",
+        raw_text=match.group(0),
+        evidence=evidence,
+        action=action,
+    )
+
+
 def collect_inferred_endometrium_pairs(text: str) -> list[EndometriumInference]:
-    """在非卵巢业务句块中识别“几点几 + A/B/C型”内膜标准场景。"""
+    """在非卵巢业务句块中识别“几点几 + A/B/C型”内膜标准场景。
+
+    P0-02：同时识别缺少“型”后缀的“几点几 + A/B/C”（如 14.8A），
+    该情况动作为 REVIEW，只生成候选不自动确认。
+    """
     if not text:
         return []
 
     results: list[EndometriumInference] = []
     for match in ENDOMETRIUM_PAIR_PATTERN.finditer(text):
-        block_start, block_end = _strong_block_bounds(text, match.start(), match.end())
-        before_in_block = text[block_start:match.start()]
+        inferred = _infer_endometrium_from_match(text, match, action="AUTO")
+        if inferred is not None:
+            results.append(inferred)
 
-        # 只判断该数值之前是否已进入卵巢段：
-        # “7.0A型，右卵巢大小...” 仍应建立内膜段；
-        # “右卵巢大小...，7.0A型” 则属于已进入的卵巢段，不反推。
-        if EXPLICIT_OVARY_PATTERN.search(before_in_block):
+    for match in ENDOMETRIUM_PAIR_NO_SUFFIX_PATTERN.finditer(text):
+        # 已有标准“X型”匹配的位置不重复推断（该位置由上一个循环覆盖）。
+        if any(r.start == match.start() and r.end == match.end() for r in results):
             continue
-        if any(term in before_in_block for term in FUZZY_OVARY_SIZE_TERMS):
-            continue
-
-        # 若近邻已经明确出现“内膜”，交给正常 F001/F002 处理，不重复生成推断。
-        before = text[max(block_start, match.start() - 16):match.start()]
-        if "内膜" in before:
-            continue
-
-        type_char = match.group("type").translate(str.maketrans({"Ａ": "A", "Ｂ": "B", "Ｃ": "C"}))
-        results.append(EndometriumInference(
-            start=match.start(),
-            end=match.end(),
-            thickness=float(match.group("value")),
-            endometrium_type=f"{type_char}型",
-            raw_text=match.group(0),
-            evidence=(
-                "该值所在独立句块不属于左右卵巢段，且满足标准的“内膜厚度小数 + A/B/C型”组合"
-            ),
-        ))
+        inferred = _infer_endometrium_from_match(
+            text, match, action="REVIEW", missing_type_suffix=True,
+        )
+        if inferred is not None:
+            results.append(inferred)
     return results
